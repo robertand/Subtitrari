@@ -483,7 +483,9 @@ body {
 
 #mainVideoPlayer {
     width: 100%;
+    max-height: 70vh;
     border-radius: var(--radius-sm);
+    background: #000;
 }
 
 .subtitle-overlay {
@@ -530,10 +532,11 @@ body {
 /* === Timeline === */
 .timeline-section {
     margin-top: 0;
-    padding: 10px 0 !important;
+    padding: 15px !important;
     overflow: hidden;
     position: relative;
     user-select: none;
+    width: 100%;
 }
 
 .timeline-ruler {

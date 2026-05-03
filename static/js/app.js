@@ -562,6 +562,9 @@ function showResults(result) {
     // Show and render timeline
     elements.timelineSection.style.display = 'block';
     renderTimeline();
+
+    // Scroll to results
+    elements.resultsSection.scrollIntoView({ behavior: 'smooth' });
 }
 
 function renderSegments() {
