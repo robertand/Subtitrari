@@ -48,11 +48,8 @@ class Translator:
             'hr': 'hrv_Latn',  # Croatian
         }
         
-        # Languages that need bridging through English
-        self.bridge_languages = {
-            'ko': 'en',  # Korean → English → Target
-            'ja': 'en',  # Japanese → English → Target
-        }
+        # Languages that need bridging through English (disabled as per request)
+        self.bridge_languages = {}
     
     def load_model(self, source_lang: str, target_lang: str) -> tuple:
         """Load appropriate translation model"""

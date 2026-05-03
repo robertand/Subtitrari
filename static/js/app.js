@@ -12,6 +12,7 @@ const state = {
     currentTab: 'original',
     videoPlayer: null,
     activeSegment: -1,
+    displayLanguage: 'original',
     videoUrl: null,
     isVideo: false,
     pixelsPerSecond: 50,
@@ -58,7 +59,8 @@ const elements = {
     timelineSegments: document.getElementById('timelineSegments'),
     timelinePlayhead: document.getElementById('timelinePlayhead'),
     timelineRuler: document.getElementById('timelineRuler'),
-    zoomLevel: document.getElementById('zoomLevel')
+    zoomLevel: document.getElementById('zoomLevel'),
+    subtitleLangSelect: document.getElementById('subtitleLangSelect')
 };
 
 // === Initialization ===
@@ -523,6 +525,7 @@ function cancelProcessing() {
 function showResults(result) {
     state.segments = result.segments || [];
     state.translations = result.translations || {};
+    state.displayLanguage = 'original';
     
     console.log('Showing results:', state.segments.length, 'segments');
     console.log('Is video:', state.isVideo);
@@ -547,9 +550,11 @@ function showResults(result) {
         elements.translationResults.style.display = 'block';
         elements.translationTab.style.display = 'inline-block';
         displayTranslations();
+        updateSubtitleLangSelect();
     } else {
         elements.translationResults.style.display = 'none';
         elements.translationTab.style.display = 'none';
+        if (elements.subtitleLangSelect) elements.subtitleLangSelect.style.display = 'none';
     }
     
     // Render segments
@@ -690,7 +695,7 @@ function highlightSegment(index) {
     const newActive = document.querySelector(`.segment-item[data-index="${index}"]`);
     if (newActive) {
         newActive.classList.add('active');
-        newActive.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Removed scrollIntoView to prevent unwanted scrolling during playback
     }
     
     state.activeSegment = index;
@@ -706,11 +711,23 @@ function togglePlayPause() {
 }
 
 function updateSubtitleDisplay(currentTime) {
-    const activeSegments = state.segments.filter(s => currentTime >= s.start && currentTime <= s.end);
+    const activeIndices = [];
+    state.segments.forEach((s, i) => {
+        if (currentTime >= s.start && currentTime <= s.end) {
+            activeIndices.push(i);
+        }
+    });
 
-    if (activeSegments.length > 0) {
-        const html = activeSegments.map(s => {
-            const lines = s.text.split('\n');
+    if (activeIndices.length > 0) {
+        const html = activeIndices.map(index => {
+            let text = '';
+            if (state.displayLanguage === 'original') {
+                text = state.segments[index].text;
+            } else if (state.translations[state.displayLanguage]) {
+                text = state.translations[state.displayLanguage][index];
+            }
+
+            const lines = text.split('\n');
             return lines.map(line => escapeHtml(line)).join('<br>');
         }).join('<br><hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.3); margin: 4px 0;"><br>');
 
@@ -1009,6 +1026,27 @@ function getLanguageName(code) {
     const targetSelect = document.getElementById('targetLanguageSelect');
     const option = targetSelect?.querySelector(`option[value="${code}"]`);
     return option ? option.textContent : code;
+}
+
+function updateSubtitleLangSelect() {
+    if (!elements.subtitleLangSelect) return;
+
+    elements.subtitleLangSelect.innerHTML = '<option value="original">Original</option>';
+
+    Object.keys(state.translations).forEach(lang => {
+        const option = document.createElement('option');
+        option.value = lang;
+        option.textContent = getLanguageName(lang);
+        elements.subtitleLangSelect.appendChild(option);
+    });
+
+    elements.subtitleLangSelect.style.display = 'inline-block';
+    elements.subtitleLangSelect.value = state.displayLanguage;
+}
+
+function changeSubtitleLanguage(lang) {
+    state.displayLanguage = lang;
+    updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
 }
 
 // === Keyboard Shortcuts ===
