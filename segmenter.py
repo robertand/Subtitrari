@@ -1,4 +1,5 @@
 import re
+import json
 from typing import List, Dict, Any, Optional
 import numpy as np
 import librosa
@@ -270,6 +271,105 @@ class SubtitleSegmenter:
         
         return '\n'.join(lines[:2])  # Maximum 2 lines
     
+    def merge_segments_similarity(self, segments: List[Dict], threshold: float = 0.6) -> List[Dict]:
+        """Merge overlapping segments if word similarity exceeds threshold"""
+        if not segments:
+            return []
+
+        merged = []
+        i = 0
+        while i < len(segments):
+            current = segments[i].copy()
+            j = i + 1
+
+            while j < len(segments):
+                next_seg = segments[j]
+
+                # Check for overlap
+                overlap_start = max(current['start'], next_seg['start'])
+                overlap_end = min(current['end'], next_seg['end'])
+
+                if overlap_end > overlap_start:
+                    # Calculate similarity for the overlapping portion (simplified)
+                    words1 = set(re.findall(r'\w+', current['text'].lower()))
+                    words2 = set(re.findall(r'\w+', next_seg['text'].lower()))
+
+                    if not words1 or not words2:
+                        j += 1
+                        continue
+
+                    common = words1.intersection(words2)
+                    similarity = len(common) / max(len(words1), len(words2))
+
+                    if similarity >= threshold:
+                        # Merge segments: keep the longer one or combine
+                        if len(current['text']) >= len(next_seg['text']):
+                            current['end'] = max(current['end'], next_seg['end'])
+                        else:
+                            current['text'] = next_seg['text']
+                            current['start'] = min(current['start'], next_seg['start'])
+                            current['end'] = max(current['end'], next_seg['end'])
+                        j += 1
+                    else:
+                        break
+                else:
+                    break
+
+            merged.append(current)
+            i = j
+
+        return merged
+
+    def merge_segments_llm(self, segments: List[Dict], translator_obj: Any) -> List[Dict]:
+        """Use LLM to refine and merge segments based on logic and context"""
+        if not segments or not translator_obj:
+            return segments
+
+        # Group overlapping segments for the LLM
+        groups = []
+        i = 0
+        while i < len(segments):
+            group = [segments[i]]
+            j = i + 1
+            while j < len(segments):
+                # If it overlaps with any segment in the current group
+                overlaps = False
+                for seg in group:
+                    if min(seg['end'], segments[j]['end']) > max(seg['start'], segments[j]['start']):
+                        overlaps = True
+                        break
+                if overlaps:
+                    group.append(segments[j])
+                    j += 1
+                else:
+                    break
+            groups.append(group)
+            i = j
+
+        refined_segments = []
+        for group in groups:
+            if len(group) == 1:
+                refined_segments.append(group[0])
+                continue
+
+            # Prepare prompt for LLM
+            context_text = "\n".join([f"[{seg['start']}-{seg['end']}] {seg['text']}" for seg in group])
+
+            prompt = "Următoarele segmente de subtitrare se suprapun. Te rog să deduci după logica textului și context ce rămâne și ce arunci la gunoi, retranscriind totul într-un flux coerent, păstrând timpii de început și sfârșit corespunzători segmentelor rezultate. Returnează doar segmentele în format JSON: [{\"start\": float, \"end\": float, \"text\": string}, ...]\n\n"
+            prompt += context_text
+
+            try:
+                # This will be called in translator.py or app.py but here we define how we use it
+                result = translator_obj.refine_segments_with_llm(prompt)
+                if result:
+                    refined_segments.extend(result)
+                else:
+                    refined_segments.extend(group) # Fallback
+            except Exception:
+                refined_segments.extend(group)
+
+        return refined_segments
+
     def convert_diacritics(self, text: str, to_legacy: bool = True) -> str:
         """Convert between modern and legacy diacritics"""
         if to_legacy:

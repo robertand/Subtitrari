@@ -408,6 +408,7 @@ async function startProcessing() {
         max_duration: parseFloat(document.getElementById('maxDuration').value),
         max_chars: parseInt(document.getElementById('maxChars').value),
         use_vad: document.getElementById('useVAD').checked,
+        merge_method: document.getElementById('mergeMethodSelect').value,
         audio_only: audioOnly
     };
     

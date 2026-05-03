@@ -1,7 +1,8 @@
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, NllbTokenizer
 import torch
 import numpy as np
-from typing import List, Dict, Optional
+import json
+from typing import List, Dict, Optional, Any
 import logging
 import re
 
@@ -229,10 +230,9 @@ class Translator:
                 target=target_lang
             )
         
-        prompt = f"Translate the following text from {source_lang} to {target_lang}. "
-        prompt += "Maintain the original meaning, tone, and formatting. "
-        prompt += "Ensure the translation is natural and fluent in the target language.\n\n"
-        prompt += f"Text to translate:\n{text}\n\nTranslation:"
+        prompt = f"Tradu următorul text din {source_lang} în {target_lang}. "
+        prompt += "Tradu ținând cont de însemnătatea cuvintelor în limba originală și tradu sensul folosind cuvinte, metafore care se potrivesc în limba de destinație.\n\n"
+        prompt += f"Text de tradus:\n{text}\n\nTraducere:"
         
         return prompt
     
@@ -333,6 +333,51 @@ class Translator:
         
         return 'en'  # Default to English
     
+    def refine_segments_with_llm(self, prompt: str, model_name: str = "google/gemma-2b-it") -> Optional[List[Dict]]:
+        """Refine and merge segments using LLM"""
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            # Load model if not already loaded
+            if model_name not in self.models:
+                logger.info(f"Loading LLM for refinement: {model_name}")
+                self.tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
+                self.models[model_name] = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    device_map="auto"
+                )
+
+            model = self.models[model_name]
+            tokenizer = self.tokenizers[model_name]
+
+            inputs = tokenizer(prompt, return_tensors="pt").to(self.device)
+
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=1024,
+                    temperature=0.2,
+                    do_sample=True
+                )
+
+            response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+            # Extract JSON from response
+            json_match = re.search(r'\[\s*\{.*\}\s*\]', response, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse LLM JSON response")
+                    return None
+
+            return None
+
+        except Exception as e:
+            logger.error(f"LLM refinement error: {e}")
+            return None
+
     def unload_models(self):
         """Free memory by unloading models"""
         self.models.clear()

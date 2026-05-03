@@ -551,6 +551,15 @@ def process_task(task):
                 overlap=task.options.get('overlap', 0.5)
             )
         
+        # Merge segments if requested
+        merge_method = task.options.get('merge_method', 'none')
+        if merge_method == 'similarity':
+            task.message = 'Merging segments by similarity...'
+            segments = segmenter.merge_segments_similarity(segments, threshold=0.6)
+        elif merge_method == 'llm':
+            task.message = 'Merging segments using LLM...'
+            segments = segmenter.merge_segments_llm(segments, translator)
+
         if task.cancel_flag.is_set():
             return
         
