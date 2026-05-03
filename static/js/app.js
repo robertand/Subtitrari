@@ -1,0 +1,1033 @@
+// === Global State ===
+const state = {
+    sessionId: null,
+    taskId: null,
+    filePath: null,
+    isUploading: false,
+    isPaused: false,
+    uploadController: null,
+    processingInterval: null,
+    segments: [],
+    translations: {},
+    currentTab: 'original',
+    videoPlayer: null,
+    activeSegment: -1,
+    videoUrl: null,
+    isVideo: false
+};
+
+// === DOM Elements ===
+const elements = {
+    uploadArea: document.getElementById('uploadArea'),
+    fileInput: document.getElementById('fileInput'),
+    uploadProgress: document.getElementById('uploadProgress'),
+    uploadFilename: document.getElementById('uploadFilename'),
+    uploadPercentage: document.getElementById('uploadPercentage'),
+    uploadBar: document.getElementById('uploadBar'),
+    chunkIndicators: document.getElementById('chunkIndicators'),
+    uploadSpeed: document.getElementById('uploadSpeed'),
+    uploadETA: document.getElementById('uploadETA'),
+    filePreview: document.getElementById('filePreview'),
+    videoPreview: document.getElementById('videoPreview'),
+    imagePreview: document.getElementById('imagePreview'),
+    previewInfo: document.getElementById('previewInfo'),
+    startButton: document.getElementById('startButton'),
+    processingSection: document.getElementById('processingSection'),
+    processingMessage: document.getElementById('processingMessage'),
+    processingBar: document.getElementById('processingBar'),
+    processingPercentage: document.getElementById('processingPercentage'),
+    playerSection: document.getElementById('playerSection'),
+    mainVideoPlayer: document.getElementById('mainVideoPlayer'),
+    subtitleOverlay: document.getElementById('subtitleOverlay'),
+    timeDisplay: document.getElementById('timeDisplay'),
+    resultsSection: document.getElementById('resultsSection'),
+    segmentsList: document.getElementById('segmentsList'),
+    fullTextView: document.getElementById('fullTextView'),
+    fullTextEditor: document.getElementById('fullTextEditor'),
+    translationResults: document.getElementById('translationResults'),
+    translationsContainer: document.getElementById('translationsContainer'),
+    translationTab: document.getElementById('translationTab'),
+    toastContainer: document.getElementById('toastContainer'),
+    deviceBadge: document.getElementById('deviceBadge'),
+    deviceText: document.getElementById('deviceText')
+};
+
+// === Initialization ===
+document.addEventListener('DOMContentLoaded', () => {
+    initUpload();
+    initLanguages();
+    initModels();
+    initVideoPlayer();
+    checkDevice();
+});
+
+function initUpload() {
+    // Drag & Drop
+    elements.uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        elements.uploadArea.classList.add('drag-over');
+    });
+
+    elements.uploadArea.addEventListener('dragleave', () => {
+        elements.uploadArea.classList.remove('drag-over');
+    });
+
+    elements.uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        elements.uploadArea.classList.remove('drag-over');
+        const file = e.dataTransfer.files[0];
+        if (file) handleFile(file);
+    });
+
+    elements.uploadArea.addEventListener('click', () => {
+        elements.fileInput.click();
+    });
+
+    elements.fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) handleFile(file);
+    });
+}
+
+async function initLanguages() {
+    try {
+        const response = await fetch('/api/languages');
+        const languages = await response.json();
+        
+        const languageSelect = document.getElementById('languageSelect');
+        const targetLanguageSelect = document.getElementById('targetLanguageSelect');
+        
+        // Păstrează opțiunea auto
+        languageSelect.innerHTML = '<option value="auto" selected>🔍 Detectare automată</option>';
+        targetLanguageSelect.innerHTML = '';
+        
+        Object.entries(languages).forEach(([code, name]) => {
+            const option = document.createElement('option');
+            option.value = code;
+            option.textContent = name;
+            if (code !== 'auto') {
+                languageSelect.appendChild(option.cloneNode(true));
+            }
+            targetLanguageSelect.appendChild(option);
+        });
+        
+        // Selectează Română implicit pentru limba țintă
+        const roOption = targetLanguageSelect.querySelector('option[value="ro"]');
+        if (roOption) roOption.selected = true;
+        
+    } catch (error) {
+        console.error('Error loading languages:', error);
+    }
+}
+
+async function initModels() {
+    try {
+        const response = await fetch('/api/models');
+        const data = await response.json();
+        
+        document.getElementById('deviceText').textContent = data.device;
+        
+        if (data.device === 'cuda') {
+            elements.deviceBadge.querySelector('.status-dot').style.background = 'var(--accent)';
+        }
+    } catch (error) {
+        console.error('Error loading models:', error);
+    }
+}
+
+function initVideoPlayer() {
+    const video = elements.mainVideoPlayer;
+    state.videoPlayer = video;
+    
+    video.addEventListener('timeupdate', () => {
+        if (state.segments.length > 0) {
+            updateSubtitleDisplay(video.currentTime);
+            updateActiveSegment(video.currentTime);
+        }
+        updateTimeDisplay();
+    });
+    
+    video.addEventListener('loadedmetadata', () => {
+        updateTimeDisplay();
+    });
+    
+    video.addEventListener('play', () => {
+        console.log('Video playing');
+    });
+    
+    video.addEventListener('pause', () => {
+        console.log('Video paused');
+    });
+    
+    video.addEventListener('error', (e) => {
+        console.error('Video error:', e);
+        showToast('Eroare la încărcarea video-ului', 'error');
+    });
+    
+    video.addEventListener('loadeddata', () => {
+        console.log('Video loaded, duration:', video.duration);
+        updateTimeDisplay();
+    });
+}
+
+async function checkDevice() {
+    try {
+        const response = await fetch('/api/models');
+        const data = await response.json();
+        elements.deviceText.textContent = data.device.toUpperCase();
+    } catch (error) {
+        console.error('Device check error:', error);
+    }
+}
+
+// === File Handling ===
+async function handleFile(file) {
+    // Validate file size
+    if (file.size > 50 * 1024 * 1024 * 1024) {
+        showToast('Fișierul depășește limita de 50GB', 'error');
+        return;
+    }
+    
+    // Verifică dacă e video sau audio
+    state.isVideo = file.type.startsWith('video/');
+    const fileExt = file.name.split('.').pop().toLowerCase();
+    const videoExts = ['mp4', 'avi', 'mov', 'mkv', 'webm', 'mxf'];
+    if (videoExts.includes(fileExt)) {
+        state.isVideo = true;
+    }
+    
+    // Show preview if video
+    if (state.isVideo) {
+        const url = URL.createObjectURL(file);
+        state.videoUrl = url;
+        elements.videoPreview.src = url;
+        elements.videoPreview.style.display = 'block';
+        elements.imagePreview.style.display = 'none';
+        elements.filePreview.style.display = 'block';
+        elements.previewInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+    } else {
+        elements.videoPreview.style.display = 'none';
+        elements.imagePreview.style.display = 'block';
+        elements.imagePreview.src = '/static/audio-icon.png';
+        elements.filePreview.style.display = 'block';
+        elements.previewInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+    }
+    
+    // Start upload
+    await startUpload(file);
+}
+
+async function startUpload(file) {
+    const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    
+    try {
+        // Initialize upload session
+        const initResponse = await fetch('/api/upload/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filename: file.name,
+                total_size: file.size,
+                total_chunks: totalChunks
+            })
+        });
+        
+        const initData = await initResponse.json();
+        state.sessionId = initData.session_id;
+        state.isUploading = true;
+        
+        // Show progress
+        elements.uploadArea.style.display = 'none';
+        elements.uploadProgress.style.display = 'block';
+        elements.uploadFilename.textContent = file.name;
+        
+        // Create chunk indicators
+        createChunkIndicators(totalChunks);
+        
+        // Upload chunks
+        const startTime = Date.now();
+        let uploadedBytes = 0;
+        
+        for (let i = 0; i < totalChunks; i++) {
+            if (!state.isUploading) break;
+            
+            while (state.isPaused) {
+                await sleep(100);
+                if (!state.isUploading) break;
+            }
+            
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunk = file.slice(start, end);
+            
+            const formData = new FormData();
+            formData.append('session_id', state.sessionId);
+            formData.append('chunk_number', i);
+            formData.append('chunk', chunk);
+            
+            const response = await fetch('/api/upload/chunk', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            // Update progress
+            uploadedBytes += chunk.size;
+            const progress = (uploadedBytes / file.size) * 100;
+            updateUploadProgress(progress, i, totalChunks, uploadedBytes, startTime);
+        }
+        
+        if (!state.isUploading) return;
+        
+        // Complete upload
+        const completeResponse = await fetch('/api/upload/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: state.sessionId })
+        });
+        
+        const completeData = await completeResponse.json();
+        state.taskId = completeData.task_id;
+        state.filePath = completeData.file_path;
+        
+        // Update preview
+        if (completeData.preview_url) {
+            elements.imagePreview.src = completeData.preview_url;
+            elements.imagePreview.style.display = 'block';
+        }
+        
+        showToast('Upload complet! Puteți începe procesarea.', 'success');
+        elements.startButton.style.display = 'flex';
+        
+    } catch (error) {
+        console.error('Upload error:', error);
+        showToast('Eroare la upload: ' + error.message, 'error');
+        resetUpload();
+    }
+}
+
+function createChunkIndicators(totalChunks) {
+    elements.chunkIndicators.innerHTML = '';
+    const maxDisplay = Math.min(totalChunks, 100);
+    const step = Math.max(1, Math.ceil(totalChunks / maxDisplay));
+    
+    for (let i = 0; i < totalChunks; i += step) {
+        const dot = document.createElement('div');
+        dot.className = 'chunk-dot';
+        dot.dataset.chunk = i;
+        elements.chunkIndicators.appendChild(dot);
+    }
+}
+
+function updateUploadProgress(progress, chunkIndex, totalChunks, uploadedBytes, startTime) {
+    elements.uploadPercentage.textContent = Math.round(progress) + '%';
+    elements.uploadBar.style.width = progress + '%';
+    
+    // Update chunk indicators
+    const dots = elements.chunkIndicators.children;
+    const dotIndex = Math.floor((chunkIndex / totalChunks) * dots.length);
+    for (let i = 0; i <= dotIndex && i < dots.length; i++) {
+        dots[i].classList.add('uploaded');
+    }
+    
+    // Calculate speed
+    const elapsed = (Date.now() - startTime) / 1000;
+    if (elapsed > 0) {
+        const speed = uploadedBytes / elapsed;
+        elements.uploadSpeed.textContent = formatSpeed(speed);
+        
+        // Calculate ETA
+        const remainingBytes = (totalChunks * 10 * 1024 * 1024) - uploadedBytes;
+        const eta = remainingBytes / speed;
+        elements.uploadETA.textContent = formatTime(eta);
+    }
+}
+
+function pauseUpload() {
+    state.isPaused = !state.isPaused;
+    const btn = document.getElementById('pauseUpload');
+    btn.textContent = state.isPaused ? '▶️ Continuă' : '⏸️ Pauză';
+}
+
+function cancelUpload() {
+    state.isUploading = false;
+    state.isPaused = false;
+    resetUpload();
+    showToast('Upload anulat', 'warning');
+}
+
+function resetUpload() {
+    state.isUploading = false;
+    state.isPaused = false;
+    elements.uploadArea.style.display = 'block';
+    elements.uploadProgress.style.display = 'none';
+    elements.uploadBar.style.width = '0%';
+    elements.uploadPercentage.textContent = '0%';
+}
+
+// === Processing ===
+async function startProcessing() {
+    if (!state.taskId) {
+        showToast('Încărcați mai întâi un fișier', 'warning');
+        return;
+    }
+    
+    // Check audio only mode
+    const audioOnly = document.getElementById('audioOnly').checked;
+    
+    // Collect options
+    const options = {
+        model: document.getElementById('modelSelect').value,
+        language: document.getElementById('languageSelect').value,
+        min_duration: parseFloat(document.getElementById('minDuration').value),
+        max_duration: parseFloat(document.getElementById('maxDuration').value),
+        max_chars: parseInt(document.getElementById('maxChars').value),
+        use_vad: document.getElementById('useVAD').checked,
+        audio_only: audioOnly
+    };
+    
+    if (!audioOnly) {
+        options.translate = document.getElementById('enableTranslation').checked;
+        if (options.translate) {
+            options.target_languages = [document.getElementById('targetLanguageSelect').value];
+            
+            // Adaugă limbile suplimentare
+            const additionalSelects = document.querySelectorAll('.translation-lang-select');
+            additionalSelects.forEach(select => {
+                options.target_languages.push(select.value);
+            });
+        }
+    }
+    
+    try {
+        const response = await fetch('/api/process/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                task_id: state.taskId,
+                file_path: state.filePath,
+                options: options
+            })
+        });
+        
+        const data = await response.json();
+        
+        // Show processing section
+        elements.startButton.style.display = 'none';
+        elements.processingSection.style.display = 'block';
+        elements.processingMessage.textContent = 'Se inițializează procesarea...';
+        elements.processingBar.style.width = '0%';
+        elements.processingPercentage.textContent = '0%';
+        
+        // Start polling
+        startPolling(state.taskId);
+        
+    } catch (error) {
+        console.error('Processing error:', error);
+        showToast('Eroare la pornirea procesării', 'error');
+    }
+}
+
+function startPolling(taskId) {
+    if (state.processingInterval) {
+        clearInterval(state.processingInterval);
+    }
+    
+    state.processingInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/process/status/${taskId}`);
+            const data = await response.json();
+            
+            updateProcessingStatus(data);
+            
+            if (data.status === 'completed') {
+                clearInterval(state.processingInterval);
+                state.processingInterval = null;
+                // Ia rezultatele
+                await fetchResults(taskId);
+                showToast('Procesare completă!', 'success');
+            } else if (data.status === 'failed') {
+                clearInterval(state.processingInterval);
+                state.processingInterval = null;
+                showToast('Eroare: ' + (data.error || 'Eroare necunoscută'), 'error');
+                elements.processingSection.style.display = 'none';
+                elements.startButton.style.display = 'flex';
+            } else if (data.status === 'cancelled') {
+                clearInterval(state.processingInterval);
+                state.processingInterval = null;
+                showToast('Procesare anulată', 'warning');
+                elements.processingSection.style.display = 'none';
+                elements.startButton.style.display = 'flex';
+            }
+        } catch (error) {
+            console.error('Polling error:', error);
+        }
+    }, 2000); // Polling la fiecare 2 secunde
+}
+
+async function fetchResults(taskId) {
+    try {
+        const response = await fetch(`/api/process/result/${taskId}`);
+        const result = await response.json();
+        showResults(result);
+    } catch (error) {
+        console.error('Error fetching results:', error);
+        showToast('Eroare la obținerea rezultatelor', 'error');
+    }
+}
+
+function updateProcessingStatus(data) {
+    const { progress, message, status } = data;
+    
+    elements.processingMessage.textContent = message || status;
+    elements.processingBar.style.width = (progress || 0) + '%';
+    elements.processingPercentage.textContent = Math.round(progress || 0) + '%';
+}
+
+function cancelProcessing() {
+    if (state.taskId) {
+        fetch(`/api/process/cancel/${state.taskId}`, { method: 'POST' });
+        if (state.processingInterval) {
+            clearInterval(state.processingInterval);
+            state.processingInterval = null;
+        }
+        elements.processingSection.style.display = 'none';
+        elements.startButton.style.display = 'flex';
+    }
+}
+
+// === Results Display ===
+function showResults(result) {
+    state.segments = result.segments || [];
+    state.translations = result.translations || {};
+    
+    console.log('Showing results:', state.segments.length, 'segments');
+    console.log('Is video:', state.isVideo);
+    console.log('Task ID:', state.taskId);
+    
+    elements.processingSection.style.display = 'none';
+    elements.resultsSection.style.display = 'block';
+    
+    // Show video player if video file
+    if (state.isVideo) {
+        elements.playerSection.style.display = 'block';
+        
+        // Construiește URL-ul pentru video
+        const videoUrl = `/api/video/${state.taskId}`;
+        console.log('Setting video URL:', videoUrl);
+        
+        elements.mainVideoPlayer.src = videoUrl;
+        elements.mainVideoPlayer.load();
+        
+        // Așteaptă să se încarce metadatele
+        elements.mainVideoPlayer.addEventListener('loadedmetadata', function() {
+            console.log('Video metadata loaded, duration:', elements.mainVideoPlayer.duration);
+            updateTimeDisplay();
+        }, { once: true });
+        
+        elements.mainVideoPlayer.addEventListener('canplay', function() {
+            console.log('Video can play');
+        }, { once: true });
+        
+        elements.mainVideoPlayer.addEventListener('error', function(e) {
+            console.error('Video loading error:', e);
+            // Încearcă cu URL-ul local dacă există
+            if (state.videoUrl) {
+                console.log('Falling back to local URL');
+                elements.mainVideoPlayer.src = state.videoUrl;
+            }
+        });
+    } else {
+        // Pentru audio, arată player-ul audio
+        elements.playerSection.style.display = 'block';
+        const audioUrl = `/api/audio/${state.taskId}`;
+        elements.mainVideoPlayer.src = audioUrl;
+        elements.mainVideoPlayer.load();
+    }
+    
+    // Show translations if available
+    if (Object.keys(state.translations).length > 0) {
+        elements.translationResults.style.display = 'block';
+        elements.translationTab.style.display = 'inline-block';
+        displayTranslations();
+    } else {
+        elements.translationResults.style.display = 'none';
+        elements.translationTab.style.display = 'none';
+    }
+    
+    // Render segments
+    renderSegments();
+    updateFullText();
+    
+    // Scroll to top of segments
+    elements.segmentsList.scrollTop = 0;
+}
+
+function renderSegments() {
+    elements.segmentsList.innerHTML = '';
+    
+    if (state.segments.length === 0) {
+        elements.segmentsList.innerHTML = '<div class="no-segments">Nu există segmente</div>';
+        return;
+    }
+    
+    state.segments.forEach((segment, index) => {
+        const div = document.createElement('div');
+        div.className = 'segment-item';
+        div.dataset.index = index;
+        div.dataset.start = segment.start;
+        div.dataset.end = segment.end;
+        
+        div.innerHTML = `
+            <div class="segment-number">${index + 1}</div>
+            <div class="segment-content">
+                <div class="segment-text" contenteditable="true" 
+                     onblur="updateSegment(${index}, this.textContent)"
+                     onclick="event.stopPropagation();">
+                    ${escapeHtml(segment.text || '')}
+                </div>
+                <div class="segment-time">
+                    ${formatTimestamp(segment.start)} → ${formatTimestamp(segment.end)}
+                </div>
+            </div>
+            <div class="segment-actions">
+                <button class="segment-play-btn" onclick="event.stopPropagation(); seekToTime(${segment.start})" title="Redă de aici">
+                    ▶️
+                </button>
+                <button class="segment-edit-btn" onclick="event.stopPropagation(); editSegment(${index})" title="Editează">
+                    ✏️
+                </button>
+            </div>
+        `;
+        
+        div.addEventListener('click', () => {
+            seekToTime(segment.start);
+            highlightSegment(index);
+        });
+        
+        elements.segmentsList.appendChild(div);
+    });
+}
+
+function updateSegment(index, text) {
+    if (state.segments[index]) {
+        state.segments[index].text = text.trim();
+        updateFullText();
+        console.log('Segment updated:', index);
+    }
+}
+
+function editSegment(index) {
+    const segmentElement = document.querySelector(`.segment-item[data-index="${index}"]`);
+    const textElement = segmentElement.querySelector('.segment-text');
+    textElement.focus();
+    
+    // Selectează tot textul
+    const range = document.createRange();
+    range.selectNodeContents(textElement);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+}
+
+function updateFullText() {
+    const fullText = state.segments.map(s => s.text || '').join('\n\n');
+    elements.fullTextEditor.value = fullText;
+}
+
+function displayTranslations() {
+    elements.translationsContainer.innerHTML = '';
+    
+    Object.entries(state.translations).forEach(([lang, texts]) => {
+        const langName = getLanguageName(lang);
+        const div = document.createElement('div');
+        div.className = 'translation-group';
+        div.style.marginBottom = '20px';
+        
+        let translationsHtml = '<div class="translation-segments">';
+        texts.forEach((text, i) => {
+            if (text) {
+                translationsHtml += `
+                    <div class="translation-segment" style="margin-bottom: 8px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px;">
+                        <span style="color: var(--text-muted); font-size: 0.8rem;">${i + 1}.</span>
+                        <span contenteditable="true" style="margin-left: 8px;">${escapeHtml(text)}</span>
+                    </div>
+                `;
+            }
+        });
+        translationsHtml += '</div>';
+        
+        div.innerHTML = `
+            <h3 style="margin-bottom: 12px; color: var(--primary);">🌐 ${langName}</h3>
+            ${translationsHtml}
+        `;
+        
+        elements.translationsContainer.appendChild(div);
+    });
+}
+
+// === Video Player Controls ===
+function seekToTime(time) {
+    console.log('Seeking to:', time);
+    if (elements.mainVideoPlayer) {
+        elements.mainVideoPlayer.currentTime = time;
+        if (elements.mainVideoPlayer.paused) {
+            elements.mainVideoPlayer.play().catch(e => console.log('Play error:', e));
+        }
+    }
+}
+
+function highlightSegment(index) {
+    // Remove previous highlight
+    const prevActive = document.querySelector('.segment-item.active');
+    if (prevActive) prevActive.classList.remove('active');
+    
+    // Add new highlight
+    const newActive = document.querySelector(`.segment-item[data-index="${index}"]`);
+    if (newActive) {
+        newActive.classList.add('active');
+        newActive.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    
+    state.activeSegment = index;
+}
+
+function togglePlayPause() {
+    const video = elements.mainVideoPlayer;
+    if (video.paused) {
+        video.play().catch(e => console.log('Play error:', e));
+    } else {
+        video.pause();
+    }
+}
+
+function updateSubtitleDisplay(currentTime) {
+    const segment = findSegmentAtTime(currentTime);
+    if (segment && segment.text) {
+        const lines = segment.text.split('\n');
+        elements.subtitleOverlay.innerHTML = lines.join('<br>');
+        elements.subtitleOverlay.style.display = 'block';
+    } else {
+        elements.subtitleOverlay.textContent = '';
+        elements.subtitleOverlay.style.display = 'none';
+    }
+}
+
+function updateActiveSegment(currentTime) {
+    const index = state.segments.findIndex(s => currentTime >= s.start && currentTime <= s.end);
+    
+    if (index !== state.activeSegment && index >= 0) {
+        highlightSegment(index);
+    }
+}
+
+function findSegmentAtTime(time) {
+    return state.segments.find(s => time >= s.start && time <= s.end) || null;
+}
+
+function updateTimeDisplay() {
+    const video = elements.mainVideoPlayer;
+    if (video && !isNaN(video.currentTime) && !isNaN(video.duration)) {
+        const current = formatTimestamp(video.currentTime);
+        const duration = formatTimestamp(video.duration);
+        elements.timeDisplay.textContent = `${current} / ${duration}`;
+    } else {
+        elements.timeDisplay.textContent = '00:00:00,000 / 00:00:00,000';
+    }
+}
+
+// Adăugăm și funcționalitate pentru bara de progres
+elements.mainVideoPlayer.addEventListener('seeking', () => {
+    updateTimeDisplay();
+});
+
+elements.mainVideoPlayer.addEventListener('seeked', () => {
+    updateTimeDisplay();
+    updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+    updateActiveSegment(elements.mainVideoPlayer.currentTime);
+});
+
+// === Export Functions ===
+async function exportSRT() {
+    if (state.segments.length === 0) {
+        showToast('Nu există segmente de exportat', 'warning');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/export/srt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                segments: state.segments,
+                legacy_diacritics: document.getElementById('docxLegacyDiacritics')?.checked || false
+            })
+        });
+        
+        if (!response.ok) throw new Error('Export failed');
+        
+        const blob = await response.blob();
+        downloadFile(blob, 'subtitles.srt');
+        showToast('SRT exportat cu succes!', 'success');
+    } catch (error) {
+        console.error('Export error:', error);
+        showToast('Eroare la export SRT', 'error');
+    }
+}
+
+async function exportDOCX() {
+    if (state.segments.length === 0) {
+        showToast('Nu există segmente de exportat', 'warning');
+        return;
+    }
+    
+    const metadata = {
+        title: document.getElementById('docxTitle').value || '',
+        series: document.getElementById('docxSeries').value || '',
+        translator: document.getElementById('docxTranslator').value || '',
+        editor: document.getElementById('docxEditor').value || ''
+    };
+    
+    try {
+        const response = await fetch('/api/export/docx', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                segments: state.segments,
+                metadata: metadata,
+                legacy_diacritics: document.getElementById('docxLegacyDiacritics')?.checked || false
+            })
+        });
+        
+        if (!response.ok) throw new Error('Export failed');
+        
+        const blob = await response.blob();
+        downloadFile(blob, 'translation.docx');
+        closeDOCXDialog();
+        showToast('DOCX exportat cu succes!', 'success');
+    } catch (error) {
+        console.error('Export error:', error);
+        showToast('Eroare la export DOCX', 'error');
+    }
+}
+
+function copyFullText() {
+    const text = elements.fullTextEditor.value;
+    if (!text) {
+        showToast('Nu există text de copiat', 'warning');
+        return;
+    }
+    
+    navigator.clipboard.writeText(text).then(() => {
+        showToast('Text copiat în clipboard!', 'success');
+    }).catch(() => {
+        // Fallback pentru browsere care nu suportă clipboard API
+        elements.fullTextEditor.select();
+        document.execCommand('copy');
+        showToast('Text copiat în clipboard!', 'success');
+    });
+}
+
+function showDOCXDialog() {
+    document.getElementById('docxModal').style.display = 'flex';
+}
+
+function closeDOCXDialog() {
+    document.getElementById('docxModal').style.display = 'none';
+}
+
+// === Translation Functions ===
+function toggleTranslation() {
+    const enabled = document.getElementById('enableTranslation').checked;
+    document.getElementById('translationSettings').style.display = enabled ? 'block' : 'none';
+    
+    if (enabled) {
+        const engineSelect = document.getElementById('translationEngine');
+        document.getElementById('promptGroup').style.display = 
+            engineSelect.value === 'llm' ? 'block' : 'none';
+    }
+}
+
+// Ascultă pentru schimbarea engine-ului
+document.getElementById('translationEngine')?.addEventListener('change', function() {
+    document.getElementById('promptGroup').style.display = 
+        this.value === 'llm' ? 'block' : 'none';
+});
+
+function addTranslationLanguage() {
+    const container = document.getElementById('additionalLanguages');
+    const div = document.createElement('div');
+    div.className = 'setting-row';
+    div.style.marginTop = '8px';
+    
+    const targetSelect = document.getElementById('targetLanguageSelect');
+    div.innerHTML = `
+        <select class="setting-select translation-lang-select">
+            ${targetSelect.innerHTML}
+        </select>
+        <button class="btn btn-sm btn-cancel" onclick="this.parentElement.remove()">❌</button>
+    `;
+    container.appendChild(div);
+}
+
+// === Tabs ===
+function switchTab(tab) {
+    state.currentTab = tab;
+    
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    event.target.classList.add('active');
+    
+    if (tab === 'original') {
+        elements.fullTextView.style.display = 'none';
+        document.getElementById('segmentsContainer').style.display = 'block';
+    } else {
+        document.getElementById('segmentsContainer').style.display = 'none';
+        elements.fullTextView.style.display = 'block';
+    }
+}
+
+// === Toast Notifications ===
+function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+        <span>${getToastIcon(type)}</span>
+        <span>${message}</span>
+    `;
+    
+    elements.toastContainer.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.classList.add('toast-fade-out');
+        setTimeout(() => toast.remove(), 300);
+    }, 4000);
+}
+
+function getToastIcon(type) {
+    const icons = {
+        success: '✅',
+        error: '❌',
+        warning: '⚠️',
+        info: 'ℹ️'
+    };
+    return icons[type] || 'ℹ️';
+}
+
+// === Utility Functions ===
+function formatFileSize(bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = bytes;
+    let unitIndex = 0;
+    
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex++;
+    }
+    
+    return `${size.toFixed(2)} ${units[unitIndex]}`;
+}
+
+function formatSpeed(bytesPerSecond) {
+    if (bytesPerSecond < 1024) return bytesPerSecond.toFixed(0) + ' B/s';
+    if (bytesPerSecond < 1024 * 1024) return (bytesPerSecond / 1024).toFixed(1) + ' KB/s';
+    return (bytesPerSecond / (1024 * 1024)).toFixed(2) + ' MB/s';
+}
+
+function formatTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return 'Calculare...';
+    
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+}
+
+function formatTimestamp(seconds) {
+    if (isNaN(seconds) || !isFinite(seconds)) return '00:00:00,000';
+    
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function downloadFile(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function getLanguageName(code) {
+    const targetSelect = document.getElementById('targetLanguageSelect');
+    const option = targetSelect?.querySelector(`option[value="${code}"]`);
+    return option ? option.textContent : code;
+}
+
+// === Keyboard Shortcuts ===
+document.addEventListener('keydown', (e) => {
+    // Space for play/pause (doar când nu e focus pe un input)
+    if (e.code === 'Space' && document.activeElement === document.body) {
+        e.preventDefault();
+        togglePlayPause();
+    }
+    
+    // Ctrl+S for SRT export
+    if (e.ctrlKey && e.code === 'KeyS') {
+        e.preventDefault();
+        exportSRT();
+    }
+    
+    // Ctrl+D for DOCX export
+    if (e.ctrlKey && e.code === 'KeyD') {
+        e.preventDefault();
+        showDOCXDialog();
+    }
+    
+    // Escape to close modals
+    if (e.code === 'Escape') {
+        closeDOCXDialog();
+    }
+    
+    // Săgeți pentru navigare între segmente
+    if (e.code === 'ArrowUp' && state.activeSegment > 0) {
+        e.preventDefault();
+        seekToTime(state.segments[state.activeSegment - 1].start);
+    }
+    if (e.code === 'ArrowDown' && state.activeSegment < state.segments.length - 1) {
+        e.preventDefault();
+        seekToTime(state.segments[state.activeSegment + 1].start);
+    }
+});
+
+// === Cleanup on page unload ===
+window.addEventListener('beforeunload', () => {
+    if (state.processingInterval) {
+        clearInterval(state.processingInterval);
+    }
+    if (state.videoUrl) {
+        URL.revokeObjectURL(state.videoUrl);
+    }
+});

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper Transcriber Pro - Transcriere și Traducere Audio/Video</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Background Animation -->
+    <div class="bg-animation">
+        <div class="gradient-sphere sphere-1"></div>
+        <div class="gradient-sphere sphere-2"></div>
+        <div class="gradient-sphere sphere-3"></div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Header -->
+        <header class="glass-container">
+            <div class="header-content">
+                <h1 class="app-title">
+                    <span class="icon">🎙️</span>
+                    Whisper Transcriber Pro
+                </h1>
+                <div class="header-stats">
+                    <span class="device-badge" id="deviceBadge">
+                        <span class="status-dot"></span>
+                        <span id="deviceText">CPU</span>
+                    </span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <div class="main-grid">
+            <!-- Left Panel - Upload & Settings -->
+            <div class="left-panel">
+                <!-- Upload Section -->
+                <div class="glass-container upload-section">
+                    <h2 class="section-title">
+                        <span class="icon">📤</span>
+                        Încărcare Fișier
+                    </h2>
+                    
+                    <div class="upload-area" id="uploadArea">
+                        <div class="upload-content">
+                            <div class="upload-icon">🎬</div>
+                            <h3>Drag & Drop sau Click</h3>
+                            <p class="upload-info">
+                                Video: MP4, AVI, MOV, MKV, WebM, MXF<br>
+                                Audio: MP3, WAV, M4A, FLAC, OGG
+                            </p>
+                            <p class="upload-size">Maxim 50GB per fișier</p>
+                        </div>
+                        <input type="file" id="fileInput" accept=".mp4,.avi,.mov,.mkv,.webm,.mxf,.mp3,.wav,.m4a,.flac,.ogg" hidden>
+                    </div>
+
+                    <!-- Upload Progress -->
+                    <div class="upload-progress" id="uploadProgress" style="display: none;">
+                        <div class="progress-header">
+                            <span class="progress-filename" id="uploadFilename"></span>
+                            <span class="progress-percentage" id="uploadPercentage">0%</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="uploadBar"></div>
+                            <div class="chunk-indicators" id="chunkIndicators"></div>
+                        </div>
+                        <div class="progress-stats">
+                            <span id="uploadSpeed">0 MB/s</span>
+                            <span id="uploadETA">Calculare...</span>
+                        </div>
+                        <div class="progress-actions">
+                            <button class="btn btn-sm btn-pause" id="pauseUpload" onclick="pauseUpload()">
+                                ⏸️ Pauză
+                            </button>
+                            <button class="btn btn-sm btn-cancel" onclick="cancelUpload()">
+                                ❌ Anulare
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- File Preview -->
+                    <div class="file-preview" id="filePreview" style="display: none;">
+                        <div class="preview-container">
+                            <video id="videoPreview" controls style="display: none;">
+                                <source src="" type="video/mp4">
+                            </video>
+                            <img id="imagePreview" style="display: none;" alt="Preview">
+                            <div class="preview-info" id="previewInfo"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settings Section -->
+                <div class="glass-container settings-section">
+                    <h2 class="section-title">
+                        <span class="icon">⚙️</span>
+                        Setări Procesare
+                    </h2>
+
+                    <!-- Model Selection -->
+                    <div class="setting-group">
+                        <label class="setting-label">Model Whisper</label>
+                        <select id="modelSelect" class="setting-select">
+                            <option value="tiny">Tiny (rapid, memorie redusă)</option>
+                            <option value="base">Base</option>
+                            <option value="small" selected>Small (recomandat)</option>
+                            <option value="medium">Medium</option>
+                            <option value="large">Large</option>
+                            <option value="large-v3">Large v3 (cel mai precis)</option>
+                        </select>
+                        <div class="model-status" id="modelStatus">
+                            <span class="model-loading" style="display: none;">⏳ Se încarcă...</span>
+                        </div>
+                    </div>
+
+                    <!-- Language Selection -->
+                    <div class="setting-group">
+                        <label class="setting-label">Limba Sursă</label>
+                        <select id="languageSelect" class="setting-select">
+                            <option value="auto" selected>🔍 Detectare automată</option>
+                        </select>
+                    </div>
+
+                    <!-- Segmentation Settings -->
+                    <div class="setting-group">
+                        <label class="setting-label">Segmentare</label>
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label>Durată minimă (s)</label>
+                                <input type="number" id="minDuration" class="setting-input" 
+                                       value="1.0" min="0.5" max="3.0" step="0.1">
+                            </div>
+                            <div class="setting-half">
+                                <label>Durată maximă (s)</label>
+                                <input type="number" id="maxDuration" class="setting-input" 
+                                       value="5.0" min="3.0" max="10.0" step="0.1">
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label>Max caractere</label>
+                                <input type="number" id="maxChars" class="setting-input" 
+                                       value="80" min="40" max="120" step="5">
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="useVAD" class="setting-checkbox">
+                                    <span>VAD (pauze vorbire)</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Audio Extraction Only -->
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="audioOnly" class="setting-checkbox">
+                            <span>Doar extracție audio (fără transcriere)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Translation Section -->
+                <div class="glass-container translation-section">
+                    <h2 class="section-title">
+                        <span class="icon">🌍</span>
+                        Traducere
+                    </h2>
+
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="enableTranslation" class="setting-checkbox" 
+                                   onchange="toggleTranslation()">
+                            <span>Activează traducerea</span>
+                        </label>
+                    </div>
+
+                    <div id="translationSettings" style="display: none;">
+                        <div class="setting-group">
+                            <label class="setting-label">Limba Țintă</label>
+                            <select id="targetLanguageSelect" class="setting-select">
+                                <!-- Populated dynamically -->
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label class="setting-label">Engine Traducere</label>
+                            <select id="translationEngine" class="setting-select">
+                                <option value="nllb">NLLB-200 (rapid, bun)</option>
+                                <option value="llm">LLM (Gemma) - precis</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group" id="promptGroup" style="display: none;">
+                            <label class="setting-label">Prompt Personalizat</label>
+                            <textarea id="customPrompt" class="setting-textarea" 
+                                      placeholder="Tradu textul din {source} în {target}..."
+                                      rows="3"></textarea>
+                        </div>
+
+                        <div class="setting-group">
+                            <button class="btn btn-secondary" onclick="addTranslationLanguage()">
+                                ➕ Adaugă altă limbă
+                            </button>
+                        </div>
+                        <div id="additionalLanguages"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel - Results & Player -->
+            <div class="right-panel">
+                <!-- Processing Status -->
+                <div class="glass-container processing-section" id="processingSection" style="display: none;">
+                    <h2 class="section-title">
+                        <span class="icon">⚡</span>
+                        Procesare
+                    </h2>
+                    <div class="processing-status">
+                        <div class="status-message" id="processingMessage"></div>
+                        <div class="progress-bar-container large">
+                            <div class="progress-bar" id="processingBar"></div>
+                        </div>
+                        <div class="status-percentage" id="processingPercentage">0%</div>
+                        <button class="btn btn-cancel" onclick="cancelProcessing()" id="cancelProcessingBtn">
+                            ❌ Anulează procesarea
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Video Player -->
+                <div class="glass-container player-section" id="playerSection" style="display: none;">
+                    <h2 class="section-title">
+                        <span class="icon">▶️</span>
+                        Player Video
+                    </h2>
+                    <div class="video-container">
+                        <video id="mainVideoPlayer" controls>
+                            <source src="" type="video/mp4">
+                        </video>
+                        <div class="subtitle-overlay" id="subtitleOverlay"></div>
+                    </div>
+                    <div class="player-controls">
+                        <button class="btn btn-sm" onclick="togglePlayPause()">⏯️ Play/Pause</button>
+                        <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="glass-container results-section" id="resultsSection" style="display: none;">
+                    <div class="results-toolbar">
+                        <h2 class="section-title">
+                            <span class="icon">📝</span>
+                            Rezultate
+                        </h2>
+                        <div class="toolbar-actions">
+                            <button class="btn btn-sm" onclick="copyFullText()">📋 Copiază text</button>
+                            <button class="btn btn-sm" onclick="exportSRT()">💾 Export SRT</button>
+                            <button class="btn btn-sm" onclick="showDOCXDialog()">📄 Export DOCX</button>
+                        </div>
+                    </div>
+
+                    <!-- Segments Tabs -->
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab('original')">Original</button>
+                        <button class="tab" id="translationTab" style="display: none;" 
+                                onclick="switchTab('translation')">Traducere</button>
+                    </div>
+
+                    <!-- Segments List -->
+                    <div class="segments-container" id="segmentsContainer">
+                        <div class="segments-list" id="segmentsList">
+                            <!-- Segments will be rendered here -->
+                        </div>
+                    </div>
+
+                    <!-- Full Text View -->
+                    <div class="full-text-view" id="fullTextView" style="display: none;">
+                        <textarea id="fullTextEditor" class="full-text-editor" rows="10"></textarea>
+                    </div>
+                </div>
+
+                <!-- Translation Results -->
+                <div class="glass-container translation-results" id="translationResults" style="display: none;">
+                    <h2 class="section-title">
+                        <span class="icon">🌐</span>
+                        Traduceri
+                    </h2>
+                    <div id="translationsContainer"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Action Button -->
+    <button class="fab" id="startButton" onclick="startProcessing()" style="display: none;">
+        <span class="fab-icon">▶️</span>
+        <span class="fab-text">Start Procesare</span>
+    </button>
+
+    <!-- DOCX Export Dialog -->
+    <div class="modal" id="docxModal" style="display: none;">
+        <div class="modal-content glass-container">
+            <h2>Export DOCX - Traducători Profesioniști</h2>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label>Titlu</label>
+                    <input type="text" id="docxTitle" class="setting-input" placeholder="Titlu film/episod...">
+                </div>
+                <div class="setting-group">
+                    <label>Serie / Episod</label>
+                    <input type="text" id="docxSeries" class="setting-input" placeholder="S01E01...">
+                </div>
+                <div class="setting-group">
+                    <label>Nume Traducător</label>
+                    <input type="text" id="docxTranslator" class="setting-input" placeholder="Nume traducător...">
+                </div>
+                <div class="setting-group">
+                    <label>Nume Redactor</label>
+                    <input type="text" id="docxEditor" class="setting-input" placeholder="Nume redactor...">
+                </div>
+                <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="docxLegacyDiacritics">
+                        <span>Conversie diacritice legacy (ș→ş, ț→ţ)</span>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="exportDOCX()">Exportă DOCX</button>
+                <button class="btn btn-secondary" onclick="closeDOCXDialog()">Anulează</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

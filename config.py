@@ -1,0 +1,85 @@
+import os
+from pathlib import Path
+
+class Config:
+    # Directories
+    BASE_DIR = Path(__file__).parent
+    DATA_DIR = BASE_DIR / 'data'
+    CHUNK_UPLOAD_DIR = DATA_DIR / 'chunk_uploads'
+    PROCESS_DIR = DATA_DIR / 'process'
+    TEMP_DIR = DATA_DIR / 'temp'
+    
+    # Server
+    HOST = '0.0.0.0'
+    PORT = 5000
+    DEBUG = True
+    SECRET_KEY = os.urandom(24).hex()
+    
+    # Upload
+    MAX_CONTENT_LENGTH = 50 * 1024 * 1024 * 1024  # 50GB
+    CHUNK_SIZE = 10 * 1024 * 1024  # 10MB
+    ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'webm', 'mxf', 'mp3', 'wav', 'm4a', 'flac', 'ogg'}
+    
+    # Processing
+    DEFAULT_MODEL = 'small'
+    AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3']
+    DEFAULT_LANGUAGE = 'auto'
+    PROCESSING_TIMEOUT = 7200  # 2 hours
+    HEARTBEAT_INTERVAL = 30  # seconds
+    
+    # Segmentation
+    MIN_SEGMENT_DURATION = 1.0
+    MAX_SEGMENT_DURATION = 5.0
+    MAX_CHARS_PER_SEGMENT = 80
+    MIN_SEGMENT_RANGE = (0.5, 3.0)
+    MAX_SEGMENT_RANGE = (3.0, 10.0)
+    CHARS_RANGE = (40, 120)
+    
+    # Translation
+    SUPPORTED_LANGUAGES = {
+        'ro': 'Română',
+        'en': 'English',
+        'fr': 'Français',
+        'de': 'Deutsch',
+        'es': 'Español',
+        'it': 'Italiano',
+        'pt': 'Português',
+        'ru': 'Русский',
+        'zh': '中文',
+        'ja': '日本語',
+        'ko': '한국어',
+        'ar': 'العربية',
+        'hi': 'हिन्दी',
+        'tr': 'Türkçe',
+        'nl': 'Nederlands',
+        'pl': 'Polski',
+        'sv': 'Svenska',
+        'da': 'Dansk',
+        'no': 'Norsk',
+        'fi': 'Suomi',
+        'cs': 'Čeština',
+        'hu': 'Magyar',
+        'el': 'Ελληνικά',
+        'he': 'עברית',
+        'th': 'ไทย',
+        'vi': 'Tiếng Việt',
+        'id': 'Bahasa Indonesia',
+        'ms': 'Bahasa Melayu',
+        'uk': 'Українська',
+        'bg': 'Български',
+        'hr': 'Hrvatski'
+    }
+    
+    # Audio extraction
+    AUDIO_FORMAT = 'wav'
+    AUDIO_SAMPLE_RATE = 16000
+    AUDIO_CHANNELS = 1
+    
+    # Cleanup
+    SESSION_LIFETIME = 86400  # 24 hours
+    CLEANUP_INTERVAL = 3600  # 1 hour
+    
+    @classmethod
+    def init_directories(cls):
+        for dir_path in [cls.DATA_DIR, cls.CHUNK_UPLOAD_DIR, cls.PROCESS_DIR, cls.TEMP_DIR]:
+            dir_path.mkdir(parents=True, exist_ok=True)
