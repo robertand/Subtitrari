@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+app.log
+server.log
+server_debug.log
+data/process/*
+!data/process/.gitkeep
+data/chunk_uploads/*
+!data/chunk_uploads/.gitkeep
+data/temp/*
+!data/temp/.gitkeep
+.DS_Store

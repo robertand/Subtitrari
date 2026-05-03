@@ -116,15 +116,18 @@ def upload_chunk():
     """Upload a chunk"""
     try:
         session_id = request.form.get('session_id')
-        chunk_number = int(request.form.get('chunk_number'))
+        chunk_number_str = request.form.get('chunk_number')
         chunk_file = request.files.get('chunk')
         
-        if not all([session_id, chunk_number is not None, chunk_file]):
+        if not all([session_id, chunk_number_str is not None, chunk_file]):
             return jsonify({'error': 'Missing parameters'}), 400
         
+        chunk_number = int(chunk_number_str)
         result = file_handler.save_chunk(session_id, chunk_file, chunk_number)
         return jsonify(result)
         
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Chunk upload error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -135,11 +138,12 @@ def complete_upload():
     try:
         data = request.json
         session_id = data.get('session_id')
+        total_chunks = data.get('total_chunks')
         
         if not session_id:
             return jsonify({'error': 'Missing session_id'}), 400
         
-        file_path = file_handler.assemble_file(session_id)
+        file_path = file_handler.assemble_file(session_id, total_chunks=total_chunks)
         
         # Generate preview if it's a video file
         preview_url = None

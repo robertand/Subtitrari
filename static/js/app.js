@@ -221,8 +221,8 @@ async function handleFile(file) {
 }
 
 async function startUpload(file) {
-    const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    let chunkSize = 10 * 1024 * 1024; // Default 10MB
+    let totalChunks = Math.ceil(file.size / chunkSize);
     
     try {
         // Initialize upload session
@@ -236,8 +236,16 @@ async function startUpload(file) {
             })
         });
         
+        if (!initResponse.ok) {
+            const errorData = await initResponse.json();
+            throw new Error(errorData.error || 'Failed to initialize upload');
+        }
+
         const initData = await initResponse.json();
         state.sessionId = initData.session_id;
+        if (initData.chunk_size) chunkSize = initData.chunk_size;
+        totalChunks = Math.ceil(file.size / chunkSize); // Re-calculate just in case
+
         state.isUploading = true;
         
         // Show progress
@@ -260,8 +268,8 @@ async function startUpload(file) {
                 if (!state.isUploading) break;
             }
             
-            const start = i * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const start = i * chunkSize;
+            const end = Math.min(start + chunkSize, file.size);
             const chunk = file.slice(start, end);
             
             const formData = new FormData();
@@ -274,6 +282,11 @@ async function startUpload(file) {
                 body: formData
             });
             
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || `Failed to upload chunk ${i}`);
+            }
+
             const data = await response.json();
             
             // Update progress
@@ -288,9 +301,17 @@ async function startUpload(file) {
         const completeResponse = await fetch('/api/upload/complete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: state.sessionId })
+            body: JSON.stringify({
+                session_id: state.sessionId,
+                total_chunks: totalChunks
+            })
         });
         
+        if (!completeResponse.ok) {
+            const errorData = await completeResponse.json();
+            throw new Error(errorData.error || 'Failed to complete upload');
+        }
+
         const completeData = await completeResponse.json();
         state.taskId = completeData.task_id;
         state.filePath = completeData.file_path;
@@ -319,15 +340,17 @@ function createChunkIndicators(totalChunks) {
     }
 }
 
-function updateUploadProgress(progress, chunkIndex, totalChunks, uploadedBytes, startTime) {
+function updateUploadProgress(progress, chunkIndex, totalChunks, uploadedBytes, startTime, fileSize) {
     elements.uploadPercentage.textContent = Math.round(progress) + '%';
     elements.uploadBar.style.width = progress + '%';
     
     // Update chunk indicators
     const dots = elements.chunkIndicators.children;
-    const dotIndex = Math.floor((chunkIndex / totalChunks) * dots.length);
-    for (let i = 0; i <= dotIndex && i < dots.length; i++) {
-        dots[i].classList.add('uploaded');
+    if (dots.length > 0) {
+        const dotIndex = Math.floor((chunkIndex / totalChunks) * dots.length);
+        for (let i = 0; i <= dotIndex && i < dots.length; i++) {
+            dots[i].classList.add('uploaded');
+        }
     }
     
     // Calculate speed
@@ -337,7 +360,7 @@ function updateUploadProgress(progress, chunkIndex, totalChunks, uploadedBytes, 
         elements.uploadSpeed.textContent = formatSpeed(speed);
         
         // Calculate ETA
-        const remainingBytes = (totalChunks * 10 * 1024 * 1024) - uploadedBytes;
+        const remainingBytes = fileSize - uploadedBytes;
         const eta = remainingBytes / speed;
         elements.uploadETA.textContent = formatTime(eta);
     }
@@ -685,7 +708,7 @@ function updateSubtitleDisplay(currentTime) {
     if (activeSegments.length > 0) {
         const html = activeSegments.map(s => {
             const lines = s.text.split('\n');
-            return lines.join('<br>');
+            return lines.map(line => escapeHtml(line)).join('<br>');
         }).join('<br><hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.3); margin: 4px 0;"><br>');
 
         elements.subtitleOverlay.innerHTML = html;
