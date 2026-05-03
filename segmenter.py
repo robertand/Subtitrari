@@ -12,9 +12,10 @@ class SubtitleSegmenter:
         segments: List[Dict],
         min_duration: float = 1.0,
         max_duration: float = 5.0,
-        max_chars: int = 80
+        max_chars: int = 80,
+        overlap: float = 0.5
     ) -> List[Dict]:
-        """Segment subtitles by time constraints"""
+        """Segment subtitles by time constraints with optional overlap"""
         result = []
         
         for segment in segments:
@@ -26,32 +27,37 @@ class SubtitleSegmenter:
             if not text:
                 continue
             
-            # If segment is too short, try to merge with next
+            # If segment is too short, try to merge with next (preserving overlap if possible)
             if duration < min_duration:
                 if result:
                     # Merge with previous
                     prev = result[-1]
-                    prev['text'] += ' ' + text
-                    prev['end'] = end
+                    # If they already overlap significantly, just append text
+                    if start < prev['end']:
+                        prev['text'] += ' ' + text
+                        prev['end'] = max(prev['end'], end)
+                    else:
+                        prev['text'] += ' ' + text
+                        prev['end'] = end
                 else:
                     result.append({
                         'text': text,
                         'start': start,
-                        'end': end
+                        'end': end + overlap
                     })
                 continue
             
             # If segment is too long, split it
             if duration > max_duration or len(text) > max_chars:
                 sub_segments = self._split_segment(
-                    text, start, end, max_duration, max_chars
+                    text, start, end, max_duration, max_chars, overlap
                 )
                 result.extend(sub_segments)
             else:
                 result.append({
                     'text': text,
                     'start': start,
-                    'end': end
+                    'end': end + overlap
                 })
         
         return result
@@ -62,9 +68,10 @@ class SubtitleSegmenter:
         segments: List[Dict],
         min_pause_duration: float = 1.0,
         max_duration: float = 5.0,
-        max_chars: int = 80
+        max_chars: int = 80,
+        overlap: float = 0.5
     ) -> List[Dict]:
-        """Segment using Voice Activity Detection based on pauses"""
+        """Segment using Voice Activity Detection based on pauses with overlap"""
         try:
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
             
@@ -111,19 +118,19 @@ class SubtitleSegmenter:
                     # If there are significant pauses, split segment
                     if speech_ratio < 0.6 and (end - start) > max_duration:
                         splits = self._split_by_pauses(
-                            text, start, end, times[mask], speech_frames
+                            text, start, end, times[mask], speech_frames, overlap
                         )
                         result.extend(splits)
                     else:
-                        result.append({'text': text, 'start': start, 'end': end})
+                        result.append({'text': text, 'start': start, 'end': end + overlap})
                 else:
-                    result.append({'text': text, 'start': start, 'end': end})
+                    result.append({'text': text, 'start': start, 'end': end + overlap})
             
             return result
             
         except Exception as e:
             # Fallback to time-based segmentation
-            return self.segment_by_time(segments, min_duration=1.0, max_duration=max_duration, max_chars=max_chars)
+            return self.segment_by_time(segments, min_duration=1.0, max_duration=max_duration, max_chars=max_chars, overlap=overlap)
     
     def _split_segment(
         self,
@@ -131,9 +138,10 @@ class SubtitleSegmenter:
         start: float,
         end: float,
         max_duration: float,
-        max_chars: int
+        max_chars: int,
+        overlap: float = 0.5
     ) -> List[Dict]:
-        """Split a long segment into smaller ones"""
+        """Split a long segment into smaller ones with overlap"""
         words = text.split()
         if not words:
             return [{'text': text, 'start': start, 'end': end}]
@@ -162,7 +170,7 @@ class SubtitleSegmenter:
                 segments.append({
                     'text': current_text,
                     'start': round(current_start, 3),
-                    'end': round(current_end, 3)
+                    'end': round(current_end + overlap, 3)
                 })
                 
                 # Start new segment
@@ -189,9 +197,10 @@ class SubtitleSegmenter:
         start: float,
         end: float,
         times: np.ndarray,
-        speech_frames: np.ndarray
+        speech_frames: np.ndarray,
+        overlap: float = 0.5
     ) -> List[Dict]:
-        """Split segment based on detected pauses"""
+        """Split segment based on detected pauses with overlap"""
         # Find silence regions
         silence_regions = []
         in_silence = False
@@ -224,7 +233,7 @@ class SubtitleSegmenter:
                 segments.append({
                     'text': part1,
                     'start': round(current_start, 3),
-                    'end': round(pause_start, 3)
+                    'end': round(pause_start + overlap, 3)
                 })
                 
                 words = words[split_point:]
@@ -235,7 +244,7 @@ class SubtitleSegmenter:
             segments.append({
                 'text': ' '.join(words),
                 'start': round(current_start, 3),
-                'end': round(end, 3)
+                'end': round(end + overlap, 3)
             })
         
         return segments or [{'text': text, 'start': start, 'end': end}]

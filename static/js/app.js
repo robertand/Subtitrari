@@ -13,7 +13,9 @@ const state = {
     videoPlayer: null,
     activeSegment: -1,
     videoUrl: null,
-    isVideo: false
+    isVideo: false,
+    pixelsPerSecond: 50,
+    zoomLevel: 1.0
 };
 
 // === DOM Elements ===
@@ -49,7 +51,14 @@ const elements = {
     translationTab: document.getElementById('translationTab'),
     toastContainer: document.getElementById('toastContainer'),
     deviceBadge: document.getElementById('deviceBadge'),
-    deviceText: document.getElementById('deviceText')
+    deviceText: document.getElementById('deviceText'),
+    timelineSection: document.getElementById('timelineSection'),
+    timelineContainer: document.getElementById('timelineContainer'),
+    timelineContent: document.getElementById('timelineContent'),
+    timelineSegments: document.getElementById('timelineSegments'),
+    timelinePlayhead: document.getElementById('timelinePlayhead'),
+    timelineRuler: document.getElementById('timelineRuler'),
+    zoomLevel: document.getElementById('zoomLevel')
 };
 
 // === Initialization ===
@@ -143,12 +152,16 @@ function initVideoPlayer() {
         if (state.segments.length > 0) {
             updateSubtitleDisplay(video.currentTime);
             updateActiveSegment(video.currentTime);
+            updateTimelinePlayhead(video.currentTime);
         }
         updateTimeDisplay();
     });
     
     video.addEventListener('loadedmetadata', () => {
         updateTimeDisplay();
+        if (state.segments.length > 0) {
+            renderTimeline();
+        }
     });
     
     video.addEventListener('play', () => {
@@ -196,22 +209,12 @@ async function handleFile(file) {
         state.isVideo = true;
     }
     
-    // Show preview if video
-    if (state.isVideo) {
-        const url = URL.createObjectURL(file);
-        state.videoUrl = url;
-        elements.videoPreview.src = url;
-        elements.videoPreview.style.display = 'block';
-        elements.imagePreview.style.display = 'none';
-        elements.filePreview.style.display = 'block';
-        elements.previewInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
-    } else {
-        elements.videoPreview.style.display = 'none';
-        elements.imagePreview.style.display = 'block';
-        elements.imagePreview.src = '/static/audio-icon.png';
-        elements.filePreview.style.display = 'block';
-        elements.previewInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
-    }
+    // Show preview in unified player
+    const url = URL.createObjectURL(file);
+    state.videoUrl = url;
+    elements.playerSection.style.display = 'block';
+    elements.mainVideoPlayer.src = url;
+    elements.mainVideoPlayer.load();
     
     // Start upload
     await startUpload(file);
@@ -292,11 +295,6 @@ async function startUpload(file) {
         state.taskId = completeData.task_id;
         state.filePath = completeData.file_path;
         
-        // Update preview
-        if (completeData.preview_url) {
-            elements.imagePreview.src = completeData.preview_url;
-            elements.imagePreview.style.display = 'block';
-        }
         
         showToast('Upload complet! Puteți începe procesarea.', 'success');
         elements.startButton.style.display = 'flex';
@@ -509,41 +507,15 @@ function showResults(result) {
     
     elements.processingSection.style.display = 'none';
     elements.resultsSection.style.display = 'block';
+    elements.playerSection.style.display = 'block';
     
-    // Show video player if video file
-    if (state.isVideo) {
-        elements.playerSection.style.display = 'block';
-        
-        // Construiește URL-ul pentru video
-        const videoUrl = `/api/video/${state.taskId}`;
-        console.log('Setting video URL:', videoUrl);
-        
-        elements.mainVideoPlayer.src = videoUrl;
-        elements.mainVideoPlayer.load();
-        
-        // Așteaptă să se încarce metadatele
-        elements.mainVideoPlayer.addEventListener('loadedmetadata', function() {
-            console.log('Video metadata loaded, duration:', elements.mainVideoPlayer.duration);
-            updateTimeDisplay();
-        }, { once: true });
-        
-        elements.mainVideoPlayer.addEventListener('canplay', function() {
-            console.log('Video can play');
-        }, { once: true });
-        
-        elements.mainVideoPlayer.addEventListener('error', function(e) {
-            console.error('Video loading error:', e);
-            // Încearcă cu URL-ul local dacă există
-            if (state.videoUrl) {
-                console.log('Falling back to local URL');
-                elements.mainVideoPlayer.src = state.videoUrl;
-            }
-        });
-    } else {
-        // Pentru audio, arată player-ul audio
-        elements.playerSection.style.display = 'block';
-        const audioUrl = `/api/audio/${state.taskId}`;
-        elements.mainVideoPlayer.src = audioUrl;
+    // Use the server-side file once processed
+    const mediaUrl = state.isVideo ? `/api/video/${state.taskId}` : `/api/audio/${state.taskId}`;
+    console.log('Setting media URL:', mediaUrl);
+
+    // Only reload if the URL is different to avoid interruption
+    if (!elements.mainVideoPlayer.src.endsWith(mediaUrl)) {
+        elements.mainVideoPlayer.src = mediaUrl;
         elements.mainVideoPlayer.load();
     }
     
@@ -563,6 +535,10 @@ function showResults(result) {
     
     // Scroll to top of segments
     elements.segmentsList.scrollTop = 0;
+
+    // Show and render timeline
+    elements.timelineSection.style.display = 'block';
+    renderTimeline();
 }
 
 function renderSegments() {
@@ -704,10 +680,15 @@ function togglePlayPause() {
 }
 
 function updateSubtitleDisplay(currentTime) {
-    const segment = findSegmentAtTime(currentTime);
-    if (segment && segment.text) {
-        const lines = segment.text.split('\n');
-        elements.subtitleOverlay.innerHTML = lines.join('<br>');
+    const activeSegments = state.segments.filter(s => currentTime >= s.start && currentTime <= s.end);
+
+    if (activeSegments.length > 0) {
+        const html = activeSegments.map(s => {
+            const lines = s.text.split('\n');
+            return lines.join('<br>');
+        }).join('<br><hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.3); margin: 4px 0;"><br>');
+
+        elements.subtitleOverlay.innerHTML = html;
         elements.subtitleOverlay.style.display = 'block';
     } else {
         elements.subtitleOverlay.textContent = '';
@@ -716,11 +697,29 @@ function updateSubtitleDisplay(currentTime) {
 }
 
 function updateActiveSegment(currentTime) {
-    const index = state.segments.findIndex(s => currentTime >= s.start && currentTime <= s.end);
+    const activeIndices = [];
+    state.segments.forEach((s, i) => {
+        if (currentTime >= s.start && currentTime <= s.end) {
+            activeIndices.push(i);
+        }
+    });
     
-    if (index !== state.activeSegment && index >= 0) {
-        highlightSegment(index);
+    // Highlight first active for scrolling list
+    if (activeIndices.length > 0) {
+        const firstIndex = activeIndices[0];
+        if (firstIndex !== state.activeSegment) {
+            highlightSegment(firstIndex);
+        }
     }
+
+    // Highlight all on timeline
+    document.querySelectorAll('.timeline-segment-block').forEach((el, i) => {
+        if (activeIndices.includes(i)) {
+            el.classList.add('active');
+        } else {
+            el.classList.remove('active');
+        }
+    });
 }
 
 function findSegmentAtTime(time) {
@@ -1031,3 +1030,130 @@ window.addEventListener('beforeunload', () => {
         URL.revokeObjectURL(state.videoUrl);
     }
 });
+// === Timeline Logic ===
+function renderTimeline() {
+    if (!elements.mainVideoPlayer || isNaN(elements.mainVideoPlayer.duration)) return;
+
+    const duration = elements.mainVideoPlayer.duration;
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const width = duration * pps;
+
+    elements.timelineContent.style.width = width + 'px';
+    elements.timelineRuler.style.width = width + 'px';
+
+    // Render Ruler
+    renderTimelineRuler(duration, pps);
+
+    // Render Segments
+    elements.timelineSegments.innerHTML = '';
+
+    // Simple track management for overlapping segments
+    const tracks = [];
+
+    state.segments.forEach((segment, index) => {
+        const startX = segment.start * pps;
+        const endX = segment.end * pps;
+        const segmentWidth = endX - startX;
+
+        // Find a track that doesn't overlap
+        let trackIndex = tracks.findIndex(trackEnd => trackEnd <= segment.start);
+        if (trackIndex === -1) {
+            trackIndex = tracks.length;
+            tracks.push(segment.end);
+        } else {
+            tracks[trackIndex] = segment.end;
+        }
+
+        const block = document.createElement('div');
+        block.className = 'timeline-segment-block';
+        block.style.left = startX + 'px';
+        block.style.width = segmentWidth + 'px';
+        block.style.top = (trackIndex * 35 + 5) + 'px';
+        block.textContent = segment.text;
+        block.title = `${formatTimestamp(segment.start)} - ${formatTimestamp(segment.end)}\n${segment.text}`;
+
+        block.onclick = () => {
+            seekToTime(segment.start);
+        };
+
+        elements.timelineSegments.appendChild(block);
+    });
+
+    // Adjust container height based on tracks
+    elements.timelineContainer.style.height = Math.max(120, tracks.length * 35 + 20) + 'px';
+
+    // Add click to seek on timeline
+    elements.timelineContent.onclick = (e) => {
+        if (e.target.classList.contains('timeline-segment-block')) return;
+        const rect = elements.timelineContent.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const time = x / pps;
+        seekToTime(time);
+    };
+}
+
+function renderTimelineRuler(duration, pps) {
+    elements.timelineRuler.innerHTML = '';
+
+    // Determine interval based on zoom
+    let interval = 5; // seconds
+    if (pps > 100) interval = 1;
+    if (pps < 20) interval = 10;
+    if (pps < 5) interval = 30;
+
+    for (let t = 0; t <= duration; t += interval) {
+        const x = t * pps;
+        const tick = document.createElement('div');
+        tick.className = 'time-tick major';
+        tick.style.left = x + 'px';
+
+        const label = document.createElement('div');
+        label.className = 'time-tick-label';
+        label.style.left = x + 'px';
+        label.textContent = formatTimeShort(t);
+
+        elements.timelineRuler.appendChild(tick);
+        elements.timelineRuler.appendChild(label);
+
+        // Minor ticks
+        if (interval >= 5) {
+            const minorInterval = interval / 5;
+            for (let mt = t + minorInterval; mt < t + interval && mt <= duration; mt += minorInterval) {
+                const mx = mt * pps;
+                const mTick = document.createElement('div');
+                mTick.className = 'time-tick';
+                mTick.style.left = mx + 'px';
+                elements.timelineRuler.appendChild(mTick);
+            }
+        }
+    }
+}
+
+function formatTimeShort(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function updateTimelinePlayhead(currentTime) {
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const x = currentTime * pps;
+    elements.timelinePlayhead.style.left = x + 'px';
+
+    // Auto-scroll timeline if playhead goes out of view
+    const container = elements.timelineContainer;
+    const scrollLeft = container.scrollLeft;
+    const width = container.clientWidth;
+
+    if (x < scrollLeft || x > scrollLeft + width) {
+        container.scrollLeft = x - width / 2;
+    }
+}
+
+function zoomTimeline(factor) {
+    state.zoomLevel *= factor;
+    state.zoomLevel = Math.max(0.1, Math.min(state.zoomLevel, 10));
+    elements.zoomLevel.textContent = Math.round(state.zoomLevel * 100) + '%';
+    renderTimeline();
+    updateTimelinePlayhead(elements.mainVideoPlayer.currentTime);
+}

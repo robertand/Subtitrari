@@ -80,16 +80,6 @@
                         </div>
                     </div>
 
-                    <!-- File Preview -->
-                    <div class="file-preview" id="filePreview" style="display: none;">
-                        <div class="preview-container">
-                            <video id="videoPreview" controls style="display: none;">
-                                <source src="" type="video/mp4">
-                            </video>
-                            <img id="imagePreview" style="display: none;" alt="Preview">
-                            <div class="preview-info" id="previewInfo"></div>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Settings Section -->
@@ -234,7 +224,7 @@
                 <div class="glass-container player-section" id="playerSection" style="display: none;">
                     <h2 class="section-title">
                         <span class="icon">▶️</span>
-                        Player Video
+                        Preview & Player
                     </h2>
                     <div class="video-container">
                         <video id="mainVideoPlayer" controls>
@@ -245,6 +235,22 @@
                     <div class="player-controls">
                         <button class="btn btn-sm" onclick="togglePlayPause()">⏯️ Play/Pause</button>
                         <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
+                        <div class="zoom-controls">
+                            <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(0.8)">➖</button>
+                            <span id="zoomLevel">100%</span>
+                            <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(1.2)">➕</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Timeline Section -->
+                <div class="glass-container timeline-section" id="timelineSection" style="display: none; width: 100%; max-width: none;">
+                    <div class="timeline-ruler" id="timelineRuler"></div>
+                    <div class="timeline-container" id="timelineContainer">
+                        <div class="timeline-content" id="timelineContent">
+                            <div class="timeline-segments" id="timelineSegments"></div>
+                            <div class="timeline-playhead" id="timelinePlayhead"></div>
+                        </div>
                     </div>
                 </div>
 

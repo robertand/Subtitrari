@@ -535,14 +535,16 @@ def process_task(task):
             segments = segmenter.segment_by_pauses(
                 str(audio_path), segments,
                 max_duration=max_dur,
-                max_chars=max_chars
+                max_chars=max_chars,
+                overlap=task.options.get('overlap', 0.5)
             )
         else:
             segments = segmenter.segment_by_time(
                 segments,
                 min_duration=min_dur,
                 max_duration=max_dur,
-                max_chars=max_chars
+                max_chars=max_chars,
+                overlap=task.options.get('overlap', 0.5)
             )
         
         if task.cancel_flag.is_set():
