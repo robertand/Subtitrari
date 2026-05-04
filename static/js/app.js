@@ -23,7 +23,8 @@ const state = {
     dragTarget: null,
     dragStartX: 0,
     dragStartOffset: 0,
-    resizeType: null // 'start' or 'end'
+    resizeType: null, // 'start' or 'end'
+    exportLanguage: 'original'
 };
 
 // === DOM Elements ===
@@ -599,13 +600,18 @@ function renderSegments() {
         div.dataset.start = segment.start;
         div.dataset.end = segment.end;
         
+        let displayText = segment.text;
+        if (state.displayLanguage !== 'original' && state.translations[state.displayLanguage]) {
+            displayText = state.translations[state.displayLanguage][index];
+        }
+
         div.innerHTML = `
             <div class="segment-number">${index + 1}</div>
             <div class="segment-content">
                 <div class="segment-text" contenteditable="true" 
                      onblur="updateSegment(${index}, this.textContent)"
                      onclick="event.stopPropagation();">
-                    ${escapeHtml(segment.text || '')}
+                    ${escapeHtml(displayText || '')}
                 </div>
                 <div class="segment-time">
                     ${formatTimestamp(segment.start)} → ${formatTimestamp(segment.end)}
@@ -632,9 +638,17 @@ function renderSegments() {
 
 function updateSegment(index, text) {
     if (state.segments[index]) {
-        state.segments[index].text = text.trim();
+        if (state.displayLanguage === 'original') {
+            state.segments[index].text = text.trim();
+        } else if (state.translations[state.displayLanguage]) {
+            state.translations[state.displayLanguage][index] = text.trim();
+        }
+
         updateFullText();
-        console.log('Segment updated:', index);
+        displayTranslations(); // Sync the other panel
+        renderTimeline(); // Sync timeline labels
+
+        console.log('Segment updated:', index, 'Lang:', state.displayLanguage);
     }
 }
 
@@ -652,8 +666,25 @@ function editSegment(index) {
 }
 
 function updateFullText() {
-    const fullText = state.segments.map(s => s.text || '').join('\n\n');
-    elements.fullTextEditor.value = fullText;
+    let texts = [];
+    if (state.currentTab === 'original') {
+        texts = state.segments.map(s => s.text || '');
+    } else {
+        // Translation tab
+        if (state.displayLanguage === 'original') {
+            // If display language is original but on translation tab, show first available translation
+            const availableLangs = Object.keys(state.translations);
+            if (availableLangs.length > 0) {
+                texts = state.translations[availableLangs[0]];
+            } else {
+                texts = state.segments.map(s => s.text || '');
+            }
+        } else {
+            texts = state.translations[state.displayLanguage] || state.segments.map(s => s.text || '');
+        }
+    }
+
+    elements.fullTextEditor.value = texts.join('\n\n');
 }
 
 function displayTranslations() {
@@ -662,29 +693,48 @@ function displayTranslations() {
     Object.entries(state.translations).forEach(([lang, texts]) => {
         const langName = getLanguageName(lang);
         const div = document.createElement('div');
-        div.className = 'translation-group';
+        div.className = 'translation-group glass-container';
         div.style.marginBottom = '20px';
+        div.style.padding = '15px';
         
         let translationsHtml = '<div class="translation-segments">';
         texts.forEach((text, i) => {
-            if (text) {
-                translationsHtml += `
-                    <div class="translation-segment" style="margin-bottom: 8px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px;">
-                        <span style="color: var(--text-muted); font-size: 0.8rem;">${i + 1}.</span>
-                        <span contenteditable="true" style="margin-left: 8px;">${escapeHtml(text)}</span>
-                    </div>
-                `;
-            }
+            translationsHtml += `
+                <div class="translation-segment" style="margin-bottom: 8px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px;">
+                    <span style="color: var(--text-muted); font-size: 0.8rem;">${i + 1}.</span>
+                    <span contenteditable="true"
+                          onblur="updateTranslationSegment('${lang}', ${i}, this.textContent)"
+                          style="margin-left: 8px; display: inline-block; width: calc(100% - 30px); outline: none;">
+                        ${escapeHtml(text || '')}
+                    </span>
+                </div>
+            `;
         });
         translationsHtml += '</div>';
         
         div.innerHTML = `
-            <h3 style="margin-bottom: 12px; color: var(--primary);">🌐 ${langName}</h3>
+            <div class="translation-group-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 style="color: var(--primary); margin: 0;">🌐 ${langName}</h3>
+                <div class="group-actions">
+                    <button class="btn btn-sm" onclick="exportSRT('${lang}')">💾 SRT</button>
+                    <button class="btn btn-sm" onclick="showDOCXDialog('${lang}')">📄 DOCX</button>
+                </div>
+            </div>
             ${translationsHtml}
         `;
         
         elements.translationsContainer.appendChild(div);
     });
+}
+
+function updateTranslationSegment(lang, index, text) {
+    if (state.translations[lang] && state.translations[lang][index] !== undefined) {
+        state.translations[lang][index] = text.trim();
+        if (state.displayLanguage === lang) {
+            updateFullText();
+            updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+        }
+    }
 }
 
 // === Video Player Controls ===
@@ -804,18 +854,26 @@ elements.mainVideoPlayer.addEventListener('seeked', () => {
 });
 
 // === Export Functions ===
-async function exportSRT() {
+async function exportSRT(lang = 'original') {
     if (state.segments.length === 0) {
         showToast('Nu există segmente de exportat', 'warning');
         return;
     }
     
+    const segmentsToExport = state.segments.map((seg, i) => {
+        let text = seg.text;
+        if (lang !== 'original' && state.translations[lang]) {
+            text = state.translations[lang][i];
+        }
+        return { ...seg, text: text };
+    });
+
     try {
         const response = await fetch('/api/export/srt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                segments: state.segments,
+                segments: segmentsToExport,
                 legacy_diacritics: document.getElementById('docxLegacyDiacritics')?.checked || false
             })
         });
@@ -823,8 +881,9 @@ async function exportSRT() {
         if (!response.ok) throw new Error('Export failed');
         
         const blob = await response.blob();
-        downloadFile(blob, 'subtitles.srt');
-        showToast('SRT exportat cu succes!', 'success');
+        const filename = lang === 'original' ? 'subtitles_original.srt' : `subtitles_${lang}.srt`;
+        downloadFile(blob, filename);
+        showToast(`SRT (${lang}) exportat cu succes!`, 'success');
     } catch (error) {
         console.error('Export error:', error);
         showToast('Eroare la export SRT', 'error');
@@ -837,6 +896,15 @@ async function exportDOCX() {
         return;
     }
     
+    const lang = state.exportLanguage;
+    const segmentsToExport = state.segments.map((seg, i) => {
+        let text = seg.text;
+        if (lang !== 'original' && state.translations[lang]) {
+            text = state.translations[lang][i];
+        }
+        return { ...seg, text: text };
+    });
+
     const metadata = {
         title: document.getElementById('docxTitle').value || '',
         series: document.getElementById('docxSeries').value || '',
@@ -849,7 +917,7 @@ async function exportDOCX() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                segments: state.segments,
+                segments: segmentsToExport,
                 metadata: metadata,
                 legacy_diacritics: document.getElementById('docxLegacyDiacritics')?.checked || false
             })
@@ -858,9 +926,10 @@ async function exportDOCX() {
         if (!response.ok) throw new Error('Export failed');
         
         const blob = await response.blob();
-        downloadFile(blob, 'translation.docx');
+        const filename = lang === 'original' ? 'translation_original.docx' : `translation_${lang}.docx`;
+        downloadFile(blob, filename);
         closeDOCXDialog();
-        showToast('DOCX exportat cu succes!', 'success');
+        showToast(`DOCX (${lang}) exportat cu succes!`, 'success');
     } catch (error) {
         console.error('Export error:', error);
         showToast('Eroare la export DOCX', 'error');
@@ -884,7 +953,8 @@ function copyFullText() {
     });
 }
 
-function showDOCXDialog() {
+function showDOCXDialog(lang = 'original') {
+    state.exportLanguage = lang;
     document.getElementById('docxModal').style.display = 'flex';
 }
 
@@ -939,6 +1009,7 @@ function switchTab(tab) {
     } else {
         document.getElementById('segmentsContainer').style.display = 'none';
         elements.fullTextView.style.display = 'block';
+        updateFullText();
     }
 }
 
@@ -1058,7 +1129,12 @@ function updateSubtitleLangSelect() {
 
 function changeSubtitleLanguage(lang) {
     state.displayLanguage = lang;
-    updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+    if (elements.mainVideoPlayer) {
+        updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+    }
+    updateFullText();
+    renderSegments();
+    renderTimeline();
 }
 
 // === Keyboard Shortcuts ===
@@ -1367,20 +1443,25 @@ function deleteSegment(index) {
         state.segments.splice(index, 1);
         // Also remove from translations if any
         Object.keys(state.translations).forEach(lang => {
-            state.translations[lang].splice(index, 1);
+            if (Array.isArray(state.translations[lang])) {
+                state.translations[lang].splice(index, 1);
+            }
         });
 
         state.selectedSegment = null;
+        state.activeSegment = -1;
+
+        // Refresh all UI components
         renderTimeline();
         renderSegments();
+        displayTranslations();
+        updateFullText();
+
         if (state.videoPlayer) {
             updateSubtitleDisplay(state.videoPlayer.currentTime);
+            updateActiveSegment(state.videoPlayer.currentTime);
         }
-    }
-}
 
-function changeSubtitleLanguage(lang) {
-    state.displayLanguage = lang;
-    updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
-    renderTimeline(); // Update timeline labels
+        showToast('Segment șters cu succes', 'success');
+    }
 }
