@@ -14,7 +14,7 @@ class SubtitleSegmenter:
         min_duration: float = 1.0,
         max_duration: float = 5.0,
         max_chars: int = 80,
-        overlap: float = 0.5
+        overlap: float = 0.0
     ) -> List[Dict]:
         """Segment subtitles by time constraints with optional overlap"""
         result = []
@@ -70,7 +70,7 @@ class SubtitleSegmenter:
         min_pause_duration: float = 1.0,
         max_duration: float = 5.0,
         max_chars: int = 80,
-        overlap: float = 0.5
+        overlap: float = 0.0
     ) -> List[Dict]:
         """Segment using Voice Activity Detection based on pauses with overlap"""
         try:
@@ -140,7 +140,7 @@ class SubtitleSegmenter:
         end: float,
         max_duration: float,
         max_chars: int,
-        overlap: float = 0.5
+        overlap: float = 0.0
     ) -> List[Dict]:
         """Split a long segment into smaller ones with overlap"""
         words = text.split()
@@ -199,7 +199,7 @@ class SubtitleSegmenter:
         end: float,
         times: np.ndarray,
         speech_frames: np.ndarray,
-        overlap: float = 0.5
+        overlap: float = 0.0
     ) -> List[Dict]:
         """Split segment based on detected pauses with overlap"""
         # Find silence regions
@@ -320,19 +320,54 @@ class SubtitleSegmenter:
 
         return merged
 
-    def merge_segments_llm(self, segments: List[Dict], translator_obj: Any) -> List[Dict]:
-        """Use LLM to refine and merge segments based on logic and context"""
+    def merge_segments_llm(self, segments: List[Dict], translator_obj: Any, whisperx_segments: List[Dict] = None) -> List[Dict]:
+        """Use LLM to refine segments by comparing Whisper and WhisperX outputs"""
         if not segments or not translator_obj:
             return segments
 
-        # Group overlapping segments for the LLM
+        # If whisperx_segments is provided, we compare the two versions using a sliding window
+        if whisperx_segments:
+            refined_all = []
+            chunk_size = 30 # Process 30 segments at a time for context
+
+            for i in range(0, max(len(segments), len(whisperx_segments)), chunk_size):
+                chunk_w = segments[i:i + chunk_size]
+                chunk_wx = whisperx_segments[i:i + chunk_size]
+
+                if not chunk_w and not chunk_wx:
+                    continue
+
+                prompt = "Am două versiuni de transcriere pentru același material audio. Prima este de la Whisper, a doua de la WhisperX. "
+                prompt += "Te rog să compari ambele versiuni și să deduci care este varianta corectă pentru fiecare porțiune, bazându-te pe context și logică. "
+                prompt += "Retranscrie rezultatul final într-un flux coerent de segmente de subtitrare care nu se suprapun. "
+                prompt += "Păstrează continuitatea timpilor. "
+                prompt += "Returnează doar segmentele în format JSON: [{\"start\": float, \"end\": float, \"text\": string}, ...]\n\n"
+
+                prompt += "Versiunea Whisper:\n"
+                prompt += "\n".join([f"[{seg['start']}-{seg['end']}] {seg['text']}" for seg in chunk_w])
+
+                prompt += "\n\nVersiunea WhisperX:\n"
+                prompt += "\n".join([f"[{seg['start']}-{seg['end']}] {seg['text']}" for seg in chunk_wx])
+
+                try:
+                    result = translator_obj.refine_segments_with_llm(prompt)
+                    if result:
+                        refined_all.extend(result)
+                    else:
+                        # If LLM fails, prefer WhisperX if available
+                        refined_all.extend(chunk_wx if chunk_wx else chunk_w)
+                except Exception:
+                    refined_all.extend(chunk_wx if chunk_wx else chunk_w)
+
+            return refined_all
+
+        # Original logic for overlapping segments
         groups = []
         i = 0
         while i < len(segments):
             group = [segments[i]]
             j = i + 1
             while j < len(segments):
-                # If it overlaps with any segment in the current group
                 overlaps = False
                 for seg in group:
                     if min(seg['end'], segments[j]['end']) > max(seg['start'], segments[j]['start']):
@@ -352,19 +387,16 @@ class SubtitleSegmenter:
                 refined_segments.append(group[0])
                 continue
 
-            # Prepare prompt for LLM
             context_text = "\n".join([f"[{seg['start']}-{seg['end']}] {seg['text']}" for seg in group])
-
             prompt = "Următoarele segmente de subtitrare se suprapun. Te rog să deduci după logica textului și context ce rămâne și ce arunci la gunoi, retranscriind totul într-un flux coerent, păstrând timpii de început și sfârșit corespunzători segmentelor rezultate. Returnează doar segmentele în format JSON: [{\"start\": float, \"end\": float, \"text\": string}, ...]\n\n"
             prompt += context_text
 
             try:
-                # This will be called in translator.py or app.py but here we define how we use it
                 result = translator_obj.refine_segments_with_llm(prompt)
                 if result:
                     refined_segments.extend(result)
                 else:
-                    refined_segments.extend(group) # Fallback
+                    refined_segments.extend(group)
             except Exception:
                 refined_segments.extend(group)
 

@@ -1085,3 +1085,70 @@ body {
     padding: 4px;
     border-radius: 4px;
 }
+
+/* Timeline Interactive Features */
+.timeline-segment-block {
+    position: absolute;
+    height: 30px;
+    background: var(--primary);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 4px;
+    color: white;
+    font-size: 0.75rem;
+    padding: 0 5px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    cursor: grab;
+    user-select: none;
+    transition: background 0.2s;
+}
+
+.timeline-segment-block:active {
+    cursor: grabbing;
+    background: var(--accent);
+}
+
+.timeline-segment-block.active {
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+    z-index: 5;
+}
+
+.timeline-resize-handle {
+    position: absolute;
+    top: 0;
+    width: 6px;
+    height: 100%;
+    background: rgba(255,255,255,0.3);
+    cursor: col-resize;
+    z-index: 2;
+}
+
+.timeline-resize-handle:hover {
+    background: rgba(255,255,255,0.6);
+}
+
+.timeline-resize-handle.left { left: 0; }
+.timeline-resize-handle.right { right: 0; }
+
+.timeline-delete-btn {
+    position: absolute;
+    top: -2px;
+    right: 6px;
+    width: 14px;
+    height: 14px;
+    background: rgba(255,0,0,0.7);
+    color: white;
+    border-radius: 50%;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    cursor: pointer;
+    z-index: 3;
+}
+
+.timeline-segment-block:hover .timeline-delete-btn {
+    display: flex;
+}

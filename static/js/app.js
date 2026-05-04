@@ -16,7 +16,12 @@ const state = {
     videoUrl: null,
     isVideo: false,
     pixelsPerSecond: 50,
-    zoomLevel: 1.0
+    zoomLevel: 1.0,
+    isDragging: false,
+    dragTarget: null,
+    dragStartX: 0,
+    dragStartOffset: 0,
+    resizeType: null // 'start' or 'end'
 };
 
 // === DOM Elements ===
@@ -294,7 +299,7 @@ async function startUpload(file) {
             // Update progress
             uploadedBytes += chunk.size;
             const progress = (uploadedBytes / file.size) * 100;
-            updateUploadProgress(progress, i, totalChunks, uploadedBytes, startTime);
+            updateUploadProgress(progress, i, totalChunks, uploadedBytes, startTime, file.size);
         }
         
         if (!state.isUploading) return;
@@ -409,6 +414,7 @@ async function startProcessing() {
         max_chars: parseInt(document.getElementById('maxChars').value),
         use_vad: document.getElementById('useVAD').checked,
         merge_method: document.getElementById('mergeMethodSelect').value,
+        use_whisperx: document.getElementById('useWhisperX').checked,
         audio_only: audioOnly
     };
     
@@ -1137,12 +1143,63 @@ function renderTimeline() {
         block.textContent = segment.text;
         block.title = `${formatTimestamp(segment.start)} - ${formatTimestamp(segment.end)}\n${segment.text}`;
 
-        block.onclick = () => {
+        block.onclick = (e) => {
+            if (e.target.classList.contains('timeline-resize-handle')) return;
             seekToTime(segment.start);
+        };
+
+        // Add text based on display language
+        let displayText = segment.text;
+        if (state.displayLanguage !== 'original' && state.translations[state.displayLanguage]) {
+            displayText = state.translations[state.displayLanguage][index];
+        }
+        block.textContent = displayText;
+
+        // Add handles
+        const leftHandle = document.createElement('div');
+        leftHandle.className = 'timeline-resize-handle left';
+        const rightHandle = document.createElement('div');
+        rightHandle.className = 'timeline-resize-handle right';
+        const deleteBtn = document.createElement('div');
+        deleteBtn.className = 'timeline-delete-btn';
+        deleteBtn.innerHTML = '×';
+        deleteBtn.onclick = (e) => {
+            e.stopPropagation();
+            deleteSegment(index);
+        };
+
+        block.appendChild(leftHandle);
+        block.appendChild(rightHandle);
+        block.appendChild(deleteBtn);
+
+        // Interaction Events
+        block.onmousedown = (e) => {
+            if (e.button !== 0) return;
+            state.isDragging = true;
+            state.dragTarget = index;
+            state.dragStartX = e.clientX;
+
+            if (e.target.classList.contains('left')) {
+                state.resizeType = 'start';
+            } else if (e.target.classList.contains('right')) {
+                state.resizeType = 'end';
+            } else {
+                state.resizeType = 'move';
+                state.dragStartOffset = segment.start;
+            }
+
+            e.preventDefault();
         };
 
         elements.timelineSegments.appendChild(block);
     });
+
+    // Add Global Mouse Listeners
+    if (!window.timelineInited) {
+        window.addEventListener('mousemove', handleTimelineMove);
+        window.addEventListener('mouseup', handleTimelineUp);
+        window.timelineInited = true;
+    }
 
     // Adjust container height based on tracks
     elements.timelineContainer.style.height = Math.max(120, tracks.length * 35 + 20) + 'px';
@@ -1221,4 +1278,62 @@ function zoomTimeline(factor) {
     elements.zoomLevel.textContent = Math.round(state.zoomLevel * 100) + '%';
     renderTimeline();
     updateTimelinePlayhead(elements.mainVideoPlayer.currentTime);
+}
+
+function handleTimelineMove(e) {
+    if (!state.isDragging || state.dragTarget === null) return;
+
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const dx = (e.clientX - state.dragStartX) / pps;
+    const segment = state.segments[state.dragTarget];
+
+    if (state.resizeType === 'move') {
+        const duration = segment.end - segment.start;
+        segment.start = Math.max(0, state.dragStartOffset + dx);
+        segment.end = segment.start + duration;
+    } else if (state.resizeType === 'start') {
+        const newStart = Math.min(segment.end - 0.1, segment.start + dx);
+        segment.start = Math.max(0, newStart);
+        state.dragStartX = e.clientX;
+    } else if (state.resizeType === 'end') {
+        const newEnd = Math.max(segment.start + 0.1, segment.end + dx);
+        segment.end = newEnd;
+        state.dragStartX = e.clientX;
+    }
+
+    // Update visuals immediately without full re-render
+    const block = elements.timelineSegments.children[state.dragTarget];
+    block.style.left = (segment.start * pps) + 'px';
+    block.style.width = ((segment.end - segment.start) * pps) + 'px';
+
+    updateSubtitleDisplay(state.videoPlayer.currentTime);
+    updateActiveSegment(state.videoPlayer.currentTime);
+}
+
+function handleTimelineUp() {
+    if (state.isDragging) {
+        state.isDragging = false;
+        state.dragTarget = null;
+        renderTimeline();
+        renderSegments(); // Update list
+    }
+}
+
+function deleteSegment(index) {
+    if (confirm('Sigur vrei să ștergi acest segment?')) {
+        state.segments.splice(index, 1);
+        // Also remove from translations if any
+        Object.keys(state.translations).forEach(lang => {
+            state.translations[lang].splice(index, 1);
+        });
+        renderTimeline();
+        renderSegments();
+        updateSubtitleDisplay(state.videoPlayer.currentTime);
+    }
+}
+
+function changeSubtitleLanguage(lang) {
+    state.displayLanguage = lang;
+    updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+    renderTimeline(); // Update timeline labels
 }

@@ -511,7 +511,7 @@ def process_task(task):
         if language == 'auto':
             language = None
         
-        # Use windowed transcription for large files
+        # Whisper transcription
         result = transcriber.transcribe_with_windowing(
             str(audio_path),
             model_name=model_name,
@@ -521,6 +521,20 @@ def process_task(task):
             progress_callback=lambda p, m: update_task_progress(task, p, m)
         )
         
+        # Optional WhisperX transcription for verification
+        whisperx_result = None
+        if task.options.get('use_whisperx'):
+            task.message = 'Running WhisperX verification...'
+            try:
+                whisperx_result = transcriber.transcribe_whisperx(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=result.get('language'),
+                    progress_callback=lambda p, m: update_task_progress(task, 10 + p*0.5, f"WhisperX: {m}")
+                )
+            except Exception as e:
+                logger.error(f"WhisperX verification failed: {e}")
+
         if task.cancel_flag.is_set():
             return
         
@@ -557,8 +571,9 @@ def process_task(task):
             task.message = 'Merging segments by similarity...'
             segments = segmenter.merge_segments_similarity(segments, threshold=0.6)
         elif merge_method == 'llm':
-            task.message = 'Merging segments using LLM...'
-            segments = segmenter.merge_segments_llm(segments, translator)
+            task.message = 'Merging and verifying segments using LLM...'
+            whisperx_segments = whisperx_result.get('segments') if whisperx_result else None
+            segments = segmenter.merge_segments_llm(segments, translator, whisperx_segments=whisperx_segments)
 
         if task.cancel_flag.is_set():
             return

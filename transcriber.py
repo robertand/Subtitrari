@@ -1,4 +1,5 @@
 import whisper
+import whisperx
 import torch
 import numpy as np
 import librosa
@@ -239,6 +240,48 @@ class WhisperTranscriber:
             logger.error(f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
             raise
     
+    def transcribe_whisperx(
+        self,
+        audio_path: str,
+        model_name: str = 'small',
+        language: Optional[str] = None,
+        progress_callback = None
+    ) -> Dict[str, Any]:
+        """Transcribe audio using WhisperX for better alignment and alternative version"""
+        try:
+            device = self.device
+            compute_type = "float16" if device == "cuda" else "int8"
+
+            if progress_callback:
+                progress_callback(10, "Loading WhisperX model...")
+
+            model = whisperx.load_model(model_name, device, compute_type=compute_type, download_root='data/models')
+
+            if progress_callback:
+                progress_callback(30, "Transcribing with WhisperX...")
+
+            audio = whisperx.load_audio(audio_path)
+            result = model.transcribe(audio, batch_size=16, language=language)
+
+            if progress_callback:
+                progress_callback(60, "Aligning WhisperX results...")
+
+            # Alignment
+            model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
+            result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
+
+            if progress_callback:
+                progress_callback(100, "WhisperX complete!")
+
+            return {
+                "segments": result["segments"],
+                "language": result["language"],
+                "text": " ".join([seg["text"] for seg in result["segments"]])
+            }
+        except Exception as e:
+            logger.error(f"WhisperX transcription error: {e}")
+            raise
+
     def unload_model(self):
         """Free GPU memory"""
         if self.current_model and self.device == "cuda":
