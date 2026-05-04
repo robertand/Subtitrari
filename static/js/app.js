@@ -605,12 +605,15 @@ function renderSegments() {
             displayText = state.translations[state.displayLanguage][index];
         }
 
+        if (state.selectedSegment === index) {
+            div.classList.add('selected');
+        }
+
         div.innerHTML = `
             <div class="segment-number">${index + 1}</div>
             <div class="segment-content">
                 <div class="segment-text" contenteditable="true" 
-                     onblur="updateSegment(${index}, this.textContent)"
-                     onclick="event.stopPropagation();">
+                     onblur="updateSegment(${index}, this.textContent)">
                     ${escapeHtml(displayText || '')}
                 </div>
                 <div class="segment-time">
@@ -624,12 +627,24 @@ function renderSegments() {
                 <button class="segment-edit-btn" onclick="event.stopPropagation(); editSegment(${index})" title="Editează">
                     ✏️
                 </button>
+                <button class="segment-delete-btn" onclick="event.stopPropagation(); deleteSegment(${index})" title="Șterge">
+                    🗑️
+                </button>
             </div>
         `;
         
-        div.addEventListener('click', () => {
-            seekToTime(segment.start);
-            highlightSegment(index);
+        div.addEventListener('click', (e) => {
+            const isButton = e.target.closest('button');
+            const isText = e.target.classList.contains('segment-text');
+
+            state.selectedSegment = index;
+
+            if (!isButton && !isText) {
+                seekToTime(segment.start, false);
+            }
+
+            renderSegments();
+            renderTimeline();
         });
         
         elements.segmentsList.appendChild(div);
@@ -750,14 +765,13 @@ function seekToTime(time, autoPlay = true) {
 
 function highlightSegment(index) {
     // Remove previous highlight
-    const prevActive = document.querySelector('.segment-item.active');
-    if (prevActive) prevActive.classList.remove('active');
+    const prevActive = document.querySelectorAll('.segment-item.active');
+    prevActive.forEach(el => el.classList.remove('active'));
     
     // Add new highlight
     const newActive = document.querySelector(`.segment-item[data-index="${index}"]`);
     if (newActive) {
         newActive.classList.add('active');
-        // Removed scrollIntoView to prevent unwanted scrolling during playback
     }
     
     state.activeSegment = index;
@@ -854,7 +868,9 @@ elements.mainVideoPlayer.addEventListener('seeked', () => {
 });
 
 // === Export Functions ===
-async function exportSRT(lang = 'original') {
+async function exportSRT(lang = null) {
+    if (!lang) lang = state.displayLanguage;
+
     if (state.segments.length === 0) {
         showToast('Nu există segmente de exportat', 'warning');
         return;
@@ -896,7 +912,7 @@ async function exportDOCX() {
         return;
     }
     
-    const lang = state.exportLanguage;
+    const lang = state.exportLanguage || state.displayLanguage;
     const segmentsToExport = state.segments.map((seg, i) => {
         let text = seg.text;
         if (lang !== 'original' && state.translations[lang]) {
@@ -953,8 +969,8 @@ function copyFullText() {
     });
 }
 
-function showDOCXDialog(lang = 'original') {
-    state.exportLanguage = lang;
+function showDOCXDialog(lang = null) {
+    state.exportLanguage = lang || state.displayLanguage;
     document.getElementById('docxModal').style.display = 'flex';
 }
 
@@ -1001,16 +1017,32 @@ function switchTab(tab) {
     state.currentTab = tab;
     
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    event.target.classList.add('active');
+    if (event && event.target) {
+        event.target.classList.add('active');
+    }
     
     if (tab === 'original') {
+        state.displayLanguage = 'original';
         elements.fullTextView.style.display = 'none';
         document.getElementById('segmentsContainer').style.display = 'block';
     } else {
+        // Switch to the first translation if available
+        const availableLangs = Object.keys(state.translations);
+        if (availableLangs.length > 0 && state.displayLanguage === 'original') {
+            state.displayLanguage = availableLangs[0];
+        }
+
         document.getElementById('segmentsContainer').style.display = 'none';
         elements.fullTextView.style.display = 'block';
         updateFullText();
     }
+
+    if (elements.subtitleLangSelect) {
+        elements.subtitleLangSelect.value = state.displayLanguage;
+    }
+
+    renderSegments();
+    renderTimeline();
 }
 
 // === Toast Notifications ===
@@ -1235,6 +1267,7 @@ function renderTimeline() {
             e.stopPropagation(); // Prevent timelineContent click
             state.selectedSegment = index;
             renderTimeline();
+            renderSegments();
             seekToTime(segment.start, false); // Don't auto-play when selecting
         };
 
