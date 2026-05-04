@@ -17,7 +17,9 @@ const state = {
     isVideo: false,
     pixelsPerSecond: 50,
     zoomLevel: 1.0,
+    selectedSegment: null,
     isDragging: false,
+    isDraggingPlayhead: false,
     dragTarget: null,
     dragStartX: 0,
     dragStartOffset: 0,
@@ -152,8 +154,11 @@ async function initModels() {
 }
 
 function initVideoPlayer() {
-    const video = elements.mainVideoPlayer;
+    const video = document.getElementById('mainVideoPlayer');
+    if (!video) return;
+
     state.videoPlayer = video;
+    elements.mainVideoPlayer = video;
     
     video.addEventListener('timeupdate', () => {
         if (state.segments.length > 0) {
@@ -683,11 +688,11 @@ function displayTranslations() {
 }
 
 // === Video Player Controls ===
-function seekToTime(time) {
-    console.log('Seeking to:', time);
+function seekToTime(time, autoPlay = true) {
+    console.log('Seeking to:', time, 'autoPlay:', autoPlay);
     if (elements.mainVideoPlayer) {
         elements.mainVideoPlayer.currentTime = time;
-        if (elements.mainVideoPlayer.paused) {
+        if (autoPlay && elements.mainVideoPlayer.paused) {
             elements.mainVideoPlayer.play().catch(e => console.log('Play error:', e));
         }
     }
@@ -1090,6 +1095,12 @@ document.addEventListener('keydown', (e) => {
         e.preventDefault();
         seekToTime(state.segments[state.activeSegment + 1].start);
     }
+
+    // Delete pentru ștergere segment selectat
+    if (e.code === 'Delete' && state.selectedSegment !== null && document.activeElement === document.body) {
+        e.preventDefault();
+        deleteSegment(state.selectedSegment);
+    }
 });
 
 // === Cleanup on page unload ===
@@ -1145,8 +1156,15 @@ function renderTimeline() {
 
         block.onclick = (e) => {
             if (e.target.classList.contains('timeline-resize-handle')) return;
-            seekToTime(segment.start);
+            e.stopPropagation(); // Prevent timelineContent click
+            state.selectedSegment = index;
+            renderTimeline();
+            seekToTime(segment.start, false); // Don't auto-play when selecting
         };
+
+        if (state.selectedSegment === index) {
+            block.classList.add('selected');
+        }
 
         // Add text based on display language
         let displayText = segment.text;
@@ -1204,14 +1222,29 @@ function renderTimeline() {
     // Adjust container height based on tracks
     elements.timelineContainer.style.height = Math.max(120, tracks.length * 35 + 20) + 'px';
 
-    // Add click to seek on timeline
-    elements.timelineContent.onclick = (e) => {
-        if (e.target.classList.contains('timeline-segment-block')) return;
-        const rect = elements.timelineContent.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const time = x / pps;
-        seekToTime(time);
+    // Add interaction for playhead dragging and seeking
+    elements.timelineContent.onmousedown = (e) => {
+        // If clicking on a segment or its handles, don't trigger playhead drag here
+        if (e.target.classList.contains('timeline-segment-block') ||
+            e.target.classList.contains('timeline-delete-btn') ||
+            e.target.classList.contains('timeline-resize-handle')) return;
+
+        state.isDraggingPlayhead = true;
+        handleTimelineSeek(e);
+        e.preventDefault();
     };
+}
+
+function handleTimelineSeek(e) {
+    if (!elements.mainVideoPlayer || isNaN(elements.mainVideoPlayer.duration)) return;
+
+    const rect = elements.timelineContent.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const time = Math.max(0, Math.min(elements.mainVideoPlayer.duration, x / pps));
+
+    state.selectedSegment = null;
+    seekToTime(time, false);
 }
 
 function renderTimelineRuler(duration, pps) {
@@ -1281,6 +1314,11 @@ function zoomTimeline(factor) {
 }
 
 function handleTimelineMove(e) {
+    if (state.isDraggingPlayhead) {
+        handleTimelineSeek(e);
+        return;
+    }
+
     if (!state.isDragging || state.dragTarget === null) return;
 
     const pps = state.pixelsPerSecond * state.zoomLevel;
@@ -1303,14 +1341,19 @@ function handleTimelineMove(e) {
 
     // Update visuals immediately without full re-render
     const block = elements.timelineSegments.children[state.dragTarget];
-    block.style.left = (segment.start * pps) + 'px';
-    block.style.width = ((segment.end - segment.start) * pps) + 'px';
+    if (block) {
+        block.style.left = (segment.start * pps) + 'px';
+        block.style.width = ((segment.end - segment.start) * pps) + 'px';
+    }
 
-    updateSubtitleDisplay(state.videoPlayer.currentTime);
-    updateActiveSegment(state.videoPlayer.currentTime);
+    if (state.videoPlayer) {
+        updateSubtitleDisplay(state.videoPlayer.currentTime);
+        updateActiveSegment(state.videoPlayer.currentTime);
+    }
 }
 
 function handleTimelineUp() {
+    state.isDraggingPlayhead = false;
     if (state.isDragging) {
         state.isDragging = false;
         state.dragTarget = null;
@@ -1326,9 +1369,13 @@ function deleteSegment(index) {
         Object.keys(state.translations).forEach(lang => {
             state.translations[lang].splice(index, 1);
         });
+
+        state.selectedSegment = null;
         renderTimeline();
         renderSegments();
-        updateSubtitleDisplay(state.videoPlayer.currentTime);
+        if (state.videoPlayer) {
+            updateSubtitleDisplay(state.videoPlayer.currentTime);
+        }
     }
 }
 

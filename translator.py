@@ -1,4 +1,5 @@
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, NllbTokenizer
+from deep_translator import GoogleTranslator
 import torch
 import numpy as np
 import json
@@ -84,86 +85,66 @@ class Translator:
         target_lang: str,
         batch_size: int = 8
     ) -> List[str]:
-        """Translate a batch of texts"""
+        """Translate a batch of texts using Google Translate (via deep-translator)"""
         try:
-            # Check if bridging is needed
-            if source_lang in self.bridge_languages and target_lang != 'en':
-                return self._bridge_translate(texts, source_lang, target_lang, batch_size)
+            logger.info(f"Translating {len(texts)} segments using Google Translate: {source_lang} -> {target_lang}")
             
+            # Google Translate handles mapping internally usually, but let's be safe
+            # NLLB maps 'ro' to 'ron_Latn', but Google wants 'ro'
+            s_lang = source_lang if source_lang != 'auto' else 'auto'
+            t_lang = target_lang
+
+            translator = GoogleTranslator(source=s_lang, target=t_lang)
+
+            # deep-translator can translate lists
+            # Note: translate_batch in deep-translator takes a list
+            translations = translator.translate_batch(texts)
+            
+            return translations
+
+        except Exception as e:
+            logger.error(f"Google Translate error: {e}")
+            # Fallback to NLLB if Google fails
+            return self._nllb_translate(texts, source_lang, target_lang, batch_size)
+
+    def _nllb_translate(
+        self,
+        texts: List[str],
+        source_lang: str,
+        target_lang: str,
+        batch_size: int = 8
+    ) -> List[str]:
+        """NLLB Fallback translation"""
+        try:
             model, tokenizer = self.load_model(source_lang, target_lang)
-            
-            # Get language codes
             src_code = self.lang_map.get(source_lang, 'eng_Latn')
             tgt_code = self.lang_map.get(target_lang, 'eng_Latn')
-            
             translations = []
             
-            # Process in batches
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i + batch_size]
-                
-                # Set source language for tokenizer
                 if hasattr(tokenizer, 'src_lang'):
                     tokenizer.src_lang = src_code
                 
-                # Tokenize with explicit language code
-                inputs = tokenizer(
-                    batch,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=512
-                ).to(self.device)
+                inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True).to(self.device)
                 
-                # Get target language token ID
-                # Try different methods to get the forced bos token id
-                forced_bos_token_id = None
+                # Use target language token ID for generation
+                forced_bos_token_id = tokenizer.convert_tokens_to_ids(tgt_code)
                 
-                # Method 1: Try lang_code_to_id
-                if hasattr(tokenizer, 'lang_code_to_id'):
-                    forced_bos_token_id = tokenizer.lang_code_to_id.get(tgt_code)
-                
-                # Method 2: Try convert_tokens_to_ids with language code
-                if forced_bos_token_id is None and hasattr(tokenizer, 'convert_tokens_to_ids'):
-                    forced_bos_token_id = tokenizer.convert_tokens_to_ids(tgt_code)
-                
-                # Method 3: Use tokenizer's internal language mapping
-                if forced_bos_token_id is None:
-                    # Get it from the tokenizer's additional_special_tokens
-                    try:
-                        forced_bos_token_id = tokenizer.get_lang_id(tgt_code)
-                    except:
-                        # Last resort: encode the language token directly
-                        lang_token = tokenizer.encode(tgt_code, add_special_tokens=False)
-                        if lang_token:
-                            forced_bos_token_id = lang_token[0]
-                
-                # Generate translation
+                # Simple generation
                 with torch.no_grad():
                     translated = model.generate(
                         **inputs,
-                        forced_bos_token_id=forced_bos_token_id,
                         max_length=512,
-                        num_beams=5,
-                        early_stopping=True,
-                        no_repeat_ngram_size=3,
-                        length_penalty=0.8
+                        forced_bos_token_id=forced_bos_token_id
                     )
                 
-                # Decode
                 decoded = tokenizer.batch_decode(translated, skip_special_tokens=True)
                 translations.extend(decoded)
-                
-                # Clear memory
-                if self.device == "cuda":
-                    torch.cuda.empty_cache()
-            
             return translations
-            
         except Exception as e:
-            logger.error(f"Translation error: {e}")
-            # Fallback: try with a simpler approach
-            return self._simple_translate(texts, source_lang, target_lang)
+            logger.error(f"NLLB Fallback error: {e}")
+            return texts
     
     def _simple_translate(
         self,
