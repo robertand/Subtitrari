@@ -32,6 +32,45 @@
             </div>
         </header>
 
+        <!-- Video Player -->
+        <div class="glass-container player-section" id="playerSection" style="display: none;">
+            <h2 class="section-title">
+                <span class="icon">▶️</span>
+                Preview & Player
+            </h2>
+            <div class="video-container">
+                <video id="mainVideoPlayer" controls>
+                    <source src="" type="video/mp4">
+                </video>
+                <div class="subtitle-overlay" id="subtitleOverlay"></div>
+            </div>
+            <div class="player-controls">
+                <button class="btn btn-sm" onclick="togglePlayPause()">⏯️ Play/Pause</button>
+                <select id="subtitleLangSelect" class="setting-select btn-sm"
+                        style="width: auto; margin: 0 10px; display: none;"
+                        onchange="changeSubtitleLanguage(this.value)">
+                    <option value="original">Original</option>
+                </select>
+                <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
+                <div class="zoom-controls">
+                    <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(0.8)">➖</button>
+                    <span id="zoomLevel">100%</span>
+                    <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(1.2)">➕</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Timeline Section -->
+        <div class="glass-container timeline-section" id="timelineSection" style="display: none; width: 100%; max-width: none;">
+            <div class="timeline-ruler" id="timelineRuler"></div>
+            <div class="timeline-container" id="timelineContainer">
+                <div class="timeline-content" id="timelineContent">
+                    <div class="timeline-segments" id="timelineSegments"></div>
+                    <div class="timeline-playhead" id="timelinePlayhead"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Main Grid -->
         <div class="main-grid">
             <!-- Left Panel - Upload & Settings -->
@@ -80,16 +119,6 @@
                         </div>
                     </div>
 
-                    <!-- File Preview -->
-                    <div class="file-preview" id="filePreview" style="display: none;">
-                        <div class="preview-container">
-                            <video id="videoPreview" controls style="display: none;">
-                                <source src="" type="video/mp4">
-                            </video>
-                            <img id="imagePreview" style="display: none;" alt="Preview">
-                            <div class="preview-info" id="previewInfo"></div>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Settings Section -->
@@ -148,6 +177,54 @@
                                 <label class="checkbox-label">
                                     <input type="checkbox" id="useVAD" class="setting-checkbox">
                                     <span>VAD (pauze vorbire)</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="useMargin" class="setting-checkbox" checked>
+                                    <span>Marjă 1s după voce</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-full">
+                                <label class="setting-label">Metodă îmbinare segmente</label>
+                                <select id="mergeMethodSelect" class="setting-select">
+                                    <option value="none" selected>Niciuna (păstrează suprapuneri)</option>
+                                    <option value="similarity">Similitudine (60%) - păstrează segment mai lung</option>
+                                    <option value="llm">LLM - Logică și context (retranscrie tot)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Verification Settings -->
+                    <div class="setting-group">
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label class="checkbox-label" title="Folosește WhisperX pentru o a doua opinie și aliniere mai precisă">
+                                    <input type="checkbox" id="useWhisperX" class="setting-checkbox">
+                                    <span>Verifică cu WhisperX</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="isolateVoice" class="setting-checkbox">
+                                    <span>Izolare Voce</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row" style="margin-top: 8px;">
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="deduplicate" class="setting-checkbox">
+                                    <span>Elimină repetiții</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="preventOverlap" class="setting-checkbox">
+                                    <span>Segmente secvențiale</span>
                                 </label>
                             </div>
                         </div>
@@ -227,24 +304,6 @@
                         <button class="btn btn-cancel" onclick="cancelProcessing()" id="cancelProcessingBtn">
                             ❌ Anulează procesarea
                         </button>
-                    </div>
-                </div>
-
-                <!-- Video Player -->
-                <div class="glass-container player-section" id="playerSection" style="display: none;">
-                    <h2 class="section-title">
-                        <span class="icon">▶️</span>
-                        Player Video
-                    </h2>
-                    <div class="video-container">
-                        <video id="mainVideoPlayer" controls>
-                            <source src="" type="video/mp4">
-                        </video>
-                        <div class="subtitle-overlay" id="subtitleOverlay"></div>
-                    </div>
-                    <div class="player-controls">
-                        <button class="btn btn-sm" onclick="togglePlayPause()">⏯️ Play/Pause</button>
-                        <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
                     </div>
                 </div>
 

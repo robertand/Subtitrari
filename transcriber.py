@@ -1,7 +1,9 @@
 import whisper
+import whisperx
 import torch
 import numpy as np
 import librosa
+import noisereduce as nr
 import soundfile as sf
 from pathlib import Path
 import logging
@@ -163,12 +165,18 @@ class WhisperTranscriber:
                     language
                 )
                 
-                # Adjust timestamps
+                # Adjust timestamps and avoid duplicates from overlapping windows
                 offset = i / sr
+                step_duration = step / sr
+
                 for seg in result.get('segments', []):
-                    seg['start'] += offset
-                    seg['end'] += offset
-                    segments.append(seg)
+                    # Only add segments that start in the unique part of this window
+                    # (except for the last window where we take everything remaining)
+                    is_last_window = (i + window_samples) >= len(audio)
+                    if is_last_window or seg['start'] < step_duration:
+                        seg['start'] += offset
+                        seg['end'] += offset
+                        segments.append(seg)
                 
                 # Cleanup temp file
                 temp_file.unlink(missing_ok=True)
@@ -183,6 +191,17 @@ class WhisperTranscriber:
             logger.error(f"Windowed transcription error: {e}")
             raise
     
+    def isolate_voice(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Isolate voice by reducing background noise and music"""
+        try:
+            logger.info("Isolating voice using spectral gating...")
+            # Use noisereduce for spectral gating
+            reduced_noise = nr.reduce_noise(y=audio, sr=sr, prop_decrease=0.8)
+            return reduced_noise
+        except Exception as e:
+            logger.error(f"Voice isolation error: {e}")
+            return audio
+
     def _normalize_audio(self, audio: np.ndarray) -> np.ndarray:
         """Normalize audio to improve transcription quality"""
         rms = np.sqrt(np.mean(audio**2))
@@ -239,6 +258,48 @@ class WhisperTranscriber:
             logger.error(f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
             raise
     
+    def transcribe_whisperx(
+        self,
+        audio_path: str,
+        model_name: str = 'small',
+        language: Optional[str] = None,
+        progress_callback = None
+    ) -> Dict[str, Any]:
+        """Transcribe audio using WhisperX for better alignment and alternative version"""
+        try:
+            device = self.device
+            compute_type = "float16" if device == "cuda" else "int8"
+
+            if progress_callback:
+                progress_callback(10, "Loading WhisperX model...")
+
+            model = whisperx.load_model(model_name, device, compute_type=compute_type, download_root='data/models')
+
+            if progress_callback:
+                progress_callback(30, "Transcribing with WhisperX...")
+
+            audio = whisperx.load_audio(audio_path)
+            result = model.transcribe(audio, batch_size=16, language=language)
+
+            if progress_callback:
+                progress_callback(60, "Aligning WhisperX results...")
+
+            # Alignment
+            model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
+            result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
+
+            if progress_callback:
+                progress_callback(100, "WhisperX complete!")
+
+            return {
+                "segments": result["segments"],
+                "language": result["language"],
+                "text": " ".join([seg["text"] for seg in result["segments"]])
+            }
+        except Exception as e:
+            logger.error(f"WhisperX transcription error: {e}")
+            raise
+
     def unload_model(self):
         """Free GPU memory"""
         if self.current_model and self.device == "cuda":

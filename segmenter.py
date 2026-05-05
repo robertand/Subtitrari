@@ -1,4 +1,5 @@
 import re
+import json
 from typing import List, Dict, Any, Optional
 import numpy as np
 import librosa
@@ -12,9 +13,10 @@ class SubtitleSegmenter:
         segments: List[Dict],
         min_duration: float = 1.0,
         max_duration: float = 5.0,
-        max_chars: int = 80
+        max_chars: int = 80,
+        overlap: float = 0.0
     ) -> List[Dict]:
-        """Segment subtitles by time constraints"""
+        """Segment subtitles by time constraints with optional overlap"""
         result = []
         
         for segment in segments:
@@ -26,104 +28,41 @@ class SubtitleSegmenter:
             if not text:
                 continue
             
-            # If segment is too short, try to merge with next
+            # If segment is too short, try to merge with next (preserving overlap if possible)
             if duration < min_duration:
                 if result:
                     # Merge with previous
                     prev = result[-1]
-                    prev['text'] += ' ' + text
-                    prev['end'] = end
+                    # If they already overlap significantly, just append text
+                    if start < prev['end']:
+                        prev['text'] += ' ' + text
+                        prev['end'] = max(prev['end'], end)
+                    else:
+                        prev['text'] += ' ' + text
+                        prev['end'] = end
                 else:
                     result.append({
                         'text': text,
                         'start': start,
-                        'end': end
+                        'end': end + overlap
                     })
                 continue
             
             # If segment is too long, split it
             if duration > max_duration or len(text) > max_chars:
                 sub_segments = self._split_segment(
-                    text, start, end, max_duration, max_chars
+                    text, start, end, max_duration, max_chars, overlap
                 )
                 result.extend(sub_segments)
             else:
                 result.append({
                     'text': text,
                     'start': start,
-                    'end': end
+                    'end': end + overlap
                 })
         
         return result
     
-    def segment_by_pauses(
-        self,
-        audio_path: str,
-        segments: List[Dict],
-        min_pause_duration: float = 1.0,
-        max_duration: float = 5.0,
-        max_chars: int = 80
-    ) -> List[Dict]:
-        """Segment using Voice Activity Detection based on pauses"""
-        try:
-            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
-            
-            # Voice activity detection using energy
-            frame_length = 2048
-            hop_length = 512
-            
-            rms = librosa.feature.rms(
-                y=audio, 
-                frame_length=frame_length, 
-                hop_length=hop_length
-            )[0]
-            
-            rms_db = librosa.amplitude_to_db(rms, ref=np.max)
-            
-            # Detect silence/pauses
-            silence_threshold = -40  # dB
-            is_speech = rms_db > silence_threshold
-            
-            # Convert frames to time
-            times = librosa.frames_to_time(
-                np.arange(len(rms_db)), 
-                sr=sr, 
-                hop_length=hop_length
-            )
-            
-            # Find pauses in segments
-            result = []
-            for segment in segments:
-                start = segment['start']
-                end = segment['end']
-                text = segment.get('text', '').strip()
-                
-                if not text:
-                    continue
-                
-                # Check for pauses within segment
-                mask = (times >= start) & (times <= end)
-                speech_frames = is_speech[mask]
-                
-                if len(speech_frames) > 0:
-                    speech_ratio = np.sum(speech_frames) / len(speech_frames)
-                    
-                    # If there are significant pauses, split segment
-                    if speech_ratio < 0.6 and (end - start) > max_duration:
-                        splits = self._split_by_pauses(
-                            text, start, end, times[mask], speech_frames
-                        )
-                        result.extend(splits)
-                    else:
-                        result.append({'text': text, 'start': start, 'end': end})
-                else:
-                    result.append({'text': text, 'start': start, 'end': end})
-            
-            return result
-            
-        except Exception as e:
-            # Fallback to time-based segmentation
-            return self.segment_by_time(segments, min_duration=1.0, max_duration=max_duration, max_chars=max_chars)
     
     def _split_segment(
         self,
@@ -131,9 +70,10 @@ class SubtitleSegmenter:
         start: float,
         end: float,
         max_duration: float,
-        max_chars: int
+        max_chars: int,
+        overlap: float = 0.0
     ) -> List[Dict]:
-        """Split a long segment into smaller ones"""
+        """Split a long segment into smaller ones with overlap"""
         words = text.split()
         if not words:
             return [{'text': text, 'start': start, 'end': end}]
@@ -162,7 +102,7 @@ class SubtitleSegmenter:
                 segments.append({
                     'text': current_text,
                     'start': round(current_start, 3),
-                    'end': round(current_end, 3)
+                    'end': round(current_end + overlap, 3)
                 })
                 
                 # Start new segment
@@ -189,9 +129,10 @@ class SubtitleSegmenter:
         start: float,
         end: float,
         times: np.ndarray,
-        speech_frames: np.ndarray
+        speech_frames: np.ndarray,
+        overlap: float = 0.0
     ) -> List[Dict]:
-        """Split segment based on detected pauses"""
+        """Split segment based on detected pauses with overlap"""
         # Find silence regions
         silence_regions = []
         in_silence = False
@@ -224,7 +165,7 @@ class SubtitleSegmenter:
                 segments.append({
                     'text': part1,
                     'start': round(current_start, 3),
-                    'end': round(pause_start, 3)
+                    'end': round(pause_start + overlap, 3)
                 })
                 
                 words = words[split_point:]
@@ -235,7 +176,7 @@ class SubtitleSegmenter:
             segments.append({
                 'text': ' '.join(words),
                 'start': round(current_start, 3),
-                'end': round(end, 3)
+                'end': round(end + overlap, 3)
             })
         
         return segments or [{'text': text, 'start': start, 'end': end}]
@@ -261,6 +202,299 @@ class SubtitleSegmenter:
         
         return '\n'.join(lines[:2])  # Maximum 2 lines
     
+    def merge_segments_similarity(self, segments: List[Dict], threshold: float = 0.6) -> List[Dict]:
+        """Merge overlapping segments if word similarity exceeds threshold"""
+        if not segments:
+            return []
+
+        merged = []
+        i = 0
+        while i < len(segments):
+            current = segments[i].copy()
+            j = i + 1
+
+            while j < len(segments):
+                next_seg = segments[j]
+
+                # Check for overlap
+                overlap_start = max(current['start'], next_seg['start'])
+                overlap_end = min(current['end'], next_seg['end'])
+
+                if overlap_end > overlap_start:
+                    # Calculate similarity for the overlapping portion (simplified)
+                    words1 = set(re.findall(r'\w+', current['text'].lower()))
+                    words2 = set(re.findall(r'\w+', next_seg['text'].lower()))
+
+                    if not words1 or not words2:
+                        j += 1
+                        continue
+
+                    common = words1.intersection(words2)
+                    similarity = len(common) / max(len(words1), len(words2)) if words1 or words2 else 0
+
+                    if similarity >= threshold:
+                        # Merge segments: keep the longer one or combine
+                        if len(current['text']) >= len(next_seg['text']):
+                            current['end'] = max(current['end'], next_seg['end'])
+                        else:
+                            current['text'] = next_seg['text']
+                            current['start'] = min(current['start'], next_seg['start'])
+                            current['end'] = max(current['end'], next_seg['end'])
+                        j += 1
+                    else:
+                        # Don't break immediately, might overlap with further ones if they are out of order
+                        j += 1
+                else:
+                    # In a sorted list of segments, we could break here, but let's be safe
+                    j += 1
+
+            merged.append(current)
+            i += 1 # Check every segment as a potential base
+
+        # Final pass to remove fully contained segments that might have been created
+        final_merged = []
+        for m in merged:
+            is_contained = False
+            for other in final_merged:
+                if m['start'] >= other['start'] and m['end'] <= other['end'] and m['text'] in other['text']:
+                    is_contained = True
+                    break
+            if not is_contained:
+                final_merged.append(m)
+
+        return final_merged
+
+    def remove_repetitions(self, segments: List[Dict]) -> List[Dict]:
+        """Remove consecutive identical phrases while keeping segments with background voice if text is same"""
+        if not segments:
+            return []
+
+        # Sort by start time first to ensure consecutiveness
+        sorted_segments = sorted(segments, key=lambda x: x['start'])
+
+        result = [sorted_segments[0].copy()]
+        for i in range(1, len(sorted_segments)):
+            curr = sorted_segments[i].copy()
+            prev = result[-1]
+
+            # Normalize text for comparison
+            curr_text = re.sub(r'[^\w\s]', '', curr['text'].lower()).strip()
+            prev_text = re.sub(r'[^\w\s]', '', prev['text'].lower()).strip()
+
+            # Check for exact matches or high similarity with significant overlap
+            if curr_text == prev_text and curr_text != "":
+                # If they are same, skip current but extend previous end to cover current
+                prev['end'] = max(prev['end'], curr['end'])
+                continue
+
+            # Fuzzy match for near-repetitions (often caused by windowing artifacts)
+            if len(curr_text) > 0 and len(prev_text) > 0:
+                words1 = set(prev_text.split())
+                words2 = set(curr_text.split())
+                if words1 and words2:
+                    common = words1.intersection(words2)
+                    similarity = len(common) / max(len(words1), len(words2))
+                    if similarity > 0.8 and curr['start'] < prev['end']:
+                        # High similarity and overlap: likely a repetition artifact
+                        prev['end'] = max(prev['end'], curr['end'])
+                        if len(curr['text']) > len(prev['text']):
+                            prev['text'] = curr['text']
+                        continue
+
+            result.append(curr)
+        return result
+
+    def ensure_sequential(self, segments: List[Dict]) -> List[Dict]:
+        """Ensure segments do not overlap: next starts exactly after previous ends"""
+        if not segments:
+            return []
+
+        # Sort by start time
+        sorted_segments = sorted(segments, key=lambda x: x['start'])
+
+        result = [sorted_segments[0].copy()]
+        for i in range(1, len(sorted_segments)):
+            curr = sorted_segments[i].copy()
+            prev = result[-1]
+
+            if curr['start'] < prev['end']:
+                # If the overlap is large, it might be a redundant segment
+                if curr['end'] <= prev['end']:
+                    continue # Discard fully contained segment
+
+                curr['start'] = prev['end']
+
+            # If the segment becomes too short after adjustment (e.g. < 0.2s), discard it
+            if curr['end'] - curr['start'] < 0.2:
+                continue
+
+            result.append(curr)
+        return result
+
+    def segment_by_pauses(
+        self,
+        audio_path: str,
+        segments: List[Dict],
+        min_pause_duration: float = 1.0,
+        max_duration: float = 5.0,
+        max_chars: int = 80,
+        overlap: float = 0.0,
+        margin: float = 1.0
+    ) -> List[Dict]:
+        """Segment using Voice Activity Detection based on pauses with overlap and safety margin"""
+        try:
+            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
+
+            # Voice activity detection using energy
+            frame_length = 2048
+            hop_length = 512
+
+            rms = librosa.feature.rms(
+                y=audio,
+                frame_length=frame_length,
+                hop_length=hop_length
+            )[0]
+
+            rms_db = librosa.amplitude_to_db(rms, ref=np.max)
+
+            # Detect silence/pauses
+            silence_threshold = -40  # dB
+            is_speech = rms_db > silence_threshold
+
+            # Convert frames to time
+            times = librosa.frames_to_time(
+                np.arange(len(rms_db)),
+                sr=sr,
+                hop_length=hop_length
+            )
+
+            # Find pauses in segments
+            result = []
+            for segment in segments:
+                start = segment['start']
+                end = segment['end']
+                text = segment.get('text', '').strip()
+
+                if not text:
+                    continue
+
+                # Check for pauses within segment
+                mask = (times >= start) & (times <= end)
+                speech_frames = is_speech[mask]
+
+                if len(speech_frames) > 0:
+                    speech_ratio = np.sum(speech_frames) / len(speech_frames)
+
+                    # Apply margin after speech ends if it's the last part of a phrase
+                    actual_end = end + overlap
+                    if not speech_frames[-1]: # If ends in silence
+                         # find last speech frame index in this segment
+                         indices = np.where(speech_frames)[0]
+                         if len(indices) > 0:
+                             last_speech_idx = indices[-1]
+                             speech_end_time = times[mask][last_speech_idx]
+                             actual_end = min(end, speech_end_time + margin)
+
+                    # If there are significant pauses, split segment
+                    if speech_ratio < 0.6 and (end - start) > max_duration:
+                        splits = self._split_by_pauses(
+                            text, start, end, times[mask], speech_frames, overlap
+                        )
+                        # Apply margin to the end of each split if appropriate
+                        result.extend(splits)
+                    else:
+                        result.append({'text': text, 'start': start, 'end': actual_end})
+                else:
+                    result.append({'text': text, 'start': start, 'end': end + overlap})
+
+            return result
+
+        except Exception as e:
+            # Fallback to time-based segmentation
+            return self.segment_by_time(segments, min_duration=1.0, max_duration=max_duration, max_chars=max_chars, overlap=overlap)
+
+    def merge_segments_llm(self, segments: List[Dict], translator_obj: Any, whisperx_segments: List[Dict] = None) -> List[Dict]:
+        """Use LLM to refine segments by comparing Whisper and WhisperX outputs"""
+        if not segments or not translator_obj:
+            return segments
+
+        # If whisperx_segments is provided, we compare the two versions using a sliding window
+        if whisperx_segments:
+            refined_all = []
+            chunk_size = 30 # Process 30 segments at a time for context
+
+            for i in range(0, max(len(segments), len(whisperx_segments)), chunk_size):
+                chunk_w = segments[i:i + chunk_size]
+                chunk_wx = whisperx_segments[i:i + chunk_size]
+
+                if not chunk_w and not chunk_wx:
+                    continue
+
+                prompt = "Am două versiuni de transcriere pentru același material audio. Prima este de la Whisper, a doua de la WhisperX. "
+                prompt += "Te rog să compari ambele versiuni și să deduci care este varianta corectă pentru fiecare porțiune, bazându-te pe context și logică. "
+                prompt += "Retranscrie rezultatul final într-un flux coerent de segmente de subtitrare care nu se suprapun. "
+                prompt += "Păstrează continuitatea timpilor. "
+                prompt += "Returnează doar segmentele în format JSON: [{\"start\": float, \"end\": float, \"text\": string}, ...]\n\n"
+
+                prompt += "Versiunea Whisper:\n"
+                prompt += "\n".join([f"[{seg['start']}-{seg['end']}] {seg['text']}" for seg in chunk_w])
+
+                prompt += "\n\nVersiunea WhisperX:\n"
+                prompt += "\n".join([f"[{seg['start']}-{seg['end']}] {seg['text']}" for seg in chunk_wx])
+
+                try:
+                    result = translator_obj.refine_segments_with_llm(prompt)
+                    if result:
+                        refined_all.extend(result)
+                    else:
+                        # If LLM fails, prefer WhisperX if available
+                        refined_all.extend(chunk_wx if chunk_wx else chunk_w)
+                except Exception:
+                    refined_all.extend(chunk_wx if chunk_wx else chunk_w)
+
+            return refined_all
+
+        # Original logic for overlapping segments
+        groups = []
+        i = 0
+        while i < len(segments):
+            group = [segments[i]]
+            j = i + 1
+            while j < len(segments):
+                overlaps = False
+                for seg in group:
+                    if min(seg['end'], segments[j]['end']) > max(seg['start'], segments[j]['start']):
+                        overlaps = True
+                        break
+                if overlaps:
+                    group.append(segments[j])
+                    j += 1
+                else:
+                    break
+            groups.append(group)
+            i = j
+
+        refined_segments = []
+        for group in groups:
+            if len(group) == 1:
+                refined_segments.append(group[0])
+                continue
+
+            context_text = "\n".join([f"[{seg['start']}-{seg['end']}] {seg['text']}" for seg in group])
+            prompt = "Următoarele segmente de subtitrare se suprapun. Te rog să deduci după logica textului și context ce rămâne și ce arunci la gunoi, retranscriind totul într-un flux coerent, păstrând timpii de început și sfârșit corespunzători segmentelor rezultate. Returnează doar segmentele în format JSON: [{\"start\": float, \"end\": float, \"text\": string}, ...]\n\n"
+            prompt += context_text
+
+            try:
+                result = translator_obj.refine_segments_with_llm(prompt)
+                if result:
+                    refined_segments.extend(result)
+                else:
+                    refined_segments.extend(group)
+            except Exception:
+                refined_segments.extend(group)
+
+        return refined_segments
+
     def convert_diacritics(self, text: str, to_legacy: bool = True) -> str:
         """Convert between modern and legacy diacritics"""
         if to_legacy:

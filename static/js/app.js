@@ -12,8 +12,19 @@ const state = {
     currentTab: 'original',
     videoPlayer: null,
     activeSegment: -1,
+    displayLanguage: 'original',
     videoUrl: null,
-    isVideo: false
+    isVideo: false,
+    pixelsPerSecond: 50,
+    zoomLevel: 1.0,
+    selectedSegment: null,
+    isDragging: false,
+    isDraggingPlayhead: false,
+    dragTarget: null,
+    dragStartX: 0,
+    dragStartOffset: 0,
+    resizeType: null, // 'start' or 'end'
+    exportLanguage: 'original'
 };
 
 // === DOM Elements ===
@@ -49,7 +60,15 @@ const elements = {
     translationTab: document.getElementById('translationTab'),
     toastContainer: document.getElementById('toastContainer'),
     deviceBadge: document.getElementById('deviceBadge'),
-    deviceText: document.getElementById('deviceText')
+    deviceText: document.getElementById('deviceText'),
+    timelineSection: document.getElementById('timelineSection'),
+    timelineContainer: document.getElementById('timelineContainer'),
+    timelineContent: document.getElementById('timelineContent'),
+    timelineSegments: document.getElementById('timelineSegments'),
+    timelinePlayhead: document.getElementById('timelinePlayhead'),
+    timelineRuler: document.getElementById('timelineRuler'),
+    zoomLevel: document.getElementById('zoomLevel'),
+    subtitleLangSelect: document.getElementById('subtitleLangSelect')
 };
 
 // === Initialization ===
@@ -136,19 +155,26 @@ async function initModels() {
 }
 
 function initVideoPlayer() {
-    const video = elements.mainVideoPlayer;
+    const video = document.getElementById('mainVideoPlayer');
+    if (!video) return;
+
     state.videoPlayer = video;
+    elements.mainVideoPlayer = video;
     
     video.addEventListener('timeupdate', () => {
         if (state.segments.length > 0) {
             updateSubtitleDisplay(video.currentTime);
             updateActiveSegment(video.currentTime);
+            updateTimelinePlayhead(video.currentTime);
         }
         updateTimeDisplay();
     });
     
     video.addEventListener('loadedmetadata', () => {
         updateTimeDisplay();
+        if (state.segments.length > 0) {
+            renderTimeline();
+        }
     });
     
     video.addEventListener('play', () => {
@@ -196,30 +222,20 @@ async function handleFile(file) {
         state.isVideo = true;
     }
     
-    // Show preview if video
-    if (state.isVideo) {
-        const url = URL.createObjectURL(file);
-        state.videoUrl = url;
-        elements.videoPreview.src = url;
-        elements.videoPreview.style.display = 'block';
-        elements.imagePreview.style.display = 'none';
-        elements.filePreview.style.display = 'block';
-        elements.previewInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
-    } else {
-        elements.videoPreview.style.display = 'none';
-        elements.imagePreview.style.display = 'block';
-        elements.imagePreview.src = '/static/audio-icon.png';
-        elements.filePreview.style.display = 'block';
-        elements.previewInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
-    }
+    // Show preview in unified player
+    const url = URL.createObjectURL(file);
+    state.videoUrl = url;
+    elements.playerSection.style.display = 'block';
+    elements.mainVideoPlayer.src = url;
+    elements.mainVideoPlayer.load();
     
     // Start upload
     await startUpload(file);
 }
 
 async function startUpload(file) {
-    const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    let chunkSize = 10 * 1024 * 1024; // Default 10MB
+    let totalChunks = Math.ceil(file.size / chunkSize);
     
     try {
         // Initialize upload session
@@ -233,8 +249,16 @@ async function startUpload(file) {
             })
         });
         
+        if (!initResponse.ok) {
+            const errorData = await initResponse.json();
+            throw new Error(errorData.error || 'Failed to initialize upload');
+        }
+
         const initData = await initResponse.json();
         state.sessionId = initData.session_id;
+        if (initData.chunk_size) chunkSize = initData.chunk_size;
+        totalChunks = Math.ceil(file.size / chunkSize); // Re-calculate just in case
+
         state.isUploading = true;
         
         // Show progress
@@ -257,8 +281,8 @@ async function startUpload(file) {
                 if (!state.isUploading) break;
             }
             
-            const start = i * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const start = i * chunkSize;
+            const end = Math.min(start + chunkSize, file.size);
             const chunk = file.slice(start, end);
             
             const formData = new FormData();
@@ -271,12 +295,17 @@ async function startUpload(file) {
                 body: formData
             });
             
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || `Failed to upload chunk ${i}`);
+            }
+
             const data = await response.json();
             
             // Update progress
             uploadedBytes += chunk.size;
             const progress = (uploadedBytes / file.size) * 100;
-            updateUploadProgress(progress, i, totalChunks, uploadedBytes, startTime);
+            updateUploadProgress(progress, i, totalChunks, uploadedBytes, startTime, file.size);
         }
         
         if (!state.isUploading) return;
@@ -285,18 +314,21 @@ async function startUpload(file) {
         const completeResponse = await fetch('/api/upload/complete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: state.sessionId })
+            body: JSON.stringify({
+                session_id: state.sessionId,
+                total_chunks: totalChunks
+            })
         });
         
+        if (!completeResponse.ok) {
+            const errorData = await completeResponse.json();
+            throw new Error(errorData.error || 'Failed to complete upload');
+        }
+
         const completeData = await completeResponse.json();
         state.taskId = completeData.task_id;
         state.filePath = completeData.file_path;
         
-        // Update preview
-        if (completeData.preview_url) {
-            elements.imagePreview.src = completeData.preview_url;
-            elements.imagePreview.style.display = 'block';
-        }
         
         showToast('Upload complet! Puteți începe procesarea.', 'success');
         elements.startButton.style.display = 'flex';
@@ -321,15 +353,17 @@ function createChunkIndicators(totalChunks) {
     }
 }
 
-function updateUploadProgress(progress, chunkIndex, totalChunks, uploadedBytes, startTime) {
+function updateUploadProgress(progress, chunkIndex, totalChunks, uploadedBytes, startTime, fileSize) {
     elements.uploadPercentage.textContent = Math.round(progress) + '%';
     elements.uploadBar.style.width = progress + '%';
     
     // Update chunk indicators
     const dots = elements.chunkIndicators.children;
-    const dotIndex = Math.floor((chunkIndex / totalChunks) * dots.length);
-    for (let i = 0; i <= dotIndex && i < dots.length; i++) {
-        dots[i].classList.add('uploaded');
+    if (dots.length > 0) {
+        const dotIndex = Math.floor((chunkIndex / totalChunks) * dots.length);
+        for (let i = 0; i <= dotIndex && i < dots.length; i++) {
+            dots[i].classList.add('uploaded');
+        }
     }
     
     // Calculate speed
@@ -339,7 +373,7 @@ function updateUploadProgress(progress, chunkIndex, totalChunks, uploadedBytes, 
         elements.uploadSpeed.textContent = formatSpeed(speed);
         
         // Calculate ETA
-        const remainingBytes = (totalChunks * 10 * 1024 * 1024) - uploadedBytes;
+        const remainingBytes = fileSize - uploadedBytes;
         const eta = remainingBytes / speed;
         elements.uploadETA.textContent = formatTime(eta);
     }
@@ -385,6 +419,12 @@ async function startProcessing() {
         max_duration: parseFloat(document.getElementById('maxDuration').value),
         max_chars: parseInt(document.getElementById('maxChars').value),
         use_vad: document.getElementById('useVAD').checked,
+        use_margin: document.getElementById('useMargin').checked,
+        isolate_voice: document.getElementById('isolateVoice').checked,
+        deduplicate: document.getElementById('deduplicate').checked,
+        prevent_overlap: document.getElementById('preventOverlap').checked,
+        merge_method: document.getElementById('mergeMethodSelect').value,
+        use_whisperx: document.getElementById('useWhisperX').checked,
         audio_only: audioOnly
     };
     
@@ -502,6 +542,7 @@ function cancelProcessing() {
 function showResults(result) {
     state.segments = result.segments || [];
     state.translations = result.translations || {};
+    state.displayLanguage = 'original';
     
     console.log('Showing results:', state.segments.length, 'segments');
     console.log('Is video:', state.isVideo);
@@ -509,41 +550,15 @@ function showResults(result) {
     
     elements.processingSection.style.display = 'none';
     elements.resultsSection.style.display = 'block';
+    elements.playerSection.style.display = 'block';
     
-    // Show video player if video file
-    if (state.isVideo) {
-        elements.playerSection.style.display = 'block';
-        
-        // Construiește URL-ul pentru video
-        const videoUrl = `/api/video/${state.taskId}`;
-        console.log('Setting video URL:', videoUrl);
-        
-        elements.mainVideoPlayer.src = videoUrl;
-        elements.mainVideoPlayer.load();
-        
-        // Așteaptă să se încarce metadatele
-        elements.mainVideoPlayer.addEventListener('loadedmetadata', function() {
-            console.log('Video metadata loaded, duration:', elements.mainVideoPlayer.duration);
-            updateTimeDisplay();
-        }, { once: true });
-        
-        elements.mainVideoPlayer.addEventListener('canplay', function() {
-            console.log('Video can play');
-        }, { once: true });
-        
-        elements.mainVideoPlayer.addEventListener('error', function(e) {
-            console.error('Video loading error:', e);
-            // Încearcă cu URL-ul local dacă există
-            if (state.videoUrl) {
-                console.log('Falling back to local URL');
-                elements.mainVideoPlayer.src = state.videoUrl;
-            }
-        });
-    } else {
-        // Pentru audio, arată player-ul audio
-        elements.playerSection.style.display = 'block';
-        const audioUrl = `/api/audio/${state.taskId}`;
-        elements.mainVideoPlayer.src = audioUrl;
+    // Use the server-side file once processed
+    const mediaUrl = state.isVideo ? `/api/video/${state.taskId}` : `/api/audio/${state.taskId}`;
+    console.log('Setting media URL:', mediaUrl);
+
+    // Only reload if the URL is different to avoid interruption
+    if (!elements.mainVideoPlayer.src.endsWith(mediaUrl)) {
+        elements.mainVideoPlayer.src = mediaUrl;
         elements.mainVideoPlayer.load();
     }
     
@@ -552,9 +567,11 @@ function showResults(result) {
         elements.translationResults.style.display = 'block';
         elements.translationTab.style.display = 'inline-block';
         displayTranslations();
+        updateSubtitleLangSelect();
     } else {
         elements.translationResults.style.display = 'none';
         elements.translationTab.style.display = 'none';
+        if (elements.subtitleLangSelect) elements.subtitleLangSelect.style.display = 'none';
     }
     
     // Render segments
@@ -563,6 +580,13 @@ function showResults(result) {
     
     // Scroll to top of segments
     elements.segmentsList.scrollTop = 0;
+
+    // Show and render timeline
+    elements.timelineSection.style.display = 'block';
+    renderTimeline();
+
+    // Scroll to results
+    elements.resultsSection.scrollIntoView({ behavior: 'smooth' });
 }
 
 function renderSegments() {
@@ -580,13 +604,21 @@ function renderSegments() {
         div.dataset.start = segment.start;
         div.dataset.end = segment.end;
         
+        let displayText = segment.text;
+        if (state.displayLanguage !== 'original' && state.translations[state.displayLanguage]) {
+            displayText = state.translations[state.displayLanguage][index];
+        }
+
+        if (state.selectedSegment === index) {
+            div.classList.add('selected');
+        }
+
         div.innerHTML = `
             <div class="segment-number">${index + 1}</div>
             <div class="segment-content">
                 <div class="segment-text" contenteditable="true" 
-                     onblur="updateSegment(${index}, this.textContent)"
-                     onclick="event.stopPropagation();">
-                    ${escapeHtml(segment.text || '')}
+                     onblur="updateSegment(${index}, this.textContent)">
+                    ${escapeHtml(displayText || '')}
                 </div>
                 <div class="segment-time">
                     ${formatTimestamp(segment.start)} → ${formatTimestamp(segment.end)}
@@ -599,12 +631,24 @@ function renderSegments() {
                 <button class="segment-edit-btn" onclick="event.stopPropagation(); editSegment(${index})" title="Editează">
                     ✏️
                 </button>
+                <button class="segment-delete-btn" onclick="event.stopPropagation(); deleteSegment(${index})" title="Șterge">
+                    🗑️
+                </button>
             </div>
         `;
         
-        div.addEventListener('click', () => {
-            seekToTime(segment.start);
-            highlightSegment(index);
+        div.addEventListener('click', (e) => {
+            const isButton = e.target.closest('button');
+            const isText = e.target.classList.contains('segment-text');
+
+            state.selectedSegment = index;
+
+            if (!isButton && !isText) {
+                seekToTime(segment.start, false);
+            }
+
+            renderSegments();
+            renderTimeline();
         });
         
         elements.segmentsList.appendChild(div);
@@ -613,9 +657,17 @@ function renderSegments() {
 
 function updateSegment(index, text) {
     if (state.segments[index]) {
-        state.segments[index].text = text.trim();
+        if (state.displayLanguage === 'original') {
+            state.segments[index].text = text.trim();
+        } else if (state.translations[state.displayLanguage]) {
+            state.translations[state.displayLanguage][index] = text.trim();
+        }
+
         updateFullText();
-        console.log('Segment updated:', index);
+        displayTranslations(); // Sync the other panel
+        renderTimeline(); // Sync timeline labels
+
+        console.log('Segment updated:', index, 'Lang:', state.displayLanguage);
     }
 }
 
@@ -633,8 +685,25 @@ function editSegment(index) {
 }
 
 function updateFullText() {
-    const fullText = state.segments.map(s => s.text || '').join('\n\n');
-    elements.fullTextEditor.value = fullText;
+    let texts = [];
+    if (state.currentTab === 'original') {
+        texts = state.segments.map(s => s.text || '');
+    } else {
+        // Translation tab
+        if (state.displayLanguage === 'original') {
+            // If display language is original but on translation tab, show first available translation
+            const availableLangs = Object.keys(state.translations);
+            if (availableLangs.length > 0) {
+                texts = state.translations[availableLangs[0]];
+            } else {
+                texts = state.segments.map(s => s.text || '');
+            }
+        } else {
+            texts = state.translations[state.displayLanguage] || state.segments.map(s => s.text || '');
+        }
+    }
+
+    elements.fullTextEditor.value = texts.join('\n\n');
 }
 
 function displayTranslations() {
@@ -643,24 +712,33 @@ function displayTranslations() {
     Object.entries(state.translations).forEach(([lang, texts]) => {
         const langName = getLanguageName(lang);
         const div = document.createElement('div');
-        div.className = 'translation-group';
+        div.className = 'translation-group glass-container';
         div.style.marginBottom = '20px';
+        div.style.padding = '15px';
         
         let translationsHtml = '<div class="translation-segments">';
         texts.forEach((text, i) => {
-            if (text) {
-                translationsHtml += `
-                    <div class="translation-segment" style="margin-bottom: 8px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px;">
-                        <span style="color: var(--text-muted); font-size: 0.8rem;">${i + 1}.</span>
-                        <span contenteditable="true" style="margin-left: 8px;">${escapeHtml(text)}</span>
-                    </div>
-                `;
-            }
+            translationsHtml += `
+                <div class="translation-segment" style="margin-bottom: 8px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px;">
+                    <span style="color: var(--text-muted); font-size: 0.8rem;">${i + 1}.</span>
+                    <span contenteditable="true"
+                          onblur="updateTranslationSegment('${lang}', ${i}, this.textContent)"
+                          style="margin-left: 8px; display: inline-block; width: calc(100% - 30px); outline: none;">
+                        ${escapeHtml(text || '')}
+                    </span>
+                </div>
+            `;
         });
         translationsHtml += '</div>';
         
         div.innerHTML = `
-            <h3 style="margin-bottom: 12px; color: var(--primary);">🌐 ${langName}</h3>
+            <div class="translation-group-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 style="color: var(--primary); margin: 0;">🌐 ${langName}</h3>
+                <div class="group-actions">
+                    <button class="btn btn-sm" onclick="exportSRT('${lang}')">💾 SRT</button>
+                    <button class="btn btn-sm" onclick="showDOCXDialog('${lang}')">📄 DOCX</button>
+                </div>
+            </div>
             ${translationsHtml}
         `;
         
@@ -668,12 +746,22 @@ function displayTranslations() {
     });
 }
 
+function updateTranslationSegment(lang, index, text) {
+    if (state.translations[lang] && state.translations[lang][index] !== undefined) {
+        state.translations[lang][index] = text.trim();
+        if (state.displayLanguage === lang) {
+            updateFullText();
+            updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+        }
+    }
+}
+
 // === Video Player Controls ===
-function seekToTime(time) {
-    console.log('Seeking to:', time);
+function seekToTime(time, autoPlay = true) {
+    console.log('Seeking to:', time, 'autoPlay:', autoPlay);
     if (elements.mainVideoPlayer) {
         elements.mainVideoPlayer.currentTime = time;
-        if (elements.mainVideoPlayer.paused) {
+        if (autoPlay && elements.mainVideoPlayer.paused) {
             elements.mainVideoPlayer.play().catch(e => console.log('Play error:', e));
         }
     }
@@ -681,14 +769,13 @@ function seekToTime(time) {
 
 function highlightSegment(index) {
     // Remove previous highlight
-    const prevActive = document.querySelector('.segment-item.active');
-    if (prevActive) prevActive.classList.remove('active');
+    const prevActive = document.querySelectorAll('.segment-item.active');
+    prevActive.forEach(el => el.classList.remove('active'));
     
     // Add new highlight
     const newActive = document.querySelector(`.segment-item[data-index="${index}"]`);
     if (newActive) {
         newActive.classList.add('active');
-        newActive.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
     
     state.activeSegment = index;
@@ -704,10 +791,27 @@ function togglePlayPause() {
 }
 
 function updateSubtitleDisplay(currentTime) {
-    const segment = findSegmentAtTime(currentTime);
-    if (segment && segment.text) {
-        const lines = segment.text.split('\n');
-        elements.subtitleOverlay.innerHTML = lines.join('<br>');
+    const activeIndices = [];
+    state.segments.forEach((s, i) => {
+        if (currentTime >= s.start && currentTime <= s.end) {
+            activeIndices.push(i);
+        }
+    });
+
+    if (activeIndices.length > 0) {
+        const html = activeIndices.map(index => {
+            let text = '';
+            if (state.displayLanguage === 'original') {
+                text = state.segments[index].text;
+            } else if (state.translations[state.displayLanguage]) {
+                text = state.translations[state.displayLanguage][index];
+            }
+
+            const lines = text.split('\n');
+            return lines.map(line => escapeHtml(line)).join('<br>');
+        }).join('<br><hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.3); margin: 4px 0;"><br>');
+
+        elements.subtitleOverlay.innerHTML = html;
         elements.subtitleOverlay.style.display = 'block';
     } else {
         elements.subtitleOverlay.textContent = '';
@@ -716,11 +820,29 @@ function updateSubtitleDisplay(currentTime) {
 }
 
 function updateActiveSegment(currentTime) {
-    const index = state.segments.findIndex(s => currentTime >= s.start && currentTime <= s.end);
+    const activeIndices = [];
+    state.segments.forEach((s, i) => {
+        if (currentTime >= s.start && currentTime <= s.end) {
+            activeIndices.push(i);
+        }
+    });
     
-    if (index !== state.activeSegment && index >= 0) {
-        highlightSegment(index);
+    // Highlight first active for scrolling list
+    if (activeIndices.length > 0) {
+        const firstIndex = activeIndices[0];
+        if (firstIndex !== state.activeSegment) {
+            highlightSegment(firstIndex);
+        }
     }
+
+    // Highlight all on timeline
+    document.querySelectorAll('.timeline-segment-block').forEach((el, i) => {
+        if (activeIndices.includes(i)) {
+            el.classList.add('active');
+        } else {
+            el.classList.remove('active');
+        }
+    });
 }
 
 function findSegmentAtTime(time) {
@@ -750,18 +872,28 @@ elements.mainVideoPlayer.addEventListener('seeked', () => {
 });
 
 // === Export Functions ===
-async function exportSRT() {
+async function exportSRT(lang = null) {
+    if (!lang) lang = state.displayLanguage;
+
     if (state.segments.length === 0) {
         showToast('Nu există segmente de exportat', 'warning');
         return;
     }
     
+    const segmentsToExport = state.segments.map((seg, i) => {
+        let text = seg.text;
+        if (lang !== 'original' && state.translations[lang]) {
+            text = state.translations[lang][i];
+        }
+        return { ...seg, text: text };
+    });
+
     try {
         const response = await fetch('/api/export/srt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                segments: state.segments,
+                segments: segmentsToExport,
                 legacy_diacritics: document.getElementById('docxLegacyDiacritics')?.checked || false
             })
         });
@@ -769,8 +901,9 @@ async function exportSRT() {
         if (!response.ok) throw new Error('Export failed');
         
         const blob = await response.blob();
-        downloadFile(blob, 'subtitles.srt');
-        showToast('SRT exportat cu succes!', 'success');
+        const filename = lang === 'original' ? 'subtitles_original.srt' : `subtitles_${lang}.srt`;
+        downloadFile(blob, filename);
+        showToast(`SRT (${lang}) exportat cu succes!`, 'success');
     } catch (error) {
         console.error('Export error:', error);
         showToast('Eroare la export SRT', 'error');
@@ -783,6 +916,15 @@ async function exportDOCX() {
         return;
     }
     
+    const lang = state.exportLanguage || state.displayLanguage;
+    const segmentsToExport = state.segments.map((seg, i) => {
+        let text = seg.text;
+        if (lang !== 'original' && state.translations[lang]) {
+            text = state.translations[lang][i];
+        }
+        return { ...seg, text: text };
+    });
+
     const metadata = {
         title: document.getElementById('docxTitle').value || '',
         series: document.getElementById('docxSeries').value || '',
@@ -795,7 +937,7 @@ async function exportDOCX() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                segments: state.segments,
+                segments: segmentsToExport,
                 metadata: metadata,
                 legacy_diacritics: document.getElementById('docxLegacyDiacritics')?.checked || false
             })
@@ -804,9 +946,10 @@ async function exportDOCX() {
         if (!response.ok) throw new Error('Export failed');
         
         const blob = await response.blob();
-        downloadFile(blob, 'translation.docx');
+        const filename = lang === 'original' ? 'translation_original.docx' : `translation_${lang}.docx`;
+        downloadFile(blob, filename);
         closeDOCXDialog();
-        showToast('DOCX exportat cu succes!', 'success');
+        showToast(`DOCX (${lang}) exportat cu succes!`, 'success');
     } catch (error) {
         console.error('Export error:', error);
         showToast('Eroare la export DOCX', 'error');
@@ -830,7 +973,8 @@ function copyFullText() {
     });
 }
 
-function showDOCXDialog() {
+function showDOCXDialog(lang = null) {
+    state.exportLanguage = lang || state.displayLanguage;
     document.getElementById('docxModal').style.display = 'flex';
 }
 
@@ -877,15 +1021,32 @@ function switchTab(tab) {
     state.currentTab = tab;
     
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    event.target.classList.add('active');
+    if (event && event.target) {
+        event.target.classList.add('active');
+    }
     
     if (tab === 'original') {
+        state.displayLanguage = 'original';
         elements.fullTextView.style.display = 'none';
         document.getElementById('segmentsContainer').style.display = 'block';
     } else {
+        // Switch to the first translation if available
+        const availableLangs = Object.keys(state.translations);
+        if (availableLangs.length > 0 && state.displayLanguage === 'original') {
+            state.displayLanguage = availableLangs[0];
+        }
+
         document.getElementById('segmentsContainer').style.display = 'none';
         elements.fullTextView.style.display = 'block';
+        updateFullText();
     }
+
+    if (elements.subtitleLangSelect) {
+        elements.subtitleLangSelect.value = state.displayLanguage;
+    }
+
+    renderSegments();
+    renderTimeline();
 }
 
 // === Toast Notifications ===
@@ -986,6 +1147,32 @@ function getLanguageName(code) {
     return option ? option.textContent : code;
 }
 
+function updateSubtitleLangSelect() {
+    if (!elements.subtitleLangSelect) return;
+
+    elements.subtitleLangSelect.innerHTML = '<option value="original">Original</option>';
+
+    Object.keys(state.translations).forEach(lang => {
+        const option = document.createElement('option');
+        option.value = lang;
+        option.textContent = getLanguageName(lang);
+        elements.subtitleLangSelect.appendChild(option);
+    });
+
+    elements.subtitleLangSelect.style.display = 'inline-block';
+    elements.subtitleLangSelect.value = state.displayLanguage;
+}
+
+function changeSubtitleLanguage(lang) {
+    state.displayLanguage = lang;
+    if (elements.mainVideoPlayer) {
+        updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+    }
+    updateFullText();
+    renderSegments();
+    renderTimeline();
+}
+
 // === Keyboard Shortcuts ===
 document.addEventListener('keydown', (e) => {
     // Space for play/pause (doar când nu e focus pe un input)
@@ -1020,6 +1207,12 @@ document.addEventListener('keydown', (e) => {
         e.preventDefault();
         seekToTime(state.segments[state.activeSegment + 1].start);
     }
+
+    // Delete pentru ștergere segment selectat
+    if (e.code === 'Delete' && state.selectedSegment !== null && document.activeElement === document.body) {
+        e.preventDefault();
+        deleteSegment(state.selectedSegment);
+    }
 });
 
 // === Cleanup on page unload ===
@@ -1031,3 +1224,285 @@ window.addEventListener('beforeunload', () => {
         URL.revokeObjectURL(state.videoUrl);
     }
 });
+// === Timeline Logic ===
+function renderTimeline() {
+    if (!elements.mainVideoPlayer || isNaN(elements.mainVideoPlayer.duration)) return;
+
+    const duration = elements.mainVideoPlayer.duration;
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const width = duration * pps;
+
+    elements.timelineContent.style.width = width + 'px';
+    elements.timelineRuler.style.width = width + 'px';
+
+    // Render Ruler
+    renderTimelineRuler(duration, pps);
+
+    // Render Segments
+    elements.timelineSegments.innerHTML = '';
+
+    // Simple track management for overlapping segments
+    const tracks = [];
+
+    state.segments.forEach((segment, index) => {
+        const startX = segment.start * pps;
+        const endX = segment.end * pps;
+        const segmentWidth = endX - startX;
+
+        // Find a track that doesn't overlap
+        let trackIndex = tracks.findIndex(trackEnd => trackEnd <= segment.start);
+        if (trackIndex === -1) {
+            trackIndex = tracks.length;
+            tracks.push(segment.end);
+        } else {
+            tracks[trackIndex] = segment.end;
+        }
+
+        const block = document.createElement('div');
+        block.className = 'timeline-segment-block';
+        block.style.left = startX + 'px';
+        block.style.width = segmentWidth + 'px';
+        block.style.top = (trackIndex * 35 + 5) + 'px';
+        block.textContent = segment.text;
+        block.title = `${formatTimestamp(segment.start)} - ${formatTimestamp(segment.end)}\n${segment.text}`;
+
+        if (state.selectedSegment === index) {
+            block.classList.add('selected');
+        }
+
+        // Add text based on display language
+        let displayText = segment.text;
+        if (state.displayLanguage !== 'original' && state.translations[state.displayLanguage]) {
+            displayText = state.translations[state.displayLanguage][index];
+        }
+        block.textContent = displayText;
+
+        // Add handles
+        const leftHandle = document.createElement('div');
+        leftHandle.className = 'timeline-resize-handle left';
+        const rightHandle = document.createElement('div');
+        rightHandle.className = 'timeline-resize-handle right';
+        const deleteBtn = document.createElement('div');
+        deleteBtn.className = 'timeline-delete-btn';
+        deleteBtn.innerHTML = '×';
+        deleteBtn.onclick = (e) => {
+            e.stopPropagation();
+            deleteSegment(index);
+        };
+
+        block.appendChild(leftHandle);
+        block.appendChild(rightHandle);
+        block.appendChild(deleteBtn);
+
+        // Interaction Events
+        block.onmousedown = (e) => {
+            if (e.button !== 0) return;
+
+            e.stopPropagation(); // Prevent timelineContent playhead seek
+
+            if (e.target.classList.contains('timeline-delete-btn')) return;
+
+            state.selectedSegment = index;
+            renderTimeline();
+            renderSegments();
+
+            // Only seek if it's a simple click (not a drag start yet, but we'll see)
+            // Actually, always seek to start of segment when clicking it
+            seekToTime(segment.start, false);
+
+            state.isDragging = true;
+            state.dragTarget = index;
+            state.dragStartX = e.clientX;
+
+            if (e.target.classList.contains('left')) {
+                state.resizeType = 'start';
+            } else if (e.target.classList.contains('right')) {
+                state.resizeType = 'end';
+            } else {
+                state.resizeType = 'move';
+                state.dragStartOffset = segment.start;
+            }
+
+            e.preventDefault();
+        };
+
+        elements.timelineSegments.appendChild(block);
+    });
+
+    // Add Global Mouse Listeners
+    if (!window.timelineInited) {
+        window.addEventListener('mousemove', handleTimelineMove);
+        window.addEventListener('mouseup', handleTimelineUp);
+        window.timelineInited = true;
+    }
+
+    // Adjust container height based on tracks
+    elements.timelineContainer.style.height = Math.max(120, tracks.length * 35 + 20) + 'px';
+
+    // Add interaction for playhead dragging and seeking
+    elements.timelineContent.onmousedown = (e) => {
+        // If clicking on a segment or its handles, don't trigger playhead drag here
+        if (e.target.classList.contains('timeline-segment-block') ||
+            e.target.classList.contains('timeline-delete-btn') ||
+            e.target.classList.contains('timeline-resize-handle')) return;
+
+        state.isDraggingPlayhead = true;
+        handleTimelineSeek(e);
+        e.preventDefault();
+    };
+}
+
+function handleTimelineSeek(e) {
+    if (!elements.mainVideoPlayer || isNaN(elements.mainVideoPlayer.duration)) return;
+
+    const rect = elements.timelineContent.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const time = Math.max(0, Math.min(elements.mainVideoPlayer.duration, x / pps));
+
+    state.selectedSegment = null;
+    seekToTime(time, false);
+}
+
+function renderTimelineRuler(duration, pps) {
+    elements.timelineRuler.innerHTML = '';
+
+    // Determine interval based on zoom
+    let interval = 5; // seconds
+    if (pps > 100) interval = 1;
+    if (pps < 20) interval = 10;
+    if (pps < 5) interval = 30;
+
+    for (let t = 0; t <= duration; t += interval) {
+        const x = t * pps;
+        const tick = document.createElement('div');
+        tick.className = 'time-tick major';
+        tick.style.left = x + 'px';
+
+        const label = document.createElement('div');
+        label.className = 'time-tick-label';
+        label.style.left = x + 'px';
+        label.textContent = formatTimeShort(t);
+
+        elements.timelineRuler.appendChild(tick);
+        elements.timelineRuler.appendChild(label);
+
+        // Minor ticks
+        if (interval >= 5) {
+            const minorInterval = interval / 5;
+            for (let mt = t + minorInterval; mt < t + interval && mt <= duration; mt += minorInterval) {
+                const mx = mt * pps;
+                const mTick = document.createElement('div');
+                mTick.className = 'time-tick';
+                mTick.style.left = mx + 'px';
+                elements.timelineRuler.appendChild(mTick);
+            }
+        }
+    }
+}
+
+function formatTimeShort(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function updateTimelinePlayhead(currentTime) {
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const x = currentTime * pps;
+    elements.timelinePlayhead.style.left = x + 'px';
+
+    // Auto-scroll timeline if playhead goes out of view
+    const container = elements.timelineContainer;
+    const scrollLeft = container.scrollLeft;
+    const width = container.clientWidth;
+
+    if (x < scrollLeft || x > scrollLeft + width) {
+        container.scrollLeft = x - width / 2;
+    }
+}
+
+function zoomTimeline(factor) {
+    state.zoomLevel *= factor;
+    state.zoomLevel = Math.max(0.1, Math.min(state.zoomLevel, 10));
+    elements.zoomLevel.textContent = Math.round(state.zoomLevel * 100) + '%';
+    renderTimeline();
+    updateTimelinePlayhead(elements.mainVideoPlayer.currentTime);
+}
+
+function handleTimelineMove(e) {
+    if (state.isDraggingPlayhead) {
+        handleTimelineSeek(e);
+        return;
+    }
+
+    if (!state.isDragging || state.dragTarget === null) return;
+
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const dx = (e.clientX - state.dragStartX) / pps;
+    const segment = state.segments[state.dragTarget];
+
+    if (state.resizeType === 'move') {
+        const duration = segment.end - segment.start;
+        segment.start = Math.max(0, state.dragStartOffset + dx);
+        segment.end = segment.start + duration;
+    } else if (state.resizeType === 'start') {
+        const newStart = Math.min(segment.end - 0.1, segment.start + dx);
+        segment.start = Math.max(0, newStart);
+        state.dragStartX = e.clientX;
+    } else if (state.resizeType === 'end') {
+        const newEnd = Math.max(segment.start + 0.1, segment.end + dx);
+        segment.end = newEnd;
+        state.dragStartX = e.clientX;
+    }
+
+    // Update visuals immediately without full re-render
+    const block = elements.timelineSegments.children[state.dragTarget];
+    if (block) {
+        block.style.left = (segment.start * pps) + 'px';
+        block.style.width = ((segment.end - segment.start) * pps) + 'px';
+    }
+
+    if (state.videoPlayer) {
+        updateSubtitleDisplay(state.videoPlayer.currentTime);
+        updateActiveSegment(state.videoPlayer.currentTime);
+    }
+}
+
+function handleTimelineUp() {
+    state.isDraggingPlayhead = false;
+    if (state.isDragging) {
+        state.isDragging = false;
+        state.dragTarget = null;
+        renderTimeline();
+        renderSegments(); // Update list
+    }
+}
+
+function deleteSegment(index) {
+    if (confirm('Sigur vrei să ștergi acest segment?')) {
+        state.segments.splice(index, 1);
+        // Also remove from translations if any
+        Object.keys(state.translations).forEach(lang => {
+            if (Array.isArray(state.translations[lang])) {
+                state.translations[lang].splice(index, 1);
+            }
+        });
+
+        state.selectedSegment = null;
+        state.activeSegment = -1;
+
+        // Refresh all UI components
+        renderTimeline();
+        renderSegments();
+        displayTranslations();
+        updateFullText();
+
+        if (state.videoPlayer) {
+            updateSubtitleDisplay(state.videoPlayer.currentTime);
+            updateActiveSegment(state.videoPlayer.currentTime);
+        }
+
+        showToast('Segment șters cu succes', 'success');
+    }
+}

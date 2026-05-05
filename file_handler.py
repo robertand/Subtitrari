@@ -73,24 +73,42 @@ class FileHandler:
             'progress': (len(session['uploaded_chunks']) / session['total_chunks']) * 100
         }
     
-    def assemble_file(self, session_id: str) -> str:
+    def assemble_file(self, session_id: str, total_chunks: Optional[int] = None) -> str:
         """Assemble chunks into final file"""
         session = self.upload_sessions.get(session_id)
         if not session:
-            raise ValueError("Session not found")
+            # Try to load from disk
+            session_file = self.config.CHUNK_UPLOAD_DIR / session_id / 'session.json'
+            if session_file.exists():
+                with open(session_file) as f:
+                    session = json.load(f)
+                    # Convert paths back to Path objects
+                    session['session_dir'] = Path(session['session_dir'])
+            else:
+                raise ValueError("Session not found")
         
+        if total_chunks is not None:
+            session['total_chunks'] = total_chunks
+
         output_dir = self.config.PROCESS_DIR / session_id
         output_dir.mkdir(parents=True, exist_ok=True)
         
         output_path = output_dir / session['filename']
         
         # Sort chunks and write to final file
+        missing_chunks = []
         with open(output_path, 'wb') as outfile:
             for i in range(session['total_chunks']):
                 chunk_path = session['session_dir'] / f"chunk_{i:06d}"
                 if chunk_path.exists():
                     with open(chunk_path, 'rb') as chunk_file:
                         outfile.write(chunk_file.read())
+                else:
+                    missing_chunks.append(i)
+
+        if missing_chunks:
+            output_path.unlink(missing_ok=True)
+            raise ValueError(f"Missing chunks: {missing_chunks}")
         
         # Cleanup chunks
         shutil.rmtree(session['session_dir'])

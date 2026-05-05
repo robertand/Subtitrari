@@ -116,15 +116,18 @@ def upload_chunk():
     """Upload a chunk"""
     try:
         session_id = request.form.get('session_id')
-        chunk_number = int(request.form.get('chunk_number'))
+        chunk_number_str = request.form.get('chunk_number')
         chunk_file = request.files.get('chunk')
         
-        if not all([session_id, chunk_number is not None, chunk_file]):
+        if not all([session_id, chunk_number_str is not None, chunk_file]):
             return jsonify({'error': 'Missing parameters'}), 400
         
+        chunk_number = int(chunk_number_str)
         result = file_handler.save_chunk(session_id, chunk_file, chunk_number)
         return jsonify(result)
         
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Chunk upload error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -135,11 +138,12 @@ def complete_upload():
     try:
         data = request.json
         session_id = data.get('session_id')
+        total_chunks = data.get('total_chunks')
         
         if not session_id:
             return jsonify({'error': 'Missing session_id'}), 400
         
-        file_path = file_handler.assemble_file(session_id)
+        file_path = file_handler.assemble_file(session_id, total_chunks=total_chunks)
         
         # Generate preview if it's a video file
         preview_url = None
@@ -493,6 +497,14 @@ def process_task(task):
                 return
             
             transcriber.extract_audio_from_video(str(task.file_path), str(audio_path))
+
+        # Voice isolation
+        if task.options.get('isolate_voice'):
+            task.message = 'Isolating voice...'
+            audio, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio = transcriber.isolate_voice(audio, sr)
+            import soundfile as sf
+            sf.write(str(audio_path), audio, sr)
         
         # Transcribe
         task.progress = 10
@@ -507,7 +519,7 @@ def process_task(task):
         if language == 'auto':
             language = None
         
-        # Use windowed transcription for large files
+        # Whisper transcription
         result = transcriber.transcribe_with_windowing(
             str(audio_path),
             model_name=model_name,
@@ -517,6 +529,20 @@ def process_task(task):
             progress_callback=lambda p, m: update_task_progress(task, p, m)
         )
         
+        # Optional WhisperX transcription for verification
+        whisperx_result = None
+        if task.options.get('use_whisperx'):
+            task.message = 'Running WhisperX verification...'
+            try:
+                whisperx_result = transcriber.transcribe_whisperx(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=result.get('language'),
+                    progress_callback=lambda p, m: update_task_progress(task, 10 + p*0.5, f"WhisperX: {m}")
+                )
+            except Exception as e:
+                logger.error(f"WhisperX verification failed: {e}")
+
         if task.cancel_flag.is_set():
             return
         
@@ -531,20 +557,46 @@ def process_task(task):
         max_chars = task.options.get('max_chars', Config.MAX_CHARS_PER_SEGMENT)
         use_vad = task.options.get('use_vad', False)
         
+        # If prevent_overlap is on, we force overlap to 0 during segmentation
+        segment_overlap = 0.0 if task.options.get('prevent_overlap') else task.options.get('overlap', 0.5)
+
         if use_vad:
             segments = segmenter.segment_by_pauses(
                 str(audio_path), segments,
                 max_duration=max_dur,
-                max_chars=max_chars
+                max_chars=max_chars,
+                overlap=segment_overlap,
+                margin=1.0 if task.options.get('use_margin') else 0.0
             )
         else:
             segments = segmenter.segment_by_time(
                 segments,
                 min_duration=min_dur,
                 max_duration=max_dur,
-                max_chars=max_chars
+                max_chars=max_chars,
+                overlap=segment_overlap
             )
         
+        # Merge segments if requested
+        merge_method = task.options.get('merge_method', 'none')
+        if merge_method == 'similarity':
+            task.message = 'Merging segments by similarity...'
+            segments = segmenter.merge_segments_similarity(segments, threshold=0.6)
+        elif merge_method == 'llm':
+            task.message = 'Merging and verifying segments using LLM...'
+            whisperx_segments = whisperx_result.get('segments') if whisperx_result else None
+            segments = segmenter.merge_segments_llm(segments, translator, whisperx_segments=whisperx_segments)
+
+        # Deduplication
+        if task.options.get('deduplicate'):
+            task.message = 'Removing repetitions...'
+            segments = segmenter.remove_repetitions(segments)
+
+        # Ensure sequential (no overlap)
+        if task.options.get('prevent_overlap'):
+            task.message = 'Ensuring sequential segments...'
+            segments = segmenter.ensure_sequential(segments)
+
         if task.cancel_flag.is_set():
             return
         
