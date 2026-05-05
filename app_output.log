@@ -1,0 +1,8 @@
+2026-05-05 08:33:56,013 - transcriber - INFO - No GPU detected, using CPU
+2026-05-05 08:33:56,029 - __main__ - INFO - Starting Whisper Transcriber Application
+2026-05-05 08:33:56,030 - __main__ - INFO - Device: cpu
+2026-05-05 08:33:56,030 - __main__ - INFO - Server: http://0.0.0.0:5000
+ * Serving Flask app 'app'
+ * Debug mode: on
+Address already in use
+Port 5000 is in use by another program. Either identify and stop that program, or start the server with a different port.

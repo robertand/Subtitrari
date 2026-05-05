@@ -1339,9 +1339,39 @@ function renderTimeline() {
     // Adjust container height based on tracks
     elements.timelineContainer.style.height = Math.max(120, tracks.length * 35 + 20) + 'px';
 
-    // Add interaction for playhead dragging and seeking
+    // Mouse wheel zoom
+    elements.timelineContainer.onwheel = (e) => {
+        if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            const rect = elements.timelineContent.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const ppsBefore = state.pixelsPerSecond * state.zoomLevel;
+            const timeAtCursor = x / ppsBefore;
+
+            const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+            state.zoomLevel *= zoomFactor;
+            state.zoomLevel = Math.max(0.1, Math.min(state.zoomLevel, 20));
+            elements.zoomLevel.textContent = Math.round(state.zoomLevel * 100) + '%';
+
+            renderTimeline();
+
+            const ppsAfter = state.pixelsPerSecond * state.zoomLevel;
+            const newX = timeAtCursor * ppsAfter;
+            elements.timelineContainer.scrollLeft += (newX - x);
+        }
+    };
+
+    // Playhead dragging
+    const handle = document.getElementById('playheadHandle');
+    if (handle) {
+        handle.onmousedown = (e) => {
+            e.stopPropagation();
+            state.isDraggingPlayhead = true;
+            document.body.style.cursor = 'grabbing';
+        };
+    }
+
     elements.timelineContent.onmousedown = (e) => {
-        // If clicking on a segment or its handles, don't trigger playhead drag here
         if (e.target.classList.contains('timeline-segment-block') ||
             e.target.classList.contains('timeline-delete-btn') ||
             e.target.classList.contains('timeline-resize-handle')) return;
@@ -1471,6 +1501,7 @@ function handleTimelineMove(e) {
 
 function handleTimelineUp() {
     state.isDraggingPlayhead = false;
+    document.body.style.cursor = 'default';
     if (state.isDragging) {
         state.isDragging = false;
         state.dragTarget = null;

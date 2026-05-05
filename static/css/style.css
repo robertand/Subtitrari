@@ -540,19 +540,24 @@ body {
 }
 
 .timeline-ruler {
-    height: 20px;
-    border-bottom: 1px solid var(--glass-border);
-    margin-bottom: 5px;
-    position: relative;
-    pointer-events: none;
+    height: 30px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: rgba(255, 255, 255, 0.05);
+    z-index: 10;
+    pointer-events: none; /* Let clicks pass through to content for seeking */
 }
 
 .timeline-container {
-    height: 120px;
+    height: 180px;
     overflow-x: auto;
     overflow-y: hidden;
     position: relative;
-    background: rgba(0, 0, 0, 0.2);
+    background: #111;
+    border: 1px solid var(--glass-border);
 }
 
 .timeline-container::-webkit-scrollbar {
@@ -568,6 +573,7 @@ body {
 .timeline-segments {
     height: 100%;
     position: relative;
+    padding-top: 35px; /* Spatiu pentru ruler */
 }
 
 .timeline-segment-block {
@@ -614,20 +620,26 @@ body {
     top: 0;
     bottom: 0;
     width: 2px;
-    background: var(--secondary);
-    z-index: 20;
+    background: #ff0000;
+    z-index: 100;
     pointer-events: none;
 }
 
-.timeline-playhead::before {
-    content: '';
+.playhead-handle {
     position: absolute;
-    top: -5px;
-    left: -4px;
-    width: 10px;
-    height: 10px;
-    background: var(--secondary);
+    top: 0;
+    left: -10px;
+    width: 20px;
+    height: 15px;
+    background: #ff0000;
     clip-path: polygon(0% 0%, 100% 0%, 50% 100%);
+    cursor: grab;
+    pointer-events: auto;
+    z-index: 110;
+}
+
+.playhead-handle:active {
+    cursor: grabbing;
 }
 
 .time-tick {
@@ -645,11 +657,25 @@ body {
 
 .time-tick-label {
     position: absolute;
-    top: -18px;
+    top: 2px;
     transform: translateX(-50%);
     font-size: 10px;
     color: var(--text-secondary);
     font-family: monospace;
+    z-index: 11;
+}
+
+.time-tick {
+    position: absolute;
+    bottom: 0;
+    height: 8px;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.time-tick.major {
+    height: 12px;
+    background: rgba(255, 255, 255, 0.6);
 }
 
 /* === Segments === */
