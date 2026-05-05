@@ -596,6 +596,9 @@ def process_task(task):
         if task.options.get('prevent_overlap'):
             task.message = 'Ensuring sequential segments...'
             segments = segmenter.ensure_sequential(segments)
+        else:
+            # Even if not strictly sequential, we should merge identical overlaps
+            segments = segmenter.merge_identical_overlapping(segments)
 
         if task.cancel_flag.is_set():
             return

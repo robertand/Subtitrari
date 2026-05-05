@@ -216,8 +216,12 @@ class WhisperTranscriber:
             r'(?i)(please like and subscribe|check out my channel|thanks for watching)',
             r'(?i)(visit our website|follow us on|subscribe to)',
             r'(?i)(background music playing|music fades|applause)',
+            r'(?i)(subtitles by|amara\.org|opensubtitles)',
+            r'(?i)(thank you for watching|see you in the next video)',
             r'(?i)^\s*$',  # Empty lines
-            r'(?i)(♪|♫|♬|♩|♭)'
+            r'(?i)(♪|♫|♬|♩|♭)',
+            r'(?i)(\[.*?\])', # Brackets like [MUSIC]
+            r'(?i)(\*.*?\*)'  # Stars like *laughter*
         ]
         
         if 'segments' in result:
@@ -226,11 +230,27 @@ class WhisperTranscriber:
                 text = segment.get('text', '').strip()
                 is_hallucination = False
                 
+                # Check patterns
                 for pattern in hallucination_patterns:
                     if re.search(pattern, text):
                         is_hallucination = True
                         break
                 
+                # Stutter/Repetition detection (e.g. "you you you you")
+                words = text.split()
+                if len(words) > 4:
+                    # Check if more than 70% of words are the same
+                    from collections import Counter
+                    counts = Counter(words)
+                    most_common, count = counts.most_common(1)[0]
+                    if count / len(words) > 0.7:
+                        is_hallucination = True
+
+                # Extremely short duration hallucinations
+                duration = segment.get('end', 0) - segment.get('start', 0)
+                if duration < 0.1 and len(text) > 10:
+                    is_hallucination = True
+
                 if not is_hallucination and text:
                     cleaned_segments.append(segment)
             
