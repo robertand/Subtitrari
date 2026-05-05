@@ -29,7 +29,7 @@
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+    background: linear-gradient(135deg, #1e1e1e, #2d2d2d, #121212);
     color: var(--text-primary);
     min-height: 100vh;
     overflow-x: hidden;
@@ -51,14 +51,14 @@ body {
     position: absolute;
     border-radius: 50%;
     filter: blur(80px);
-    opacity: 0.5;
+    opacity: 0.2;
     animation: float 20s infinite ease-in-out;
 }
 
 .sphere-1 {
     width: 400px;
     height: 400px;
-    background: radial-gradient(circle, var(--primary), transparent);
+    background: radial-gradient(circle, #444, transparent);
     top: -100px;
     left: -100px;
     animation-delay: 0s;
@@ -67,7 +67,7 @@ body {
 .sphere-2 {
     width: 300px;
     height: 300px;
-    background: radial-gradient(circle, var(--secondary), transparent);
+    background: radial-gradient(circle, #555, transparent);
     bottom: -50px;
     right: -50px;
     animation-delay: -7s;
@@ -76,7 +76,7 @@ body {
 .sphere-3 {
     width: 350px;
     height: 350px;
-    background: radial-gradient(circle, var(--accent), transparent);
+    background: radial-gradient(circle, #333, transparent);
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);

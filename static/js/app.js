@@ -1262,15 +1262,6 @@ function renderTimeline() {
         block.textContent = segment.text;
         block.title = `${formatTimestamp(segment.start)} - ${formatTimestamp(segment.end)}\n${segment.text}`;
 
-        block.onclick = (e) => {
-            if (e.target.classList.contains('timeline-resize-handle')) return;
-            e.stopPropagation(); // Prevent timelineContent click
-            state.selectedSegment = index;
-            renderTimeline();
-            renderSegments();
-            seekToTime(segment.start, false); // Don't auto-play when selecting
-        };
-
         if (state.selectedSegment === index) {
             block.classList.add('selected');
         }
@@ -1302,6 +1293,19 @@ function renderTimeline() {
         // Interaction Events
         block.onmousedown = (e) => {
             if (e.button !== 0) return;
+
+            e.stopPropagation(); // Prevent timelineContent playhead seek
+
+            if (e.target.classList.contains('timeline-delete-btn')) return;
+
+            state.selectedSegment = index;
+            renderTimeline();
+            renderSegments();
+
+            // Only seek if it's a simple click (not a drag start yet, but we'll see)
+            // Actually, always seek to start of segment when clicking it
+            seekToTime(segment.start, false);
+
             state.isDragging = true;
             state.dragTarget = index;
             state.dragStartX = e.clientX;
