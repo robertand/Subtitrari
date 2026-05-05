@@ -165,12 +165,18 @@ class WhisperTranscriber:
                     language
                 )
                 
-                # Adjust timestamps
+                # Adjust timestamps and avoid duplicates from overlapping windows
                 offset = i / sr
+                step_duration = step / sr
+
                 for seg in result.get('segments', []):
-                    seg['start'] += offset
-                    seg['end'] += offset
-                    segments.append(seg)
+                    # Only add segments that start in the unique part of this window
+                    # (except for the last window where we take everything remaining)
+                    is_last_window = (i + window_samples) >= len(audio)
+                    if is_last_window or seg['start'] < step_duration:
+                        seg['start'] += offset
+                        seg['end'] += offset
+                        segments.append(seg)
                 
                 # Cleanup temp file
                 temp_file.unlink(missing_ok=True)

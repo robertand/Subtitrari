@@ -63,75 +63,6 @@ class SubtitleSegmenter:
         
         return result
     
-    def segment_by_pauses(
-        self,
-        audio_path: str,
-        segments: List[Dict],
-        min_pause_duration: float = 1.0,
-        max_duration: float = 5.0,
-        max_chars: int = 80,
-        overlap: float = 0.0
-    ) -> List[Dict]:
-        """Segment using Voice Activity Detection based on pauses with overlap"""
-        try:
-            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
-            
-            # Voice activity detection using energy
-            frame_length = 2048
-            hop_length = 512
-            
-            rms = librosa.feature.rms(
-                y=audio, 
-                frame_length=frame_length, 
-                hop_length=hop_length
-            )[0]
-            
-            rms_db = librosa.amplitude_to_db(rms, ref=np.max)
-            
-            # Detect silence/pauses
-            silence_threshold = -40  # dB
-            is_speech = rms_db > silence_threshold
-            
-            # Convert frames to time
-            times = librosa.frames_to_time(
-                np.arange(len(rms_db)), 
-                sr=sr, 
-                hop_length=hop_length
-            )
-            
-            # Find pauses in segments
-            result = []
-            for segment in segments:
-                start = segment['start']
-                end = segment['end']
-                text = segment.get('text', '').strip()
-                
-                if not text:
-                    continue
-                
-                # Check for pauses within segment
-                mask = (times >= start) & (times <= end)
-                speech_frames = is_speech[mask]
-                
-                if len(speech_frames) > 0:
-                    speech_ratio = np.sum(speech_frames) / len(speech_frames)
-                    
-                    # If there are significant pauses, split segment
-                    if speech_ratio < 0.6 and (end - start) > max_duration:
-                        splits = self._split_by_pauses(
-                            text, start, end, times[mask], speech_frames, overlap
-                        )
-                        result.extend(splits)
-                    else:
-                        result.append({'text': text, 'start': start, 'end': end + overlap})
-                else:
-                    result.append({'text': text, 'start': start, 'end': end + overlap})
-            
-            return result
-            
-        except Exception as e:
-            # Fallback to time-based segmentation
-            return self.segment_by_time(segments, min_duration=1.0, max_duration=max_duration, max_chars=max_chars, overlap=overlap)
     
     def _split_segment(
         self,
@@ -299,7 +230,7 @@ class SubtitleSegmenter:
                         continue
 
                     common = words1.intersection(words2)
-                    similarity = len(common) / max(len(words1), len(words2))
+                    similarity = len(common) / max(len(words1), len(words2)) if words1 or words2 else 0
 
                     if similarity >= threshold:
                         # Merge segments: keep the longer one or combine
@@ -311,33 +242,64 @@ class SubtitleSegmenter:
                             current['end'] = max(current['end'], next_seg['end'])
                         j += 1
                     else:
-                        break
+                        # Don't break immediately, might overlap with further ones if they are out of order
+                        j += 1
                 else:
-                    break
+                    # In a sorted list of segments, we could break here, but let's be safe
+                    j += 1
 
             merged.append(current)
-            i = j
+            i += 1 # Check every segment as a potential base
 
-        return merged
+        # Final pass to remove fully contained segments that might have been created
+        final_merged = []
+        for m in merged:
+            is_contained = False
+            for other in final_merged:
+                if m['start'] >= other['start'] and m['end'] <= other['end'] and m['text'] in other['text']:
+                    is_contained = True
+                    break
+            if not is_contained:
+                final_merged.append(m)
+
+        return final_merged
 
     def remove_repetitions(self, segments: List[Dict]) -> List[Dict]:
         """Remove consecutive identical phrases while keeping segments with background voice if text is same"""
         if not segments:
             return []
 
-        result = [segments[0]]
-        for i in range(1, len(segments)):
-            curr = segments[i]
+        # Sort by start time first to ensure consecutiveness
+        sorted_segments = sorted(segments, key=lambda x: x['start'])
+
+        result = [sorted_segments[0].copy()]
+        for i in range(1, len(sorted_segments)):
+            curr = sorted_segments[i].copy()
             prev = result[-1]
 
             # Normalize text for comparison
             curr_text = re.sub(r'[^\w\s]', '', curr['text'].lower()).strip()
             prev_text = re.sub(r'[^\w\s]', '', prev['text'].lower()).strip()
 
+            # Check for exact matches or high similarity with significant overlap
             if curr_text == prev_text and curr_text != "":
                 # If they are same, skip current but extend previous end to cover current
                 prev['end'] = max(prev['end'], curr['end'])
                 continue
+
+            # Fuzzy match for near-repetitions (often caused by windowing artifacts)
+            if len(curr_text) > 0 and len(prev_text) > 0:
+                words1 = set(prev_text.split())
+                words2 = set(curr_text.split())
+                if words1 and words2:
+                    common = words1.intersection(words2)
+                    similarity = len(common) / max(len(words1), len(words2))
+                    if similarity > 0.8 and curr['start'] < prev['end']:
+                        # High similarity and overlap: likely a repetition artifact
+                        prev['end'] = max(prev['end'], curr['end'])
+                        if len(curr['text']) > len(prev['text']):
+                            prev['text'] = curr['text']
+                        continue
 
             result.append(curr)
         return result
@@ -347,17 +309,24 @@ class SubtitleSegmenter:
         if not segments:
             return []
 
-        result = [segments[0].copy()]
-        for i in range(1, len(segments)):
-            curr = segments[i].copy()
+        # Sort by start time
+        sorted_segments = sorted(segments, key=lambda x: x['start'])
+
+        result = [sorted_segments[0].copy()]
+        for i in range(1, len(sorted_segments)):
+            curr = sorted_segments[i].copy()
             prev = result[-1]
 
             if curr['start'] < prev['end']:
+                # If the overlap is large, it might be a redundant segment
+                if curr['end'] <= prev['end']:
+                    continue # Discard fully contained segment
+
                 curr['start'] = prev['end']
 
-            # If start became > end due to adjustment, set a minimum duration
-            if curr['start'] >= curr['end']:
-                curr['end'] = curr['start'] + 0.5
+            # If the segment becomes too short after adjustment (e.g. < 0.2s), discard it
+            if curr['end'] - curr['start'] < 0.2:
+                continue
 
             result.append(curr)
         return result

@@ -557,12 +557,15 @@ def process_task(task):
         max_chars = task.options.get('max_chars', Config.MAX_CHARS_PER_SEGMENT)
         use_vad = task.options.get('use_vad', False)
         
+        # If prevent_overlap is on, we force overlap to 0 during segmentation
+        segment_overlap = 0.0 if task.options.get('prevent_overlap') else task.options.get('overlap', 0.5)
+
         if use_vad:
             segments = segmenter.segment_by_pauses(
                 str(audio_path), segments,
                 max_duration=max_dur,
                 max_chars=max_chars,
-                overlap=task.options.get('overlap', 0.5),
+                overlap=segment_overlap,
                 margin=1.0 if task.options.get('use_margin') else 0.0
             )
         else:
@@ -571,7 +574,7 @@ def process_task(task):
                 min_duration=min_dur,
                 max_duration=max_dur,
                 max_chars=max_chars,
-                overlap=task.options.get('overlap', 0.5)
+                overlap=segment_overlap
             )
         
         # Merge segments if requested
