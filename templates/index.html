@@ -177,7 +177,7 @@
                             </div>
                             <div class="setting-half">
                                 <label class="checkbox-label">
-                                    <input type="checkbox" id="useVAD" class="setting-checkbox">
+                                    <input type="checkbox" id="useVAD" class="setting-checkbox" checked>
                                     <span>VAD (pauze vorbire)</span>
                                 </label>
                             </div>
@@ -188,41 +188,25 @@
                                 </label>
                             </div>
                         </div>
-                        <div class="setting-row">
-                            <div class="setting-full">
-                                <label class="setting-label">Metodă îmbinare segmente</label>
-                                <select id="mergeMethodSelect" class="setting-select">
-                                    <option value="none" selected>Niciuna (păstrează suprapuneri)</option>
-                                    <option value="similarity">Similitudine (60%) - păstrează segment mai lung</option>
-                                    <option value="llm">LLM - Logică și context (retranscrie tot)</option>
-                                </select>
-                            </div>
-                        </div>
                     </div>
 
-                    <!-- Verification Settings -->
+                    <!-- Processing Options -->
                     <div class="setting-group">
                         <div class="setting-row">
                             <div class="setting-half">
-                                <label class="checkbox-label" title="Folosește WhisperX pentru o a doua opinie și aliniere mai precisă">
-                                    <input type="checkbox" id="useWhisperX" class="setting-checkbox">
-                                    <span>Verifică cu WhisperX</span>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="isolateVoice" class="setting-checkbox" checked>
+                                    <span>Izolare Voce</span>
                                 </label>
                             </div>
                             <div class="setting-half">
                                 <label class="checkbox-label">
-                                    <input type="checkbox" id="isolateVoice" class="setting-checkbox">
-                                    <span>Izolare Voce</span>
+                                    <input type="checkbox" id="deduplicate" class="setting-checkbox" checked>
+                                    <span>Elimină repetiții</span>
                                 </label>
                             </div>
                         </div>
                         <div class="setting-row" style="margin-top: 8px;">
-                            <div class="setting-half">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" id="deduplicate" class="setting-checkbox">
-                                    <span>Elimină repetiții</span>
-                                </label>
-                            </div>
                             <div class="setting-half">
                                 <label class="checkbox-label">
                                     <input type="checkbox" id="preventOverlap" class="setting-checkbox">
@@ -267,8 +251,8 @@
                         <div class="setting-group">
                             <label class="setting-label">Engine Traducere</label>
                             <select id="translationEngine" class="setting-select">
+                                <option value="vllm" selected>VLLM (Qwen3-235B) - Profesional</option>
                                 <option value="nllb">NLLB-200 (rapid, bun)</option>
-                                <option value="llm">LLM (Gemma) - precis</option>
                             </select>
                         </div>
 

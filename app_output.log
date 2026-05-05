@@ -1,8 +1,92 @@
-2026-05-05 08:33:56,013 - transcriber - INFO - No GPU detected, using CPU
-2026-05-05 08:33:56,029 - __main__ - INFO - Starting Whisper Transcriber Application
-2026-05-05 08:33:56,030 - __main__ - INFO - Device: cpu
-2026-05-05 08:33:56,030 - __main__ - INFO - Server: http://0.0.0.0:5000
+2026-05-05 13:04:40,715 - transcriber - INFO - No GPU detected, using CPU
+2026-05-05 13:04:40,728 - __main__ - INFO - Starting Whisper Transcriber Application
+2026-05-05 13:04:40,728 - __main__ - INFO - Device: cpu
+2026-05-05 13:04:40,728 - __main__ - INFO - Server: http://0.0.0.0:5000
  * Serving Flask app 'app'
  * Debug mode: on
 Address already in use
 Port 5000 is in use by another program. Either identify and stop that program, or start the server with a different port.
+2026-05-05 13:05:32,364 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:05:32] "GET / HTTP/1.1" 200 -
+2026-05-05 13:05:32,388 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:05:32] "GET /static/css/style.css HTTP/1.1" 200 -
+2026-05-05 13:05:32,389 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:05:32] "GET /static/js/app.js HTTP/1.1" 200 -
+2026-05-05 13:05:32,463 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:05:32] "GET /api/models HTTP/1.1" 200 -
+2026-05-05 13:05:32,465 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:05:32] "GET /api/languages HTTP/1.1" 200 -
+2026-05-05 13:05:32,472 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:05:32] "GET /api/models HTTP/1.1" 200 -
+2026-05-05 13:27:17,076 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:27:17] "GET / HTTP/1.1" 200 -
+2026-05-05 13:27:17,088 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:27:17] "GET /static/js/app.js HTTP/1.1" 200 -
+2026-05-05 13:27:17,090 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:27:17] "GET /static/css/style.css HTTP/1.1" 200 -
+2026-05-05 13:27:17,101 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:27:17] "GET /api/models HTTP/1.1" 200 -
+2026-05-05 13:27:17,104 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:27:17] "GET /api/languages HTTP/1.1" 200 -
+2026-05-05 13:27:17,107 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:27:17] "GET /api/models HTTP/1.1" 200 -
+2026-05-05 13:27:17,590 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:27:17] "[35m[1mGET /api/audio/test-task HTTP/1.1[0m" 500 -
+Traceback (most recent call last):
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 1536, in __call__
+    return self.wsgi_app(environ, start_response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 1514, in wsgi_app
+    response = self.handle_exception(e)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask_cors/extension.py", line 176, in wrapped_function
+    return cors_after_request(app.make_response(f(*args, **kwargs)))
+                                                ^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask_cors/extension.py", line 176, in wrapped_function
+    return cors_after_request(app.make_response(f(*args, **kwargs)))
+                                                ^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/app.py", line 224, in serve_audio
+    for file in (Config.PROCESS_DIR / task_id).iterdir():
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/pathlib.py", line 1056, in iterdir
+    for name in os.listdir(self):
+                ^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/app/data/process/test-task'
+2026-05-05 13:30:06,080 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:30:06] "GET / HTTP/1.1" 200 -
+2026-05-05 13:30:06,093 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:30:06] "GET /static/js/app.js HTTP/1.1" 200 -
+2026-05-05 13:30:06,094 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:30:06] "GET /static/css/style.css HTTP/1.1" 200 -
+2026-05-05 13:30:06,184 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:30:06] "GET /api/models HTTP/1.1" 200 -
+2026-05-05 13:30:06,185 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:30:06] "GET /api/languages HTTP/1.1" 200 -
+2026-05-05 13:30:06,193 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:30:06] "GET /api/models HTTP/1.1" 200 -
+2026-05-05 13:30:06,536 - werkzeug - INFO - 127.0.0.1 - - [05/May/2026 13:30:06] "[35m[1mGET /api/audio/test-task HTTP/1.1[0m" 500 -
+Traceback (most recent call last):
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 1536, in __call__
+    return self.wsgi_app(environ, start_response)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 1514, in wsgi_app
+    response = self.handle_exception(e)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask_cors/extension.py", line 176, in wrapped_function
+    return cors_after_request(app.make_response(f(*args, **kwargs)))
+                                                ^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask_cors/extension.py", line 176, in wrapped_function
+    return cors_after_request(app.make_response(f(*args, **kwargs)))
+                                                ^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/flask/app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/app.py", line 224, in serve_audio
+    for file in (Config.PROCESS_DIR / task_id).iterdir():
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/pathlib.py", line 1056, in iterdir
+    for name in os.listdir(self):
+                ^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/app/data/process/test-task'

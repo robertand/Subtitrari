@@ -423,8 +423,6 @@ async function startProcessing() {
         isolate_voice: document.getElementById('isolateVoice').checked,
         deduplicate: document.getElementById('deduplicate').checked,
         prevent_overlap: document.getElementById('preventOverlap').checked,
-        merge_method: document.getElementById('mergeMethodSelect').value,
-        use_whisperx: document.getElementById('useWhisperX').checked,
         audio_only: audioOnly
     };
     
@@ -432,6 +430,7 @@ async function startProcessing() {
         options.translate = document.getElementById('enableTranslation').checked;
         if (options.translate) {
             options.target_languages = [document.getElementById('targetLanguageSelect').value];
+            options.translation_engine = document.getElementById('translationEngine').value;
             
             // Adaugă limbile suplimentare
             const additionalSelects = document.querySelectorAll('.translation-lang-select');

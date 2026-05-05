@@ -99,7 +99,7 @@ class Translator:
             # deep-translator can translate lists
             # Note: translate_batch in deep-translator takes a list
             translations = translator.translate_batch(texts)
-            
+
             return translations
 
         except Exception as e:
@@ -217,6 +217,103 @@ class Translator:
         
         return prompt
     
+    def translate_with_vllm_grouped(
+        self,
+        texts: List[str],
+        source_lang: str,
+        target_lang: str,
+        model_name: str = "Qwen/Qwen3-235B-A22B-Instruct",
+        group_size: int = 10
+    ) -> List[str]:
+        """Translate using VLLM with context grouping"""
+        try:
+            from vllm import LLM, SamplingParams
+
+            # Load VLLM model
+            if model_name not in self.models:
+                logger.info(f"Loading VLLM model: {model_name}")
+                # We use pipeline-parallelism if multiple GPUs are available, otherwise 1
+                self.models[model_name] = LLM(
+                    model=model_name,
+                    trust_remote_code=True,
+                    tensor_parallel_size=torch.cuda.device_count() or 1,
+                    max_model_len=4096
+                )
+
+            llm = self.models[model_name]
+            sampling_params = SamplingParams(
+                temperature=0.3,
+                top_p=0.95,
+                max_tokens=2048,
+                stop=["<|endoftext|>", "<|im_end|>"]
+            )
+
+            system_prompt = (
+                "Ești un traducător profesionist expert în subtitrări. "
+                f"Tradu textul primit din {source_lang} în {target_lang}. "
+                "Cerințe CRUCIALE:\n"
+                "1. Adaptează limbajul natural: metafore, nume, topică și expresii idiomatice în funcție de contextul conversației.\n"
+                "2. Păstrează tonul și stilul vorbitorului.\n"
+                "3. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri, "
+                "păstrând exact numărul și ordinea segmentelor primite.\n"
+                "Exemplu format răspuns: {\"translations\": [\"text 1\", \"text 2\", ...]}"
+            )
+
+            all_translations = ["" for _ in range(len(texts))]
+
+            # Group segments for context
+            for i in range(0, len(texts), group_size):
+                batch = texts[i:i + group_size]
+
+                # Prepare prompt for the group
+                user_content = "Vă rog să traduceți următoarele segmente de subtitrare consecutive:\n"
+                for idx, text in enumerate(batch):
+                    user_content += f"{idx + 1}. {text}\n"
+
+                full_prompt = (
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_content}<|im_end|>\n"
+                    f"<|im_start|>assistant\n"
+                )
+
+                outputs = llm.generate([full_prompt], sampling_params)
+                response_text = outputs[0].outputs[0].text
+
+                try:
+                    # Parse JSON response
+                    # Find JSON block in case model added fluff
+                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                    if json_match:
+                        data = json.loads(json_match.group(0))
+                        batch_translations = data.get('translations', [])
+
+                        if len(batch_translations) == len(batch):
+                            for j, t in enumerate(batch_translations):
+                                all_translations[i + j] = t
+                        else:
+                            # Fallback if counts mismatch: try splitting by newline or something
+                            logger.warning(f"Batch {i//group_size} translation count mismatch. Using heuristic fallback.")
+                            # Very basic fallback: just split by lines if it looks like a list
+                            lines = [l.strip() for l in response_text.split('\n') if l.strip() and not l.startswith('{')]
+                            for j in range(min(len(lines), len(batch))):
+                                all_translations[i + j] = lines[j]
+                    else:
+                        raise ValueError("No JSON found in VLLM response")
+
+                except Exception as e:
+                    logger.error(f"Error parsing VLLM response for batch {i}: {e}")
+                    # Ultimate fallback to Google Translate for this batch if LLM fails
+                    fallback_translations = self.translate_batch(batch, source_lang, target_lang)
+                    for j, t in enumerate(fallback_translations):
+                        all_translations[i + j] = t
+
+            return all_translations
+
+        except Exception as e:
+            logger.error(f"VLLM translation fatal error: {e}")
+            # Fallback to Google Translate for entire list
+            return self.translate_batch(texts, source_lang, target_lang)
+
     def translate_with_llm(
         self,
         texts: List[str],
@@ -226,6 +323,8 @@ class Translator:
         custom_prompt: Optional[str] = None
     ) -> List[str]:
         """Translate using LLM (Gemma or similar)"""
+        # If user chooses 'llm' engine, they might want Qwen3 now.
+        # But we keep this for smaller local models if needed.
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
             
