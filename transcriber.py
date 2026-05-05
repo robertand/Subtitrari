@@ -3,6 +3,7 @@ import whisperx
 import torch
 import numpy as np
 import librosa
+import noisereduce as nr
 import soundfile as sf
 from pathlib import Path
 import logging
@@ -184,6 +185,17 @@ class WhisperTranscriber:
             logger.error(f"Windowed transcription error: {e}")
             raise
     
+    def isolate_voice(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Isolate voice by reducing background noise and music"""
+        try:
+            logger.info("Isolating voice using spectral gating...")
+            # Use noisereduce for spectral gating
+            reduced_noise = nr.reduce_noise(y=audio, sr=sr, prop_decrease=0.8)
+            return reduced_noise
+        except Exception as e:
+            logger.error(f"Voice isolation error: {e}")
+            return audio
+
     def _normalize_audio(self, audio: np.ndarray) -> np.ndarray:
         """Normalize audio to improve transcription quality"""
         rms = np.sqrt(np.mean(audio**2))

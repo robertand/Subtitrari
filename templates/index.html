@@ -179,6 +179,12 @@
                                     <span>VAD (pauze vorbire)</span>
                                 </label>
                             </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="useMargin" class="setting-checkbox" checked>
+                                    <span>Marjă 1s după voce</span>
+                                </label>
+                            </div>
                         </div>
                         <div class="setting-row">
                             <div class="setting-full">
@@ -194,10 +200,34 @@
 
                     <!-- Verification Settings -->
                     <div class="setting-group">
-                        <label class="checkbox-label" title="Folosește WhisperX pentru o a doua opinie și aliniere mai precisă">
-                            <input type="checkbox" id="useWhisperX" class="setting-checkbox">
-                            <span>Verifică cu WhisperX (recomandat cu LLM)</span>
-                        </label>
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label class="checkbox-label" title="Folosește WhisperX pentru o a doua opinie și aliniere mai precisă">
+                                    <input type="checkbox" id="useWhisperX" class="setting-checkbox">
+                                    <span>Verifică cu WhisperX</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="isolateVoice" class="setting-checkbox">
+                                    <span>Izolare Voce</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row" style="margin-top: 8px;">
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="deduplicate" class="setting-checkbox">
+                                    <span>Elimină repetiții</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="preventOverlap" class="setting-checkbox">
+                                    <span>Segmente secvențiale</span>
+                                </label>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Audio Extraction Only -->

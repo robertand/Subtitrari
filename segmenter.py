@@ -320,6 +320,130 @@ class SubtitleSegmenter:
 
         return merged
 
+    def remove_repetitions(self, segments: List[Dict]) -> List[Dict]:
+        """Remove consecutive identical phrases while keeping segments with background voice if text is same"""
+        if not segments:
+            return []
+
+        result = [segments[0]]
+        for i in range(1, len(segments)):
+            curr = segments[i]
+            prev = result[-1]
+
+            # Normalize text for comparison
+            curr_text = re.sub(r'[^\w\s]', '', curr['text'].lower()).strip()
+            prev_text = re.sub(r'[^\w\s]', '', prev['text'].lower()).strip()
+
+            if curr_text == prev_text and curr_text != "":
+                # If they are same, skip current but extend previous end to cover current
+                prev['end'] = max(prev['end'], curr['end'])
+                continue
+
+            result.append(curr)
+        return result
+
+    def ensure_sequential(self, segments: List[Dict]) -> List[Dict]:
+        """Ensure segments do not overlap: next starts exactly after previous ends"""
+        if not segments:
+            return []
+
+        result = [segments[0].copy()]
+        for i in range(1, len(segments)):
+            curr = segments[i].copy()
+            prev = result[-1]
+
+            if curr['start'] < prev['end']:
+                curr['start'] = prev['end']
+
+            # If start became > end due to adjustment, set a minimum duration
+            if curr['start'] >= curr['end']:
+                curr['end'] = curr['start'] + 0.5
+
+            result.append(curr)
+        return result
+
+    def segment_by_pauses(
+        self,
+        audio_path: str,
+        segments: List[Dict],
+        min_pause_duration: float = 1.0,
+        max_duration: float = 5.0,
+        max_chars: int = 80,
+        overlap: float = 0.0,
+        margin: float = 1.0
+    ) -> List[Dict]:
+        """Segment using Voice Activity Detection based on pauses with overlap and safety margin"""
+        try:
+            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
+
+            # Voice activity detection using energy
+            frame_length = 2048
+            hop_length = 512
+
+            rms = librosa.feature.rms(
+                y=audio,
+                frame_length=frame_length,
+                hop_length=hop_length
+            )[0]
+
+            rms_db = librosa.amplitude_to_db(rms, ref=np.max)
+
+            # Detect silence/pauses
+            silence_threshold = -40  # dB
+            is_speech = rms_db > silence_threshold
+
+            # Convert frames to time
+            times = librosa.frames_to_time(
+                np.arange(len(rms_db)),
+                sr=sr,
+                hop_length=hop_length
+            )
+
+            # Find pauses in segments
+            result = []
+            for segment in segments:
+                start = segment['start']
+                end = segment['end']
+                text = segment.get('text', '').strip()
+
+                if not text:
+                    continue
+
+                # Check for pauses within segment
+                mask = (times >= start) & (times <= end)
+                speech_frames = is_speech[mask]
+
+                if len(speech_frames) > 0:
+                    speech_ratio = np.sum(speech_frames) / len(speech_frames)
+
+                    # Apply margin after speech ends if it's the last part of a phrase
+                    actual_end = end + overlap
+                    if not speech_frames[-1]: # If ends in silence
+                         # find last speech frame index in this segment
+                         indices = np.where(speech_frames)[0]
+                         if len(indices) > 0:
+                             last_speech_idx = indices[-1]
+                             speech_end_time = times[mask][last_speech_idx]
+                             actual_end = min(end, speech_end_time + margin)
+
+                    # If there are significant pauses, split segment
+                    if speech_ratio < 0.6 and (end - start) > max_duration:
+                        splits = self._split_by_pauses(
+                            text, start, end, times[mask], speech_frames, overlap
+                        )
+                        # Apply margin to the end of each split if appropriate
+                        result.extend(splits)
+                    else:
+                        result.append({'text': text, 'start': start, 'end': actual_end})
+                else:
+                    result.append({'text': text, 'start': start, 'end': end + overlap})
+
+            return result
+
+        except Exception as e:
+            # Fallback to time-based segmentation
+            return self.segment_by_time(segments, min_duration=1.0, max_duration=max_duration, max_chars=max_chars, overlap=overlap)
+
     def merge_segments_llm(self, segments: List[Dict], translator_obj: Any, whisperx_segments: List[Dict] = None) -> List[Dict]:
         """Use LLM to refine segments by comparing Whisper and WhisperX outputs"""
         if not segments or not translator_obj:

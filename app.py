@@ -497,6 +497,14 @@ def process_task(task):
                 return
             
             transcriber.extract_audio_from_video(str(task.file_path), str(audio_path))
+
+        # Voice isolation
+        if task.options.get('isolate_voice'):
+            task.message = 'Isolating voice...'
+            audio, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio = transcriber.isolate_voice(audio, sr)
+            import soundfile as sf
+            sf.write(str(audio_path), audio, sr)
         
         # Transcribe
         task.progress = 10
@@ -554,7 +562,8 @@ def process_task(task):
                 str(audio_path), segments,
                 max_duration=max_dur,
                 max_chars=max_chars,
-                overlap=task.options.get('overlap', 0.5)
+                overlap=task.options.get('overlap', 0.5),
+                margin=1.0 if task.options.get('use_margin') else 0.0
             )
         else:
             segments = segmenter.segment_by_time(
@@ -574,6 +583,16 @@ def process_task(task):
             task.message = 'Merging and verifying segments using LLM...'
             whisperx_segments = whisperx_result.get('segments') if whisperx_result else None
             segments = segmenter.merge_segments_llm(segments, translator, whisperx_segments=whisperx_segments)
+
+        # Deduplication
+        if task.options.get('deduplicate'):
+            task.message = 'Removing repetitions...'
+            segments = segmenter.remove_repetitions(segments)
+
+        # Ensure sequential (no overlap)
+        if task.options.get('prevent_overlap'):
+            task.message = 'Ensuring sequential segments...'
+            segments = segmenter.ensure_sequential(segments)
 
         if task.cancel_flag.is_set():
             return

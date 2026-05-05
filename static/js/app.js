@@ -419,6 +419,10 @@ async function startProcessing() {
         max_duration: parseFloat(document.getElementById('maxDuration').value),
         max_chars: parseInt(document.getElementById('maxChars').value),
         use_vad: document.getElementById('useVAD').checked,
+        use_margin: document.getElementById('useMargin').checked,
+        isolate_voice: document.getElementById('isolateVoice').checked,
+        deduplicate: document.getElementById('deduplicate').checked,
+        prevent_overlap: document.getElementById('preventOverlap').checked,
         merge_method: document.getElementById('mergeMethodSelect').value,
         use_whisperx: document.getElementById('useWhisperX').checked,
         audio_only: audioOnly
