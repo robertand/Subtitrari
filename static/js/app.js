@@ -1329,57 +1329,74 @@ function renderTimeline() {
         elements.timelineSegments.appendChild(block);
     });
 
-    // Add Global Mouse Listeners
-    if (!window.timelineInited) {
-        window.addEventListener('mousemove', handleTimelineMove);
-        window.addEventListener('mouseup', handleTimelineUp);
-        window.timelineInited = true;
-    }
-
     // Adjust container height based on tracks
     elements.timelineContainer.style.height = Math.max(120, tracks.length * 35 + 20) + 'px';
 
-    // Mouse wheel zoom
-    elements.timelineContainer.onwheel = (e) => {
-        if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            const rect = elements.timelineContent.getBoundingClientRect();
-            const x = e.clientX - rect.left;
+    // Setup interactions once
+    if (!window.timelineInited) {
+        initTimelineInteractions();
+        window.timelineInited = true;
+    }
+}
+
+function initTimelineInteractions() {
+    window.addEventListener('mousemove', handleTimelineMove);
+    window.addEventListener('mouseup', handleTimelineUp);
+
+    const timelineSection = document.getElementById('timelineSection');
+
+    // Use addEventListener with { passive: false } for maximum reliability across browsers
+    timelineSection.addEventListener('wheel', (e) => {
+        // Block browser scroll for the whole section
+        e.preventDefault();
+
+        // Only handle zoom for vertical wheel
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            const contentRect = elements.timelineContent.getBoundingClientRect();
+            const x = e.clientX - contentRect.left;
+
             const ppsBefore = state.pixelsPerSecond * state.zoomLevel;
             const timeAtCursor = x / ppsBefore;
 
-            const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+            const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
+
+            const oldZoom = state.zoomLevel;
             state.zoomLevel *= zoomFactor;
-            state.zoomLevel = Math.max(0.1, Math.min(state.zoomLevel, 20));
-            elements.zoomLevel.textContent = Math.round(state.zoomLevel * 100) + '%';
+            state.zoomLevel = Math.max(0.1, Math.min(state.zoomLevel, 50));
 
-            renderTimeline();
+            if (state.zoomLevel !== oldZoom) {
+                elements.zoomLevel.textContent = Math.round(state.zoomLevel * 100) + '%';
+                renderTimeline();
 
-            const ppsAfter = state.pixelsPerSecond * state.zoomLevel;
-            const newX = timeAtCursor * ppsAfter;
-            elements.timelineContainer.scrollLeft += (newX - x);
+                const ppsAfter = state.pixelsPerSecond * state.zoomLevel;
+                const newX = timeAtCursor * ppsAfter;
+                elements.timelineContainer.scrollLeft += (newX - x);
+            }
         }
-    };
+    }, { passive: false });
 
-    // Playhead dragging
-    const handle = document.getElementById('playheadHandle');
-    if (handle) {
-        handle.onmousedown = (e) => {
+    // Playhead dragging via the red triangle handle
+    document.addEventListener('mousedown', (e) => {
+        const handle = e.target.closest('#playheadHandle');
+        if (handle) {
+            e.preventDefault();
             e.stopPropagation();
             state.isDraggingPlayhead = true;
             document.body.style.cursor = 'grabbing';
-        };
-    }
+        }
+    });
 
-    elements.timelineContent.onmousedown = (e) => {
-        if (e.target.classList.contains('timeline-segment-block') ||
-            e.target.classList.contains('timeline-delete-btn') ||
-            e.target.classList.contains('timeline-resize-handle')) return;
+    elements.timelineContent.addEventListener('mousedown', (e) => {
+        // Allow clicking on ruler or background to seek
+        if (e.target.closest('.timeline-segment-block') ||
+            e.target.closest('.timeline-resize-handle') ||
+            e.target.closest('.timeline-delete-btn') ||
+            e.target.closest('#playheadHandle')) return;
 
         state.isDraggingPlayhead = true;
         handleTimelineSeek(e);
         e.preventDefault();
-    };
+    });
 }
 
 function handleTimelineSeek(e) {
