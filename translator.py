@@ -6,6 +6,7 @@ import json
 from typing import List, Dict, Optional, Any
 import logging
 import re
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -231,10 +232,14 @@ class Translator:
 
             # Load VLLM model
             if model_name not in self.models:
-                logger.info(f"Loading VLLM model: {model_name}")
+                # Check for local path first
+                local_model_path = Config.MODELS_DIR / model_name.split('/')[-1]
+                actual_model_to_load = str(local_model_path) if local_model_path.exists() else model_name
+
+                logger.info(f"Loading VLLM model: {actual_model_to_load}")
                 # We use pipeline-parallelism if multiple GPUs are available, otherwise 1
                 self.models[model_name] = LLM(
-                    model=model_name,
+                    model=actual_model_to_load,
                     trust_remote_code=True,
                     tensor_parallel_size=torch.cuda.device_count() or 1,
                     max_model_len=4096

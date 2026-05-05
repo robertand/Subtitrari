@@ -5,6 +5,7 @@ class Config:
     # Directories
     BASE_DIR = Path(__file__).parent
     DATA_DIR = BASE_DIR / 'data'
+    MODELS_DIR = BASE_DIR / 'models'
     CHUNK_UPLOAD_DIR = DATA_DIR / 'chunk_uploads'
     PROCESS_DIR = DATA_DIR / 'process'
     TEMP_DIR = DATA_DIR / 'temp'
@@ -81,5 +82,5 @@ class Config:
     
     @classmethod
     def init_directories(cls):
-        for dir_path in [cls.DATA_DIR, cls.CHUNK_UPLOAD_DIR, cls.PROCESS_DIR, cls.TEMP_DIR]:
+        for dir_path in [cls.DATA_DIR, cls.MODELS_DIR, cls.CHUNK_UPLOAD_DIR, cls.PROCESS_DIR, cls.TEMP_DIR]:
             dir_path.mkdir(parents=True, exist_ok=True)
