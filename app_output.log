@@ -178,3 +178,11 @@ FileNotFoundError: [Errno 2] No such file or directory: '/app/data/process/test-
 2026-05-06 06:52:56,220 - werkzeug - WARNING -  * Debugger is active!
 2026-05-06 06:52:56,220 - werkzeug - INFO -  * Debugger PIN: 631-326-424
 2026-05-06 06:54:09,973 - __main__ - INFO - Scheduled cleanup completed
+2026-05-06 10:03:03,305 - werkzeug - INFO -  * Detected change in '/app/config.py', reloading
+2026-05-06 10:03:23,950 - werkzeug - INFO -  * Restarting with stat
+2026-05-06 10:03:47,295 - transcriber - INFO - No GPU detected, using CPU
+2026-05-06 10:03:47,310 - __main__ - INFO - Starting Whisper Transcriber Application
+2026-05-06 10:03:47,310 - __main__ - INFO - Device: cpu
+2026-05-06 10:03:47,310 - __main__ - INFO - Server: http://0.0.0.0:5000
+2026-05-06 10:03:47,328 - werkzeug - WARNING -  * Debugger is active!
+2026-05-06 10:03:47,330 - werkzeug - INFO -  * Debugger PIN: 631-326-424

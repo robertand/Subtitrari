@@ -20,6 +20,9 @@ const state = {
     selectedSegment: null,
     isDragging: false,
     isDraggingPlayhead: false,
+    isPanning: false,
+    panStartX: 0,
+    panStartScroll: 0,
     dragTarget: null,
     dragStartX: 0,
     dragStartOffset: 0,
@@ -642,14 +645,25 @@ function renderSegments() {
             const isButton = e.target.closest('button');
             const isText = e.target.classList.contains('segment-text');
 
+            if (isButton) return; // Let button handlers (edit/delete/play) handle it
+
+            if (state.selectedSegment === index) {
+                if (isText) return; // Already editing or focused on text
+            }
+
             state.selectedSegment = index;
 
-            if (!isButton && !isText) {
+            if (!isText) {
                 seekToTime(segment.start, false);
             }
 
             renderSegments();
             renderTimeline();
+
+            // If we clicked on text but it wasn't selected yet, we need to re-focus after render
+            if (isText) {
+                setTimeout(() => editSegment(index), 0);
+            }
         });
         
         elements.segmentsList.appendChild(div);
@@ -749,10 +763,20 @@ function displayTranslations() {
 
 function updateTranslationSegment(lang, index, text) {
     if (state.translations[lang] && state.translations[lang][index] !== undefined) {
-        state.translations[lang][index] = text.trim();
-        if (state.displayLanguage === lang) {
-            updateFullText();
-            updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+        const oldText = state.translations[lang][index];
+        const newText = text.trim();
+
+        if (oldText !== newText) {
+            state.translations[lang][index] = newText;
+
+            // Only update downstream components that don't cause a re-render of this list
+            if (state.displayLanguage === lang) {
+                updateFullText();
+                updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+                renderTimeline(); // Update labels on timeline
+            }
+
+            console.log(`Translation updated for ${lang} at ${index}`);
         }
     }
 }
@@ -1351,6 +1375,7 @@ function initTimelineInteractions() {
     window.addEventListener('mouseup', handleTimelineUp);
 
     const timelineSection = document.getElementById('timelineSection');
+    const timelineContainer = elements.timelineContainer;
 
     // Use addEventListener with { passive: false } for maximum reliability across browsers
     timelineSection.addEventListener('wheel', (e) => {
@@ -1394,6 +1419,16 @@ function initTimelineInteractions() {
     });
 
     elements.timelineContent.addEventListener('mousedown', (e) => {
+        // Middle button (wheel) panning
+        if (e.button === 1) {
+            e.preventDefault();
+            state.isPanning = true;
+            state.panStartX = e.clientX;
+            state.panStartScroll = timelineContainer.scrollLeft;
+            document.body.style.cursor = 'grabbing';
+            return;
+        }
+
         // Allow clicking on ruler or background to seek
         if (e.target.closest('.timeline-segment-block') ||
             e.target.closest('.timeline-resize-handle') ||
@@ -1403,6 +1438,11 @@ function initTimelineInteractions() {
         state.isDraggingPlayhead = true;
         handleTimelineSeek(e);
         e.preventDefault();
+    });
+
+    // Prevent middle click autoscroll menu in some browsers
+    elements.timelineContent.addEventListener('auxclick', (e) => {
+        if (e.button === 1) e.preventDefault();
     });
 }
 
@@ -1485,6 +1525,12 @@ function zoomTimeline(factor) {
 }
 
 function handleTimelineMove(e) {
+    if (state.isPanning) {
+        const delta = e.clientX - state.panStartX;
+        elements.timelineContainer.scrollLeft = state.panStartScroll - delta;
+        return;
+    }
+
     if (state.isDraggingPlayhead) {
         handleTimelineSeek(e);
         return;
@@ -1525,6 +1571,7 @@ function handleTimelineMove(e) {
 
 function handleTimelineUp() {
     state.isDraggingPlayhead = false;
+    state.isPanning = false;
     document.body.style.cursor = 'default';
     if (state.isDragging) {
         state.isDragging = false;

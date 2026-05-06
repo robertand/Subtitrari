@@ -29,9 +29,9 @@ class Config:
     DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'
     AVAILABLE_LLM_MODELS = [
         'Qwen/Qwen3-235B-A22B-Instruct',
-        'google/gemma-2-9b-it',
-        'google/gemma-7b-it',
-        'google/gemma-2b-it'
+        'google/gemma-3-12b-it',
+        'google/gemma-4-E4B-it',
+        'google/gemma-4-26B-A4B-it'
     ]
     VLLM_GPU_MEMORY_UTILIZATION = 0.8  # Default 80% to leave room for Whisper/OS
     VLLM_ENFORCE_EAGER = True  # Use eager mode to save VRAM from CUDA graphs
