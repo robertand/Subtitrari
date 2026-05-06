@@ -589,6 +589,9 @@ def process_task(task):
             
             texts = [seg.get('text', '') for seg in segments]
             
+            llm_model = task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
+            custom_prompt = task.options.get('custom_prompt')
+
             for target_lang in target_langs:
                 if task.cancel_flag.is_set():
                     return
@@ -597,7 +600,14 @@ def process_task(task):
                 
                 if engine == 'vllm':
                     translated_texts = translator.translate_with_vllm_grouped(
-                        texts, source_lang, target_lang
+                        texts, source_lang, target_lang,
+                        model_name=llm_model
+                    )
+                elif engine == 'llm':
+                    translated_texts = translator.translate_with_llm(
+                        texts, source_lang, target_lang,
+                        model_name=llm_model,
+                        custom_prompt=custom_prompt
                     )
                 else:
                     translated_texts = translator.translate_batch(

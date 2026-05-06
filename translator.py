@@ -232,9 +232,18 @@ class Translator:
 
             # Load VLLM model
             if model_name not in self.models:
-                # Check for local path first
-                local_model_path = Config.MODELS_DIR / model_name.split('/')[-1]
-                actual_model_to_load = str(local_model_path) if local_model_path.exists() else model_name
+                # Scurtcircuitare pentru calea exactă dacă utilizatorul a descărcat modelul
+                # Căutăm orice director care începe cu numele modelului în Config.MODELS_DIR
+                actual_model_to_load = model_name
+                base_name = model_name.split('/')[-1]
+
+                if Config.MODELS_DIR.exists():
+                    # Căutare inteligentă: verificăm dacă există un folder care conține numele de bază
+                    for item in Config.MODELS_DIR.iterdir():
+                        if item.is_dir() and base_name in item.name:
+                            actual_model_to_load = str(item.absolute())
+                            logger.info(f"Found local model directory: {actual_model_to_load}")
+                            break
 
                 logger.info(f"Loading VLLM model: {actual_model_to_load}")
                 # We use pipeline-parallelism if multiple GPUs are available, otherwise 1

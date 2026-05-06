@@ -250,9 +250,20 @@
 
                         <div class="setting-group">
                             <label class="setting-label">Engine Traducere</label>
-                            <select id="translationEngine" class="setting-select">
+                            <select id="translationEngine" class="setting-select" onchange="updateModelOptions()">
                                 <option value="vllm" selected>VLLM (Qwen3-235B) - Profesional</option>
+                                <option value="llm">LLM Local (Gemma/Gemma 2)</option>
                                 <option value="nllb">NLLB-200 (rapid, bun)</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group" id="llmModelGroup" style="display: none;">
+                            <label class="setting-label">Model LLM</label>
+                            <select id="llmModelSelect" class="setting-select">
+                                <option value="Qwen/Qwen3-235B-A22B-Instruct">Qwen3-235B (Implicit)</option>
+                                <option value="google/gemma-2-9b-it">Gemma 2 - 9B</option>
+                                <option value="google/gemma-7b-it">Gemma - 7B</option>
+                                <option value="google/gemma-2b-it">Gemma - 2B</option>
                             </select>
                         </div>
 

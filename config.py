@@ -24,6 +24,16 @@ class Config:
     # Processing
     DEFAULT_MODEL = 'small'
     AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3']
+
+    # LLM Models
+    DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'
+    AVAILABLE_LLM_MODELS = [
+        'Qwen/Qwen3-235B-A22B-Instruct',
+        'google/gemma-2-9b-it',
+        'google/gemma-7b-it',
+        'google/gemma-2b-it'
+    ]
+
     DEFAULT_LANGUAGE = 'auto'
     PROCESSING_TIMEOUT = 7200  # 2 hours
     HEARTBEAT_INTERVAL = 30  # seconds

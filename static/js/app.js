@@ -431,6 +431,8 @@ async function startProcessing() {
         if (options.translate) {
             options.target_languages = [document.getElementById('targetLanguageSelect').value];
             options.translation_engine = document.getElementById('translationEngine').value;
+            options.llm_model = document.getElementById('llmModelSelect').value;
+            options.custom_prompt = document.getElementById('customPrompt').value;
             
             // Adaugă limbile suplimentare
             const additionalSelects = document.querySelectorAll('.translation-lang-select');
@@ -987,17 +989,23 @@ function toggleTranslation() {
     document.getElementById('translationSettings').style.display = enabled ? 'block' : 'none';
     
     if (enabled) {
-        const engineSelect = document.getElementById('translationEngine');
-        document.getElementById('promptGroup').style.display = 
-            engineSelect.value === 'llm' ? 'block' : 'none';
+        updateModelOptions();
     }
 }
 
-// Ascultă pentru schimbarea engine-ului
-document.getElementById('translationEngine')?.addEventListener('change', function() {
-    document.getElementById('promptGroup').style.display = 
-        this.value === 'llm' ? 'block' : 'none';
-});
+function updateModelOptions() {
+    const engine = document.getElementById('translationEngine').value;
+    const promptGroup = document.getElementById('promptGroup');
+    const llmModelGroup = document.getElementById('llmModelGroup');
+
+    if (engine === 'llm' || engine === 'vllm') {
+        promptGroup.style.display = 'block';
+        llmModelGroup.style.display = 'block';
+    } else {
+        promptGroup.style.display = 'none';
+        llmModelGroup.style.display = 'none';
+    }
+}
 
 function addTranslationLanguage() {
     const container = document.getElementById('additionalLanguages');
