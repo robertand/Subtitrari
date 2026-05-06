@@ -372,18 +372,24 @@ class Translator:
             translations = []
             
             for text in texts:
+                if not text or not text.strip():
+                    translations.append("")
+                    continue
+
                 prompt = self.format_translation_prompt(
                     text, source_lang, target_lang, custom_prompt
                 )
                 
                 inputs = tokenizer(prompt, return_tensors="pt").to(self.device)
                 
+                # Use safer sampling to prevent NaN/Inf errors on some architectures/quantizations
+                # do_sample=False is the safest (greedy decoding)
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=512,
-                    temperature=0.3,
-                    do_sample=True,
-                    top_p=0.95
+                    temperature=0.3, # This function is for standard LLM
+                    do_sample=False, # Switch to greedy to avoid probability tensor issues
+                    # top_p=0.95 # Not needed for greedy
                 )
                 
                 translation = tokenizer.decode(outputs[0], skip_special_tokens=True)
