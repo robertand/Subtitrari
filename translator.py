@@ -1,11 +1,13 @@
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, NllbTokenizer
 from deep_translator import GoogleTranslator
 import torch
+import gc
 import numpy as np
 import json
 from typing import List, Dict, Optional, Any
 import logging
 import re
+import time
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -232,6 +234,14 @@ class Translator:
 
             # Load VLLM model
             if model_name not in self.models:
+                # Eliberează memoria GPU înainte de a încărca noul model greu
+                if torch.cuda.is_available():
+                    logger.info("Cleaning up VRAM before loading VLLM...")
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    time.sleep(1)
+
                 # Scurtcircuitare pentru calea exactă dacă utilizatorul a descărcat modelul
                 # Căutăm orice director care începe cu numele modelului în Config.MODELS_DIR
                 actual_model_to_load = model_name
@@ -251,7 +261,10 @@ class Translator:
                     model=actual_model_to_load,
                     trust_remote_code=True,
                     tensor_parallel_size=torch.cuda.device_count() or 1,
-                    max_model_len=4096
+                    max_model_len=4096,
+                    gpu_memory_utilization=Config.VLLM_GPU_MEMORY_UTILIZATION,
+                    enforce_eager=Config.VLLM_ENFORCE_EAGER,
+                    disable_log_stats=True
                 )
 
             llm = self.models[model_name]

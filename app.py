@@ -580,6 +580,10 @@ def process_task(task):
         # Translate if requested
         translations = {}
         if task.options.get('translate'):
+            # Eliberează memoria GPU ocupată de Whisper înainte de a începe traducerea cu LLM
+            task.message = 'Cleaning up VRAM for translation...'
+            transcriber.unload_model()
+
             task.progress = 80
             task.message = 'Translating...'
             

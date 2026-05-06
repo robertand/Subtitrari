@@ -8,6 +8,7 @@ import soundfile as sf
 from pathlib import Path
 import logging
 import re
+import gc
 from typing import Optional, Dict, Any, List
 import time
 
@@ -321,8 +322,17 @@ class WhisperTranscriber:
             raise
 
     def unload_model(self):
-        """Free GPU memory"""
-        if self.current_model and self.device == "cuda":
-            del self.current_model
+        """Free GPU memory by unloading all models"""
+        if self.device == "cuda":
+            logger.info("Unloading all Whisper models to free VRAM...")
             self.current_model = None
+            self.models.clear()
+
+            import gc
+            gc.collect()
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+            # Extra wait to ensure driver releases memory
+            time.sleep(1)
+            logger.info("VRAM cleared.")

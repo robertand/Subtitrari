@@ -33,6 +33,8 @@ class Config:
         'google/gemma-7b-it',
         'google/gemma-2b-it'
     ]
+    VLLM_GPU_MEMORY_UTILIZATION = 0.8  # Default 80% to leave room for Whisper/OS
+    VLLM_ENFORCE_EAGER = True  # Use eager mode to save VRAM from CUDA graphs
 
     DEFAULT_LANGUAGE = 'auto'
     PROCESSING_TIMEOUT = 7200  # 2 hours
