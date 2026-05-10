@@ -324,9 +324,9 @@ class WhisperTranscriber:
             raise
 
     def load_cohere_model(self):
-        """Load Cohere Transcribe model"""
+        """Load Cohere Transcribe model and pipeline"""
         try:
-            from transformers import AutoProcessor, CohereAsrForConditionalGeneration
+            from transformers import AutoProcessor, CohereAsrForConditionalGeneration, pipeline
 
             model_name = Config.COHERE_MODEL
 
@@ -334,11 +334,22 @@ class WhisperTranscriber:
                 logger.info(f"Loading Cohere model: {model_name}")
 
                 self.cohere_processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-                self.models[model_name] = CohereAsrForConditionalGeneration.from_pretrained(
+                # Using float32 for Cohere as Conformer models can be sensitive to half-precision
+                model = CohereAsrForConditionalGeneration.from_pretrained(
                     model_name,
-                    device_map="auto",
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    torch_dtype=torch.float32,
                     trust_remote_code=True
+                ).to(self.device)
+
+                self.models[model_name] = model
+
+                # Initialize pipeline for robust inference
+                self.cohere_pipeline = pipeline(
+                    "automatic-speech-recognition",
+                    model=model,
+                    tokenizer=self.cohere_processor.tokenizer,
+                    feature_extractor=self.cohere_processor.feature_extractor,
+                    device=0 if self.device == "cuda" else -1
                 )
 
             self.current_model = self.models[model_name]
@@ -354,7 +365,7 @@ class WhisperTranscriber:
         language: str = "en",
         progress_callback = None
     ) -> Dict[str, Any]:
-        """Transcribe audio using Cohere Transcribe with VAD-based chunking for TC"""
+        """Transcribe audio using Cohere Transcribe with pipeline for robustness"""
         try:
             self.load_cohere_model()
 
@@ -363,58 +374,82 @@ class WhisperTranscriber:
 
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
 
-            # Since Cohere doesn't have native timestamps, we use VAD to find segments
-            # We'll rely on the segmenter's logic later, but for the initial transcription
-            # we need to feed it chunks that represent coherent speech.
+            if progress_callback:
+                progress_callback(20, "Transcribing with Cohere pipeline...")
 
-            # For now, we'll use a simple windowing approach similar to Whisper windowing
-            # but we'll return segments directly.
+            # Use pipeline which handles chunking, batching and reassembly internally
+            # It's more robust than manual generate calls for this specific model architecture
+            result = self.cohere_pipeline(
+                audio,
+                chunk_length_s=30,
+                stride_length_s=5,
+                generate_kwargs={
+                    "max_new_tokens": 256,
+                    "language": language if language and language != 'auto' else 'en'
+                },
+                return_timestamps="word" # Try to get word timestamps if supported
+            )
 
-            window_size = 30 # seconds
-            overlap = 2
+            # If the pipeline doesn't return timestamps, we fallback to VAD segments
+            # for the timeline, but we use the high-quality pipeline text.
+
+            raw_text = result.get("text", "")
+            chunks = result.get("chunks", [])
 
             segments = []
-            window_samples = window_size * sr
-            overlap_samples = overlap * sr
-            step = window_samples - overlap_samples
+            if chunks:
+                for chunk in chunks:
+                    ts = chunk.get("timestamp")
+                    if ts and len(ts) == 2:
+                        segments.append({
+                            "start": ts[0],
+                            "end": ts[1],
+                            "text": chunk.get("text", "").strip()
+                        })
 
-            total_windows = int(np.ceil(len(audio) / step))
+            if not segments and raw_text:
+                # Fallback: Split raw_text into logical segments based on duration
+                # Since we don't have timestamps, we'll use a simple heuristic
+                logger.info("Cohere pipeline did not return timestamps, using VAD for segmentation")
+                return self._transcribe_cohere_vad_fallback(audio, sr, language, progress_callback)
 
-            for i in range(0, len(audio), step):
-                window_num = i // step + 1
+            return {
+                "segments": segments,
+                "language": language,
+                "text": raw_text
+            }
+
+        except Exception as e:
+            logger.error(f"Cohere transcription error: {e}")
+            # Final fallback: Try VAD approach but with extreme caution on shapes
+            return self._transcribe_cohere_vad_fallback(audio, sr, language, progress_callback)
+
+    def _transcribe_cohere_vad_fallback(self, audio, sr, language, progress_callback):
+        """Fallback VAD-based segmentation with robust shape handling"""
+        try:
+            speech_intervals = librosa.effects.split(audio, top_db=30)
+            segments = []
+
+            for i, (start_sample, end_sample) in enumerate(speech_intervals):
                 if progress_callback:
-                    progress = 10 + int((window_num / total_windows) * 80)
-                    progress_callback(progress, f"Cohere: Processing window {window_num}/{total_windows}")
+                    progress = 30 + int((i / len(speech_intervals)) * 60)
+                    progress_callback(progress, f"Cohere Fallback: Segment {i+1}")
 
-                window_audio = audio[i:i + window_samples]
+                segment_audio = audio[start_sample:end_sample]
+                if len(segment_audio) < 1600: continue # Skip segments < 0.1s
 
-                # Preprocess for Cohere
-                inputs = self.cohere_processor(
-                    window_audio,
-                    sampling_rate=16000,
-                    return_tensors="pt",
-                    language=language
+                # Use pipeline even for small segments to avoid matmul shape errors
+                res = self.cohere_pipeline(
+                    segment_audio,
+                    generate_kwargs={"max_new_tokens": 128, "language": language if language and language != 'auto' else 'en'}
                 )
 
-                # Remove 'length' if it was added by the processor (common cause for model_kwargs error)
-                if 'length' in inputs:
-                    del inputs['length']
-
-                inputs.to(self.current_model.device, dtype=self.current_model.dtype)
-
-                # Generate
-                with torch.no_grad():
-                    # We pass inputs as kwargs, but ensure no conflicting args
-                    outputs = self.current_model.generate(**inputs, max_new_tokens=256)
-
-                text = self.cohere_processor.decode(outputs[0], skip_special_tokens=True)
-
-                if text.strip():
-                    offset = i / sr
+                text = res.get("text", "").strip()
+                if text:
                     segments.append({
-                        'start': offset,
-                        'end': offset + (len(window_audio) / sr),
-                        'text': text.strip()
+                        'start': start_sample / sr,
+                        'end': end_sample / sr,
+                        'text': text
                     })
 
             return {
@@ -422,9 +457,8 @@ class WhisperTranscriber:
                 "language": language,
                 "text": " ".join([s["text"] for s in segments])
             }
-
         except Exception as e:
-            logger.error(f"Cohere transcription error: {e}")
+            logger.error(f"Cohere VAD fallback failed: {e}")
             raise
 
     def unload_model(self):
