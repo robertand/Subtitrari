@@ -51,6 +51,12 @@
                         onchange="changeSubtitleLanguage(this.value)">
                     <option value="original">Original</option>
                 </select>
+                <div class="subtitle-pos-toggle" style="margin-left: 10px;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="subtitleTopToggle" class="setting-checkbox" onchange="toggleSubtitlePosition()">
+                        <span>Subtitrare Sus</span>
+                    </label>
+                </div>
                 <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
                 <div class="zoom-controls">
                     <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(0.8)">➖</button>

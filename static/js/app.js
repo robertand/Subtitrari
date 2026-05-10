@@ -20,6 +20,7 @@ const state = {
     selectedSegment: null,
     isDragging: false,
     isDraggingPlayhead: false,
+    subtitlePosition: 'bottom',
     isPanning: false,
     panStartX: 0,
     panStartScroll: 0,
@@ -1078,6 +1079,17 @@ function switchTab(tab) {
 
     renderSegments();
     renderTimeline();
+}
+
+function toggleSubtitlePosition() {
+    const isTop = document.getElementById('subtitleTopToggle').checked;
+    state.subtitlePosition = isTop ? 'top' : 'bottom';
+
+    if (isTop) {
+        elements.subtitleOverlay.classList.add('top');
+    } else {
+        elements.subtitleOverlay.classList.remove('top');
+    }
 }
 
 // === Toast Notifications ===
