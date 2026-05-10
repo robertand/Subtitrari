@@ -136,8 +136,16 @@
                         Setări Procesare
                     </h2>
 
-                    <!-- Model Selection -->
+                    <!-- Engine & Model Selection -->
                     <div class="setting-group">
+                        <label class="setting-label">Motor Transcriere</label>
+                        <select id="engineSelect" class="setting-select" onchange="toggleEngineOptions()">
+                            <option value="whisper" selected>OpenAI Whisper</option>
+                            <option value="cohere">Cohere Transcribe (03-2026)</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-group" id="whisperModelGroup">
                         <label class="setting-label">Model Whisper</label>
                         <select id="modelSelect" class="setting-select">
                             <option value="tiny">Tiny (rapid, memorie redusă)</option>

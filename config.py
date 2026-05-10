@@ -22,8 +22,11 @@ class Config:
     ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'webm', 'mxf', 'mp3', 'wav', 'm4a', 'flac', 'ogg'}
     
     # Processing
+    DEFAULT_ENGINE = 'whisper'
+    AVAILABLE_ENGINES = ['whisper', 'cohere']
     DEFAULT_MODEL = 'small'
     AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3']
+    COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
 
     # LLM Models
     DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'

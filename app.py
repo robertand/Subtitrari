@@ -514,21 +514,30 @@ def process_task(task):
         if task.cancel_flag.is_set():
             return
         
+        engine = task.options.get('engine', Config.DEFAULT_ENGINE)
         model_name = task.options.get('model', Config.DEFAULT_MODEL)
         language = task.options.get('language', Config.DEFAULT_LANGUAGE)
         
         if language == 'auto':
             language = None
         
-        # Whisper transcription
-        result = transcriber.transcribe_with_windowing(
-            str(audio_path),
-            model_name=model_name,
-            language=language,
-            window_size=60,
-            overlap=10,
-            progress_callback=lambda p, m: update_task_progress(task, p, m)
-        )
+        if engine == 'cohere':
+            # Cohere transcription
+            result = transcriber.transcribe_with_cohere(
+                str(audio_path),
+                language=language or "en",
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
+        else:
+            # Whisper transcription
+            result = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                window_size=60,
+                overlap=10,
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
         
         # Segment
         task.progress = 60

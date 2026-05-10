@@ -11,6 +11,7 @@ import re
 import gc
 from typing import Optional, Dict, Any, List
 import time
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class WhisperTranscriber:
         self.models = {}
         self.current_model = None
         self.device = self._detect_device()
+        self.cohere_processor = None
         
     def _detect_device(self) -> str:
         if torch.cuda.is_available():
@@ -321,11 +323,110 @@ class WhisperTranscriber:
             logger.error(f"WhisperX transcription error: {e}")
             raise
 
+    def load_cohere_model(self):
+        """Load Cohere Transcribe model"""
+        try:
+            from transformers import AutoProcessor, CohereAsrForConditionalGeneration
+
+            model_name = Config.COHERE_MODEL
+
+            if model_name not in self.models:
+                logger.info(f"Loading Cohere model: {model_name}")
+
+                self.cohere_processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+                self.models[model_name] = CohereAsrForConditionalGeneration.from_pretrained(
+                    model_name,
+                    device_map="auto",
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    trust_remote_code=True
+                )
+
+            self.current_model = self.models[model_name]
+            return {"status": "loaded", "model": "cohere", "device": self.device}
+
+        except Exception as e:
+            logger.error(f"Error loading Cohere model: {e}")
+            raise
+
+    def transcribe_with_cohere(
+        self,
+        audio_path: str,
+        language: str = "en",
+        progress_callback = None
+    ) -> Dict[str, Any]:
+        """Transcribe audio using Cohere Transcribe with VAD-based chunking for TC"""
+        try:
+            self.load_cohere_model()
+
+            if progress_callback:
+                progress_callback(10, "Loading audio for Cohere...")
+
+            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
+
+            # Since Cohere doesn't have native timestamps, we use VAD to find segments
+            # We'll rely on the segmenter's logic later, but for the initial transcription
+            # we need to feed it chunks that represent coherent speech.
+
+            # For now, we'll use a simple windowing approach similar to Whisper windowing
+            # but we'll return segments directly.
+
+            window_size = 30 # seconds
+            overlap = 2
+
+            segments = []
+            window_samples = window_size * sr
+            overlap_samples = overlap * sr
+            step = window_samples - overlap_samples
+
+            total_windows = int(np.ceil(len(audio) / step))
+
+            for i in range(0, len(audio), step):
+                window_num = i // step + 1
+                if progress_callback:
+                    progress = 10 + int((window_num / total_windows) * 80)
+                    progress_callback(progress, f"Cohere: Processing window {window_num}/{total_windows}")
+
+                window_audio = audio[i:i + window_samples]
+
+                # Preprocess for Cohere
+                inputs = self.cohere_processor(
+                    window_audio,
+                    sampling_rate=16000,
+                    return_tensors="pt",
+                    language=language
+                )
+                inputs.to(self.current_model.device, dtype=self.current_model.dtype)
+
+                # Generate
+                with torch.no_grad():
+                    outputs = self.current_model.generate(**inputs, max_new_tokens=256)
+
+                text = self.cohere_processor.decode(outputs[0], skip_special_tokens=True)
+
+                if text.strip():
+                    offset = i / sr
+                    segments.append({
+                        'start': offset,
+                        'end': offset + (len(window_audio) / sr),
+                        'text': text.strip()
+                    })
+
+            return {
+                "segments": segments,
+                "language": language,
+                "text": " ".join([s["text"] for s in segments])
+            }
+
+        except Exception as e:
+            logger.error(f"Cohere transcription error: {e}")
+            raise
+
     def unload_model(self):
         """Free GPU memory by unloading all models"""
         if self.device == "cuda":
-            logger.info("Unloading all Whisper models to free VRAM...")
+            logger.info("Unloading all transcription models to free VRAM...")
             self.current_model = None
+            self.cohere_processor = None
             self.models.clear()
 
             import gc

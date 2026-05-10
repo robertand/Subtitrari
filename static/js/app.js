@@ -406,6 +406,16 @@ function resetUpload() {
 }
 
 // === Processing ===
+function toggleEngineOptions() {
+    const engine = document.getElementById('engineSelect').value;
+    const whisperGroup = document.getElementById('whisperModelGroup');
+    if (engine === 'whisper') {
+        whisperGroup.style.display = 'block';
+    } else {
+        whisperGroup.style.display = 'none';
+    }
+}
+
 async function startProcessing() {
     if (!state.taskId) {
         showToast('Încărcați mai întâi un fișier', 'warning');
@@ -417,6 +427,7 @@ async function startProcessing() {
     
     // Collect options
     const options = {
+        engine: document.getElementById('engineSelect').value,
         model: document.getElementById('modelSelect').value,
         language: document.getElementById('languageSelect').value,
         min_duration: parseFloat(document.getElementById('minDuration').value),
