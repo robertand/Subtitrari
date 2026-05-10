@@ -82,6 +82,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initModels();
     initVideoPlayer();
     checkDevice();
+    toggleEngineOptions(); // Initializa engine specific UI
 });
 
 function initUpload() {
@@ -426,9 +427,14 @@ async function startProcessing() {
     const audioOnly = document.getElementById('audioOnly').checked;
     
     // Collect options
+    const engine = document.getElementById('engineSelect').value;
+    const model = document.getElementById('modelSelect').value;
+
+    console.log('Starting processing with engine:', engine, 'model:', model);
+
     const options = {
-        engine: document.getElementById('engineSelect').value,
-        model: document.getElementById('modelSelect').value,
+        engine: engine,
+        model: model,
         language: document.getElementById('languageSelect').value,
         min_duration: parseFloat(document.getElementById('minDuration').value),
         max_duration: parseFloat(document.getElementById('maxDuration').value),

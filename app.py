@@ -518,10 +518,17 @@ def process_task(task):
         model_name = task.options.get('model', Config.DEFAULT_MODEL)
         language = task.options.get('language', Config.DEFAULT_LANGUAGE)
         
+        logger.info(f"Task {task.task_id} - Engine: {engine}, Model: {model_name}, Lang: {language}")
+
         if language == 'auto':
             language = None
         
         if engine == 'cohere':
+            task.message = 'Initializing Cohere Transcribe...'
+            # Ensure any whisper model is unloaded if we're moving to Cohere
+            if transcriber.current_model and transcriber.current_model != transcriber.models.get(Config.COHERE_MODEL):
+                transcriber.unload_model()
+
             # Cohere transcription
             result = transcriber.transcribe_with_cohere(
                 str(audio_path),
