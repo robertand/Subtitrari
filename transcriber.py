@@ -1,3 +1,9 @@
+import sys
+# Mock torchcodec to prevent environment crashes on load
+# since Cohere processor might try to import it for decoding
+from unittest.mock import MagicMock
+sys.modules['torchcodec'] = MagicMock()
+
 import whisper
 import whisperx
 import torch
@@ -324,9 +330,9 @@ class WhisperTranscriber:
             raise
 
     def load_cohere_model(self):
-        """Load Cohere Transcribe model and pipeline"""
+        """Load Cohere Transcribe model and processor"""
         try:
-            from transformers import AutoProcessor, CohereAsrForConditionalGeneration, pipeline
+            from transformers import AutoProcessor, CohereAsrForConditionalGeneration
 
             model_name = Config.COHERE_MODEL
 
@@ -343,15 +349,6 @@ class WhisperTranscriber:
 
                 self.models[model_name] = model
 
-                # Initialize pipeline for robust inference
-                self.cohere_pipeline = pipeline(
-                    "automatic-speech-recognition",
-                    model=model,
-                    tokenizer=self.cohere_processor.tokenizer,
-                    feature_extractor=self.cohere_processor.feature_extractor,
-                    device=0 if self.device == "cuda" else -1
-                )
-
             self.current_model = self.models[model_name]
             return {"status": "loaded", "model": "cohere", "device": self.device}
 
@@ -365,7 +362,7 @@ class WhisperTranscriber:
         language: str = "en",
         progress_callback = None
     ) -> Dict[str, Any]:
-        """Transcribe audio using Cohere with robust VAD-first segmentation"""
+        """Transcribe audio using Cohere with manual VAD-based segmentation"""
         try:
             self.load_cohere_model()
 
@@ -374,8 +371,6 @@ class WhisperTranscriber:
 
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
 
-            # Since Cohere doesn't support native timestamps or chunking in pipelines easily
-            # we use VAD to segment the audio first, then transcribe each piece.
             if progress_callback:
                 progress_callback(20, "Detecting speech (VAD)...")
 
@@ -395,9 +390,9 @@ class WhisperTranscriber:
 
                 interval_dur = (end_s - start_s) / sr
 
-                if interval_dur > 20: # Split long continuous speech
-                    for i in range(start_s, end_s, 15 * sr):
-                        sub_end = min(end_s, i + 15 * sr)
+                if interval_dur > 15: # Split long continuous speech
+                    for i in range(start_s, end_s, 10 * sr):
+                        sub_end = min(end_s, i + 10 * sr)
                         if (sub_end - i) / sr > 0.5:
                             refined_intervals.append((i, sub_end))
                 elif interval_dur > 0.3:
@@ -413,17 +408,29 @@ class WhisperTranscriber:
 
                 segment_audio = audio[start_sample:end_sample]
 
-                # Use pipeline but WITHOUT chunking or return_timestamps
-                # Pipeline handles the pre-processing and model loading robustly
-                res = self.cohere_pipeline(
+                # Direct processor call instead of pipeline to bypass torchcodec/experimental issues
+                inputs = self.cohere_processor(
                     segment_audio,
-                    generate_kwargs={
-                        "max_new_tokens": 128,
-                        "language": language if language and language != 'auto' else 'en'
-                    }
+                    sampling_rate=16000,
+                    return_tensors="pt",
+                    language=language if language and language != 'auto' else 'en'
                 )
 
-                text = res.get("text", "").strip()
+                # Explicitly remove 'length' which causes model_kwargs error
+                if 'length' in inputs:
+                    del inputs['length']
+
+                # Ensure correct device and dtype (float32)
+                inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+
+                # Generate
+                with torch.no_grad():
+                    outputs = self.current_model.generate(
+                        **inputs,
+                        max_new_tokens=128
+                    )
+
+                text = self.cohere_processor.decode(outputs[0], skip_special_tokens=True).strip()
                 if text:
                     segments.append({
                         'start': start_sample / sr,
