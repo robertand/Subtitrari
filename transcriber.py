@@ -365,7 +365,7 @@ class WhisperTranscriber:
         language: str = "en",
         progress_callback = None
     ) -> Dict[str, Any]:
-        """Transcribe audio using Cohere Transcribe with pipeline for robustness"""
+        """Transcribe audio using Cohere with robust VAD-first segmentation"""
         try:
             self.load_cohere_model()
 
@@ -374,74 +374,53 @@ class WhisperTranscriber:
 
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
 
+            # Since Cohere doesn't support native timestamps or chunking in pipelines easily
+            # we use VAD to segment the audio first, then transcribe each piece.
             if progress_callback:
-                progress_callback(20, "Transcribing with Cohere pipeline...")
+                progress_callback(20, "Detecting speech (VAD)...")
 
-            # Use pipeline which handles chunking, batching and reassembly internally
-            # It's more robust than manual generate calls for this specific model architecture
-            result = self.cohere_pipeline(
-                audio,
-                chunk_length_s=30,
-                stride_length_s=5,
-                generate_kwargs={
-                    "max_new_tokens": 256,
-                    "language": language if language and language != 'auto' else 'en'
-                },
-                return_timestamps="word" # Try to get word timestamps if supported
-            )
-
-            # If the pipeline doesn't return timestamps, we fallback to VAD segments
-            # for the timeline, but we use the high-quality pipeline text.
-
-            raw_text = result.get("text", "")
-            chunks = result.get("chunks", [])
-
-            segments = []
-            if chunks:
-                for chunk in chunks:
-                    ts = chunk.get("timestamp")
-                    if ts and len(ts) == 2:
-                        segments.append({
-                            "start": ts[0],
-                            "end": ts[1],
-                            "text": chunk.get("text", "").strip()
-                        })
-
-            if not segments and raw_text:
-                # Fallback: Split raw_text into logical segments based on duration
-                # Since we don't have timestamps, we'll use a simple heuristic
-                logger.info("Cohere pipeline did not return timestamps, using VAD for segmentation")
-                return self._transcribe_cohere_vad_fallback(audio, sr, language, progress_callback)
-
-            return {
-                "segments": segments,
-                "language": language,
-                "text": raw_text
-            }
-
-        except Exception as e:
-            logger.error(f"Cohere transcription error: {e}")
-            # Final fallback: Try VAD approach but with extreme caution on shapes
-            return self._transcribe_cohere_vad_fallback(audio, sr, language, progress_callback)
-
-    def _transcribe_cohere_vad_fallback(self, audio, sr, language, progress_callback):
-        """Fallback VAD-based segmentation with robust shape handling"""
-        try:
+            # Use top_db=30 for standard speech
             speech_intervals = librosa.effects.split(audio, top_db=30)
-            segments = []
 
-            for i, (start_sample, end_sample) in enumerate(speech_intervals):
+            if len(speech_intervals) == 0:
+                logger.warning("No speech detected by VAD")
+                return {"segments": [], "language": language, "text": ""}
+
+            # Group or split intervals for optimal Cohere performance (1-15 seconds)
+            refined_intervals = []
+            for start_s, end_s in speech_intervals:
+                # Add a small padding
+                start_s = max(0, start_s - int(0.2 * sr))
+                end_s = min(len(audio), end_s + int(0.2 * sr))
+
+                interval_dur = (end_s - start_s) / sr
+
+                if interval_dur > 20: # Split long continuous speech
+                    for i in range(start_s, end_s, 15 * sr):
+                        sub_end = min(end_s, i + 15 * sr)
+                        if (sub_end - i) / sr > 0.5:
+                            refined_intervals.append((i, sub_end))
+                elif interval_dur > 0.3:
+                    refined_intervals.append((start_s, end_s))
+
+            segments = []
+            total_refined = len(refined_intervals)
+
+            for i, (start_sample, end_sample) in enumerate(refined_intervals):
                 if progress_callback:
-                    progress = 30 + int((i / len(speech_intervals)) * 60)
-                    progress_callback(progress, f"Cohere Fallback: Segment {i+1}")
+                    progress = 25 + int((i / total_refined) * 70)
+                    progress_callback(progress, f"Cohere: Transcribing segment {i+1}/{total_refined}")
 
                 segment_audio = audio[start_sample:end_sample]
-                if len(segment_audio) < 1600: continue # Skip segments < 0.1s
 
-                # Use pipeline even for small segments to avoid matmul shape errors
+                # Use pipeline but WITHOUT chunking or return_timestamps
+                # Pipeline handles the pre-processing and model loading robustly
                 res = self.cohere_pipeline(
                     segment_audio,
-                    generate_kwargs={"max_new_tokens": 128, "language": language if language and language != 'auto' else 'en'}
+                    generate_kwargs={
+                        "max_new_tokens": 128,
+                        "language": language if language and language != 'auto' else 'en'
+                    }
                 )
 
                 text = res.get("text", "").strip()
@@ -457,8 +436,9 @@ class WhisperTranscriber:
                 "language": language,
                 "text": " ".join([s["text"] for s in segments])
             }
+
         except Exception as e:
-            logger.error(f"Cohere VAD fallback failed: {e}")
+            logger.error(f"Cohere transcription fatal error: {e}")
             raise
 
     def unload_model(self):
