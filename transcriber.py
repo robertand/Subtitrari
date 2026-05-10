@@ -395,10 +395,16 @@ class WhisperTranscriber:
                     return_tensors="pt",
                     language=language
                 )
+
+                # Remove 'length' if it was added by the processor (common cause for model_kwargs error)
+                if 'length' in inputs:
+                    del inputs['length']
+
                 inputs.to(self.current_model.device, dtype=self.current_model.dtype)
 
                 # Generate
                 with torch.no_grad():
+                    # We pass inputs as kwargs, but ensure no conflicting args
                     outputs = self.current_model.generate(**inputs, max_new_tokens=256)
 
                 text = self.cohere_processor.decode(outputs[0], skip_special_tokens=True)
