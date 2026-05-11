@@ -327,51 +327,49 @@ class WhisperTranscriber:
 
     def load_cohere_model(self):
         """Load Cohere Transcribe model and processor"""
+        from transformers import AutoProcessor
+        model_name = Config.COHERE_MODEL
+
         try:
-            from transformers import AutoProcessor, AutoModelForConditionalGeneration
-
-            model_name = Config.COHERE_MODEL
-
-            if model_name not in self.models:
-                logger.info(f"Loading Cohere model: {model_name}")
-
+            # Always ensure processor is loaded first
+            if self.cohere_processor is None:
+                logger.info(f"Loading Cohere processor: {model_name}")
                 self.cohere_processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-                logger.info(f"Processor class: {type(self.cohere_processor)}")
 
+            if model_name in self.models:
+                self.current_model = self.models[model_name]
+                return {"status": "loaded", "model": "cohere", "device": self.device}
+
+            logger.info(f"Loading Cohere model: {model_name}")
+
+            try:
+                from transformers import AutoModelForConditionalGeneration
                 model = AutoModelForConditionalGeneration.from_pretrained(
                     model_name,
                     device_map="auto" if self.device == "cuda" else None,
-                    torch_dtype=torch.float32,
+                    dtype=torch.float32,
+                    trust_remote_code=True
+                )
+            except (ImportError, Exception) as e:
+                logger.warning(f"AutoModelForConditionalGeneration failed: {e}. Trying AutoModel...")
+                from transformers import AutoModel
+                model = AutoModel.from_pretrained(
+                    model_name,
+                    device_map="auto" if self.device == "cuda" else None,
+                    dtype=torch.float32,
                     trust_remote_code=True
                 )
 
-                logger.info(f"Loaded model class: {type(model)}")
-                logger.info(f"Has generate: {hasattr(model, 'generate')}")
+            model.eval()
+            self.models[model_name] = model
+            self.current_model = model
 
-                model.eval()
-                self.models[model_name] = model
-
-            self.current_model = self.models[model_name]
+            logger.info(f"Loaded Cohere model class: {type(model)}")
             return {"status": "loaded", "model": "cohere", "device": self.device}
 
         except Exception as e:
-            logger.error(f"Error loading Cohere model: {e}")
-            # Try AutoModel as fallback
-            try:
-                from transformers import AutoModel
-                model = AutoModel.from_pretrained(
-                    Config.COHERE_MODEL,
-                    device_map="auto" if self.device == "cuda" else None,
-                    torch_dtype=torch.float32,
-                    trust_remote_code=True
-                )
-                model.eval()
-                self.models[Config.COHERE_MODEL] = model
-                self.current_model = model
-                return {"status": "loaded", "model": "cohere", "device": self.device}
-            except Exception as e2:
-                logger.error(f"Fallback loading failed: {e2}")
-                raise e
+            logger.error(f"Fatal error loading Cohere model/processor: {e}")
+            raise
 
     def transcribe_with_cohere(
         self,
