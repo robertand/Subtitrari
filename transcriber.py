@@ -1,8 +1,19 @@
 import sys
-# Mock torchcodec to prevent environment crashes on load
-# since Cohere processor might try to import it for decoding
+import types
 from unittest.mock import MagicMock
-sys.modules['torchcodec'] = MagicMock()
+
+# Mock torchcodec to prevent environment crashes on load
+# Cohere processor may try to import and use torchcodec
+_torchcodec_mock = types.ModuleType('torchcodec')
+_torchcodec_mock.__spec__ = MagicMock()
+_torchcodec_mock.__spec__.name = 'torchcodec'
+_torchcodec_mock.__spec__.loader = MagicMock()
+_torchcodec_mock.__spec__.origin = 'mock'
+_torchcodec_mock.__spec__.submodule_search_locations = []
+_torchcodec_mock.__version__ = '0.0.0'
+_torchcodec_mock.__path__ = []
+_torchcodec_mock.__file__ = 'mock'
+sys.modules['torchcodec'] = _torchcodec_mock
 
 import whisper
 import whisperx
