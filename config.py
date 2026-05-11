@@ -36,7 +36,7 @@ class Config:
         'google/gemma-4-E4B-it',
         'google/gemma-4-26B-A4B-it'
     ]
-    VLLM_GPU_MEMORY_UTILIZATION = 0.7  # 70% to leave more room for Whisper/Cohere/OS
+    VLLM_GPU_MEMORY_UTILIZATION = 0.6  # 60% for even better safety with huge models like Qwen3-235B
     VLLM_ENFORCE_EAGER = True  # Use eager mode to save VRAM from CUDA graphs
 
     DEFAULT_LANGUAGE = 'auto'

@@ -412,6 +412,9 @@ class WhisperTranscriber:
             segments = []
             total_refined = len(refined_intervals)
 
+            # Get feature extractor if available
+            feature_extractor = getattr(self.cohere_processor, 'feature_extractor', None)
+
             for i, (start_sample, end_sample) in enumerate(refined_intervals):
                 if progress_callback:
                     progress = 25 + int((i / total_refined) * 70)
@@ -419,35 +422,48 @@ class WhisperTranscriber:
 
                 segment_audio = audio[start_sample:end_sample]
 
-                # Direct processor call instead of pipeline to bypass torchcodec/experimental issues
-                inputs = self.cohere_processor(
-                    segment_audio,
-                    sampling_rate=16000,
-                    return_tensors="pt",
-                    language=language if language and language != 'auto' else 'en'
-                )
+                try:
+                    # Preprocess audio properly
+                    if feature_extractor:
+                        features = feature_extractor(
+                            segment_audio,
+                            sampling_rate=16000,
+                            return_tensors="pt"
+                        )
+                        inputs = {'input_features': features.input_features.to(self.device).to(torch.float32)}
+                    else:
+                        processed = self.cohere_processor(
+                            segment_audio,
+                            sampling_rate=16000,
+                            return_tensors="pt"
+                        )
+                        inputs = {}
+                        for k, v in processed.items():
+                            if k in ['length', 'attention_mask']: continue
+                            if isinstance(v, torch.Tensor):
+                                inputs[k] = v.to(self.device).to(torch.float32)
+                            else:
+                                inputs[k] = v
 
-                # Explicitly remove 'length' which causes model_kwargs error
-                if 'length' in inputs:
-                    del inputs['length']
+                    # Generate with greedy decoding for stability
+                    with torch.no_grad():
+                        outputs = self.current_model.generate(
+                            **inputs,
+                            max_new_tokens=128,
+                            do_sample=False,
+                            num_beams=1
+                        )
 
-                # Ensure correct device and dtype (float32)
-                inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
-
-                # Generate
-                with torch.no_grad():
-                    outputs = self.current_model.generate(
-                        **inputs,
-                        max_new_tokens=128
-                    )
-
-                text = self.cohere_processor.decode(outputs[0], skip_special_tokens=True).strip()
-                if text:
-                    segments.append({
-                        'start': start_sample / sr,
-                        'end': end_sample / sr,
-                        'text': text
-                    })
+                    text = self.cohere_processor.decode(outputs[0], skip_special_tokens=True).strip()
+                    if text:
+                        segments.append({
+                            'start': start_sample / sr,
+                            'end': end_sample / sr,
+                            'text': text
+                        })
+                except Exception as segment_error:
+                    logger.error(f"Error transcribing segment {i}: {segment_error}")
+                    continue
 
             return {
                 "segments": segments,
