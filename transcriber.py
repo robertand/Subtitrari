@@ -3,7 +3,6 @@ import types
 from unittest.mock import MagicMock
 
 # Mock torchcodec to prevent environment crashes on load
-# Cohere processor may try to import and use torchcodec
 _torchcodec_mock = types.ModuleType('torchcodec')
 _torchcodec_mock.__spec__ = MagicMock()
 _torchcodec_mock.__spec__.name = 'torchcodec'
@@ -13,6 +12,25 @@ _torchcodec_mock.__spec__.submodule_search_locations = []
 _torchcodec_mock.__version__ = '0.0.0'
 _torchcodec_mock.__path__ = []
 _torchcodec_mock.__file__ = 'mock'
+_torchcodec_mock.decoders = MagicMock()
+_torchcodec_mock.decoders.VideoDecoder = MagicMock
+_torchcodec_mock.decoders.AudioDecoder = MagicMock
+_torchcodec_mock.decoders.Decoder = MagicMock
+_torchcodec_mock.encoders = MagicMock()
+_torchcodec_mock.encoders.VideoEncoder = MagicMock
+_torchcodec_mock.encoders.AudioEncoder = MagicMock
+_torchcodec_mock.load = MagicMock(return_value={})
+_torchcodec_mock.dump = MagicMock()
+_torchcodec_mock.is_available = MagicMock(return_value=False)
+_torchcodec_mock.get_version = MagicMock(return_value="0.0.0")
+_torchcodec_mock.VideoDecoder = MagicMock
+_torchcodec_mock.AudioDecoder = MagicMock
+_torchcodec_mock.VideoEncoder = MagicMock
+_torchcodec_mock.AudioEncoder = MagicMock
+_torchcodec_mock.Decoder = MagicMock
+_torchcodec_mock.Encoder = MagicMock
+_torchcodec_mock.StreamReader = MagicMock
+_torchcodec_mock.StreamWriter = MagicMock
 sys.modules['torchcodec'] = _torchcodec_mock
 
 import whisper
@@ -65,7 +83,6 @@ class WhisperTranscriber:
             load_time = time.time() - start_time
             self.models[model_name] = self.current_model
             
-            # Free memory if another model was loaded
             if len(self.models) > 2:
                 oldest_model = list(self.models.keys())[0]
                 del self.models[oldest_model]
@@ -81,7 +98,6 @@ class WhisperTranscriber:
             
         except Exception as e:
             logger.error(f"Error loading model {model_name}: {e}")
-            # Fallback to CPU if GPU fails
             if self.device == "cuda":
                 logger.info("Falling back to CPU")
                 self.device = "cpu"
@@ -103,16 +119,12 @@ class WhisperTranscriber:
             if progress_callback:
                 progress_callback(10, "Loading audio...")
             
-            # Load and preprocess audio
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
-            
-            # Normalize audio
             audio = self._normalize_audio(audio)
             
             if progress_callback:
                 progress_callback(20, "Transcribing...")
             
-            # Prepare options
             options = {
                 "task": "transcribe",
                 "verbose": False,
@@ -122,13 +134,11 @@ class WhisperTranscriber:
             if language and language != 'auto':
                 options["language"] = language
             
-            # Transcribe
             result = self.current_model.transcribe(audio, **options)
             
             if progress_callback:
                 progress_callback(90, "Post-processing...")
             
-            # Clean hallucinations
             result = self._clean_hallucinations(result)
             
             if progress_callback:
@@ -157,12 +167,10 @@ class WhisperTranscriber:
             if total_duration <= window_size:
                 return self.transcribe_audio(audio_path, model_name, language, progress_callback)
             
-            # Process in windows
             segments = []
             window_samples = window_size * sr
             overlap_samples = overlap * sr
             step = window_samples - overlap_samples
-            
             total_windows = int(np.ceil(len(audio) / step))
             
             for i in range(0, len(audio), step):
@@ -172,33 +180,22 @@ class WhisperTranscriber:
                     progress_callback(progress, f"Processing window {window_num}/{total_windows}")
                 
                 window_audio = audio[i:i + window_samples]
-                
-                # Save window to temp file
                 temp_file = Path(f"data/temp/window_{window_num}.wav")
                 temp_file.parent.mkdir(parents=True, exist_ok=True)
                 sf.write(temp_file, window_audio, sr)
                 
-                # Transcribe window
-                result = self.transcribe_audio(
-                    str(temp_file), 
-                    model_name, 
-                    language
-                )
+                result = self.transcribe_audio(str(temp_file), model_name, language)
                 
-                # Adjust timestamps and avoid duplicates from overlapping windows
                 offset = i / sr
                 step_duration = step / sr
 
                 for seg in result.get('segments', []):
-                    # Only add segments that start in the unique part of this window
-                    # (except for the last window where we take everything remaining)
                     is_last_window = (i + window_samples) >= len(audio)
                     if is_last_window or seg['start'] < step_duration:
                         seg['start'] += offset
                         seg['end'] += offset
                         segments.append(seg)
                 
-                # Cleanup temp file
                 temp_file.unlink(missing_ok=True)
             
             return {
@@ -215,7 +212,6 @@ class WhisperTranscriber:
         """Isolate voice by reducing background noise and music"""
         try:
             logger.info("Isolating voice using spectral gating...")
-            # Use noisereduce for spectral gating
             reduced_noise = nr.reduce_noise(y=audio, sr=sr, prop_decrease=0.8)
             return reduced_noise
         except Exception as e:
@@ -238,10 +234,10 @@ class WhisperTranscriber:
             r'(?i)(background music playing|music fades|applause)',
             r'(?i)(subtitles by|amara\.org|opensubtitles)',
             r'(?i)(thank you for watching|see you in the next video)',
-            r'(?i)^\s*$',  # Empty lines
+            r'(?i)^\s*$',
             r'(?i)(♪|♫|♬|♩|♭)',
-            r'(?i)(\[.*?\])', # Brackets like [MUSIC]
-            r'(?i)(\*.*?\*)'  # Stars like *laughter*
+            r'(?i)(\[.*?\])',
+            r'(?i)(\*.*?\*)'
         ]
         
         if 'segments' in result:
@@ -250,23 +246,19 @@ class WhisperTranscriber:
                 text = segment.get('text', '').strip()
                 is_hallucination = False
                 
-                # Check patterns
                 for pattern in hallucination_patterns:
                     if re.search(pattern, text):
                         is_hallucination = True
                         break
                 
-                # Stutter/Repetition detection (e.g. "you you you you")
                 words = text.split()
                 if len(words) > 4:
-                    # Check if more than 70% of words are the same
                     from collections import Counter
                     counts = Counter(words)
                     most_common, count = counts.most_common(1)[0]
                     if count / len(words) > 0.7:
                         is_hallucination = True
 
-                # Extremely short duration hallucinations
                 duration = segment.get('end', 0) - segment.get('start', 0)
                 if duration < 0.1 and len(text) > 10:
                     is_hallucination = True
@@ -285,13 +277,7 @@ class WhisperTranscriber:
         
         try:
             stream = ffmpeg.input(video_path)
-            stream = ffmpeg.output(
-                stream, 
-                output_path,
-                acodec='pcm_s16le',
-                ac=1,
-                ar='16k'
-            )
+            stream = ffmpeg.output(stream, output_path, acodec='pcm_s16le', ac=1, ar='16k')
             ffmpeg.run(stream, overwrite_output=True, quiet=True)
             return output_path
         except ffmpeg.Error as e:
@@ -324,7 +310,6 @@ class WhisperTranscriber:
             if progress_callback:
                 progress_callback(60, "Aligning WhisperX results...")
 
-            # Alignment
             model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
             result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
 
@@ -343,8 +328,7 @@ class WhisperTranscriber:
     def load_cohere_model(self):
         """Load Cohere Transcribe model and processor"""
         try:
-            # We use AutoModel and AutoProcessor because Cohere uses custom remote code
-            from transformers import AutoProcessor, AutoModel
+            from transformers import AutoProcessor, AutoModelForConditionalGeneration
 
             model_name = Config.COHERE_MODEL
 
@@ -352,15 +336,19 @@ class WhisperTranscriber:
                 logger.info(f"Loading Cohere model: {model_name}")
 
                 self.cohere_processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+                logger.info(f"Processor class: {type(self.cohere_processor)}")
 
-                # Load model with AutoModel + trust_remote_code
-                # We use float32 as some conformer ops are sensitive
-                model = AutoModel.from_pretrained(
+                model = AutoModelForConditionalGeneration.from_pretrained(
                     model_name,
+                    device_map="auto" if self.device == "cuda" else None,
                     torch_dtype=torch.float32,
                     trust_remote_code=True
-                ).to(self.device)
+                )
 
+                logger.info(f"Loaded model class: {type(model)}")
+                logger.info(f"Has generate: {hasattr(model, 'generate')}")
+
+                model.eval()
                 self.models[model_name] = model
 
             self.current_model = self.models[model_name]
@@ -368,15 +356,31 @@ class WhisperTranscriber:
 
         except Exception as e:
             logger.error(f"Error loading Cohere model: {e}")
-            raise
+            # Try AutoModel as fallback
+            try:
+                from transformers import AutoModel
+                model = AutoModel.from_pretrained(
+                    Config.COHERE_MODEL,
+                    device_map="auto" if self.device == "cuda" else None,
+                    torch_dtype=torch.float32,
+                    trust_remote_code=True
+                )
+                model.eval()
+                self.models[Config.COHERE_MODEL] = model
+                self.current_model = model
+                return {"status": "loaded", "model": "cohere", "device": self.device}
+            except Exception as e2:
+                logger.error(f"Fallback loading failed: {e2}")
+                raise e
 
     def transcribe_with_cohere(
         self,
         audio_path: str,
         language: str = "en",
+        prompt: Optional[str] = None,
         progress_callback = None
     ) -> Dict[str, Any]:
-        """Transcribe audio using Cohere with manual VAD-based segmentation"""
+        """Transcribe audio using Cohere - with forced alignment for timestamps and prompt support"""
         try:
             self.load_cohere_model()
 
@@ -384,101 +388,133 @@ class WhisperTranscriber:
                 progress_callback(10, "Loading audio for Cohere...")
 
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
+            audio_float32 = audio.astype(np.float32)
 
             if progress_callback:
-                progress_callback(20, "Detecting speech (VAD)...")
+                progress_callback(25, "Processing with Cohere...")
 
-            # Use top_db=30 for standard speech
-            speech_intervals = librosa.effects.split(audio, top_db=30)
+            # Prepare inputs
+            processor_kwargs = {
+                "sampling_rate": sr,
+                "return_tensors": "pt",
+                "language": language,
+                "punctuation": True
+            }
 
-            if len(speech_intervals) == 0:
-                logger.warning("No speech detected by VAD")
-                return {"segments": [], "language": language, "text": ""}
+            inputs = self.cohere_processor(audio_float32, **processor_kwargs)
 
-            # Group or split intervals for optimal Cohere performance (1-15 seconds)
-            refined_intervals = []
-            for start_s, end_s in speech_intervals:
-                # Add a small padding
-                start_s = max(0, start_s - int(0.2 * sr))
-                end_s = min(len(audio), end_s + int(0.2 * sr))
+            # Save audio_chunk_index for decoding, but don't pass to model
+            audio_chunk_index = inputs.pop("audio_chunk_index", None)
 
-                interval_dur = (end_s - start_s) / sr
-
-                if interval_dur > 15: # Split long continuous speech
-                    for i in range(start_s, end_s, 10 * sr):
-                        sub_end = min(end_s, i + 10 * sr)
-                        if (sub_end - i) / sr > 0.5:
-                            refined_intervals.append((i, sub_end))
-                elif interval_dur > 0.3:
-                    refined_intervals.append((start_s, end_s))
-
-            segments = []
-            total_refined = len(refined_intervals)
-
-            # Get feature extractor if available
-            feature_extractor = getattr(self.cohere_processor, 'feature_extractor', None)
-
-            for i, (start_sample, end_sample) in enumerate(refined_intervals):
-                if progress_callback:
-                    progress = 25 + int((i / total_refined) * 70)
-                    progress_callback(progress, f"Cohere: Transcribing segment {i+1}/{total_refined}")
-
-                segment_audio = audio[start_sample:end_sample]
-
-                # Ensure audio is float32
-                if segment_audio.dtype != np.float32:
-                    segment_audio = segment_audio.astype(np.float32)
-
-                try:
-                    # Cohere model expects log-mel features.
-                    # We use the feature_extractor explicitly if available to avoid raw waveform passing.
-                    if feature_extractor:
-                        features = feature_extractor(
-                            segment_audio,
-                            sampling_rate=16000,
-                            return_tensors="pt"
-                        )
-                        inputs = {'input_features': features.input_features.to(self.device).to(torch.float32)}
+            # Move inputs to model device with CORRECT dtypes
+            model_inputs = {}
+            for k, v in inputs.items():
+                if isinstance(v, torch.Tensor):
+                    if k == 'decoder_input_ids':
+                        model_inputs[k] = v.to(self.current_model.device, dtype=torch.long)
+                    elif k in ['input_features', 'attention_mask']:
+                        model_inputs[k] = v.to(self.current_model.device, dtype=self.current_model.dtype)
                     else:
-                        # Fallback to general processor call
-                        processed = self.cohere_processor(
-                            segment_audio,
-                            sampling_rate=16000,
-                            return_tensors="pt"
-                        )
-                        inputs = {}
-                        for k, v in processed.items():
-                            # Remove 'length' as it often causes issues with custom architectures
-                            if k in ['length']: continue
-                            if isinstance(v, torch.Tensor):
-                                inputs[k] = v.to(self.device).to(torch.float32)
-                            else:
-                                inputs[k] = v
+                        model_inputs[k] = v.to(self.current_model.device)
+                else:
+                    model_inputs[k] = v
 
-                    # Generate with greedy decoding for stability
-                    with torch.no_grad():
-                        outputs = self.current_model.generate(
-                            **inputs,
-                            max_new_tokens=128,
-                            do_sample=False,
-                            num_beams=1
-                        )
+            # Handle prompt (forced_decoder_ids or prefix)
+            if prompt:
+                logger.info(f"Using transcription prompt: {prompt}")
+                # For Cohere, we can use the tokenizer to get prefix tokens
+                prompt_ids = self.cohere_processor.tokenizer(prompt, return_tensors="pt", add_special_tokens=False).input_ids
+                model_inputs["decoder_input_ids"] = torch.cat([model_inputs["decoder_input_ids"], prompt_ids.to(self.current_model.device)], dim=-1)
 
-                    text = self.cohere_processor.decode(outputs[0], skip_special_tokens=True).strip()
-                    if text:
-                        segments.append({
-                            'start': start_sample / sr,
-                            'end': end_sample / sr,
-                            'text': text
-                        })
-                except Exception as segment_error:
-                    logger.error(f"Error transcribing segment {i}: {segment_error}")
-                    continue
+            if progress_callback:
+                progress_callback(40, "Generating transcription...")
+
+            with torch.no_grad():
+                # Greedy decoding for stability
+                outputs = self.current_model.generate(
+                    **model_inputs,
+                    max_new_tokens=448, # Increased for potentially longer audio
+                    do_sample=False
+                )
+
+            # Decode with audio_chunk_index for long audio reassembly
+            if audio_chunk_index is not None:
+                result = self.cohere_processor.decode(
+                    outputs,
+                    skip_special_tokens=True,
+                    audio_chunk_index=audio_chunk_index,
+                    language=language
+                )
+                if isinstance(result, list):
+                    full_text = " ".join(result)
+                else:
+                    full_text = result
+            else:
+                full_text = self.cohere_processor.decode(
+                    outputs[0] if outputs.dim() > 1 else outputs,
+                    skip_special_tokens=True
+                )
+
+            full_text = full_text.strip()
+
+            if progress_callback:
+                progress_callback(70, "Aligning timestamps (Forced Aligner)...")
+
+            # FORCED ALIGNMENT using WhisperX logic
+            segments = []
+            try:
+                # We need to create a temporary segment structure for whisperx align
+                # But whisperx align needs a model and metadata.
+                # Since we already have whisperx installed, we use it.
+                temp_segments = [{"text": full_text, "start": 0, "end": len(audio_float32)/sr}]
+
+                # Load alignment model (usually wav2vec2 based)
+                model_a, metadata = whisperx.load_align_model(language_code=language, device=self.device)
+
+                # Align
+                result_aligned = whisperx.align(
+                    temp_segments,
+                    model_a,
+                    metadata,
+                    audio_float32,
+                    self.device,
+                    return_char_alignments=False
+                )
+                segments = result_aligned["segments"]
+                logger.info(f"Forced alignment successful. Found {len(segments)} segments.")
+            except Exception as align_err:
+                logger.warning(f"Forced alignment failed: {align_err}. Falling back to VAD split.")
+                # Fallback to the VAD-based splitting the user provided
+                speech_intervals = librosa.effects.split(audio_float32, top_db=30)
+                valid_intervals = [(s, e) for s, e in speech_intervals if 0.3 <= (e-s)/sr <= 15]
+
+                if full_text and valid_intervals:
+                    words = full_text.split()
+                    total_duration = sum(end - start for start, end in valid_intervals) / sr
+                    word_index = 0
+                    for start_sample, end_sample in valid_intervals:
+                        duration = (end_sample - start_sample) / sr
+                        num_words = max(1, int(len(words) * duration / total_duration))
+                        segment_words = words[word_index:word_index + num_words]
+                        if segment_words:
+                            segments.append({
+                                'start': start_sample / sr,
+                                'end': end_sample / sr,
+                                'text': ' '.join(segment_words)
+                            })
+                            word_index += num_words
+                        if word_index >= len(words): break
+
+                if not segments:
+                    segments = [{"start": 0, "end": len(audio)/sr, "text": full_text}]
+
+            if progress_callback:
+                progress_callback(100, "Cohere transcription complete!")
 
             return {
                 "segments": segments,
                 "language": language,
-                "text": " ".join([s["text"] for s in segments])
+                "text": full_text
             }
 
         except Exception as e:
@@ -497,7 +533,5 @@ class WhisperTranscriber:
             gc.collect()
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-
-            # Extra wait to ensure driver releases memory
             time.sleep(1)
             logger.info("VRAM cleared.")

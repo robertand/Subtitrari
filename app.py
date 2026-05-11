@@ -533,6 +533,7 @@ def process_task(task):
             result = transcriber.transcribe_with_cohere(
                 str(audio_path),
                 language=language or "en",
+                prompt=task.options.get('custom_prompt') if task.options.get('use_custom_prompt') else None,
                 progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
         else:

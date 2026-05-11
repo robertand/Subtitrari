@@ -410,10 +410,14 @@ function resetUpload() {
 function toggleEngineOptions() {
     const engine = document.getElementById('engineSelect').value;
     const whisperGroup = document.getElementById('whisperModelGroup');
+    const coherePromptGroup = document.getElementById('coherePromptGroup');
+
     if (engine === 'whisper') {
         whisperGroup.style.display = 'block';
+        if (coherePromptGroup) coherePromptGroup.style.display = 'none';
     } else {
         whisperGroup.style.display = 'none';
+        if (coherePromptGroup) coherePromptGroup.style.display = 'block';
     }
 }
 
@@ -435,6 +439,8 @@ async function startProcessing() {
     const options = {
         engine: engine,
         model: model,
+        use_custom_prompt: document.getElementById('useCoherePrompt')?.checked,
+        custom_prompt: document.getElementById('coherePrompt')?.value,
         language: document.getElementById('languageSelect').value,
         min_duration: parseFloat(document.getElementById('minDuration').value),
         max_duration: parseFloat(document.getElementById('maxDuration').value),
