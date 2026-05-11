@@ -343,7 +343,8 @@ class WhisperTranscriber:
     def load_cohere_model(self):
         """Load Cohere Transcribe model and processor"""
         try:
-            from transformers import AutoProcessor, CohereAsrForConditionalGeneration
+            # We use AutoModel and AutoProcessor because Cohere uses custom remote code
+            from transformers import AutoProcessor, AutoModel
 
             model_name = Config.COHERE_MODEL
 
@@ -351,8 +352,10 @@ class WhisperTranscriber:
                 logger.info(f"Loading Cohere model: {model_name}")
 
                 self.cohere_processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-                # Using float32 for Cohere as Conformer models can be sensitive to half-precision
-                model = CohereAsrForConditionalGeneration.from_pretrained(
+
+                # Load model with AutoModel + trust_remote_code
+                # We use float32 as some conformer ops are sensitive
+                model = AutoModel.from_pretrained(
                     model_name,
                     torch_dtype=torch.float32,
                     trust_remote_code=True
@@ -422,8 +425,13 @@ class WhisperTranscriber:
 
                 segment_audio = audio[start_sample:end_sample]
 
+                # Ensure audio is float32
+                if segment_audio.dtype != np.float32:
+                    segment_audio = segment_audio.astype(np.float32)
+
                 try:
-                    # Preprocess audio properly
+                    # Cohere model expects log-mel features.
+                    # We use the feature_extractor explicitly if available to avoid raw waveform passing.
                     if feature_extractor:
                         features = feature_extractor(
                             segment_audio,
@@ -432,6 +440,7 @@ class WhisperTranscriber:
                         )
                         inputs = {'input_features': features.input_features.to(self.device).to(torch.float32)}
                     else:
+                        # Fallback to general processor call
                         processed = self.cohere_processor(
                             segment_audio,
                             sampling_rate=16000,
@@ -439,7 +448,8 @@ class WhisperTranscriber:
                         )
                         inputs = {}
                         for k, v in processed.items():
-                            if k in ['length', 'attention_mask']: continue
+                            # Remove 'length' as it often causes issues with custom architectures
+                            if k in ['length']: continue
                             if isinstance(v, torch.Tensor):
                                 inputs[k] = v.to(self.device).to(torch.float32)
                             else:
