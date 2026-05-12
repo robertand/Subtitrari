@@ -342,29 +342,95 @@ class WhisperTranscriber:
 
             logger.info(f"Loading Cohere model: {model_name}")
 
+            # Try multiple import paths for the correct class
+            model_loaded = False
+
+            # Method 1: Direct import of CohereAsrForConditionalGeneration
             try:
-                from transformers import AutoModelForConditionalGeneration
-                model = AutoModelForConditionalGeneration.from_pretrained(
+                from transformers import CohereAsrForConditionalGeneration
+                model = CohereAsrForConditionalGeneration.from_pretrained(
                     model_name,
                     device_map="auto" if self.device == "cuda" else None,
                     dtype=torch.float32,
                     trust_remote_code=True
                 )
+                model_loaded = True
+                logger.info("Loaded via CohereAsrForConditionalGeneration")
             except (ImportError, Exception) as e:
-                logger.warning(f"AutoModelForConditionalGeneration failed: {e}. Trying AutoModel...")
-                from transformers import AutoModel
-                model = AutoModel.from_pretrained(
-                    model_name,
-                    device_map="auto" if self.device == "cuda" else None,
-                    dtype=torch.float32,
-                    trust_remote_code=True
-                )
+                logger.warning(f"CohereAsrForConditionalGeneration not available directly: {e}")
+
+            # Method 2: AutoModelForSpeechSeq2Seq
+            if not model_loaded:
+                try:
+                    from transformers import AutoModelForSpeechSeq2Seq
+                    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                        model_name,
+                        device_map="auto" if self.device == "cuda" else None,
+                        dtype=torch.float32,
+                        trust_remote_code=True
+                    )
+                    model_loaded = True
+                    logger.info("Loaded via AutoModelForSpeechSeq2Seq")
+                except (ImportError, Exception) as e:
+                    logger.warning(f"AutoModelForSpeechSeq2Seq failed: {e}")
+
+            # Method 3: AutoModel with proper config
+            if not model_loaded:
+                try:
+                    from transformers import AutoModel, AutoConfig
+                    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+                    model = AutoModel.from_pretrained(
+                        model_name,
+                        config=config,
+                        device_map="auto" if self.device == "cuda" else None,
+                        dtype=torch.float32,
+                        trust_remote_code=True
+                    )
+                    model_loaded = True
+                    logger.info("Loaded via AutoModel with config")
+                except Exception as e:
+                    logger.warning(f"AutoModel with config failed: {e}")
+
+            # Method 4: Direct import from the cached model path
+            if not model_loaded:
+                try:
+                    import importlib.util
+                    import sys
+                    from huggingface_hub import snapshot_download
+
+                    logger.info("Attempting direct import from cached model path...")
+                    model_path = snapshot_download(model_name)
+
+                    spec = importlib.util.spec_from_file_location(
+                        "cohere_model_modeling",
+                        f"{model_path}/modeling_cohere_asr.py"
+                    )
+                    cohere_module = importlib.util.module_from_spec(spec)
+                    sys.modules["cohere_model_modeling"] = cohere_module
+                    spec.loader.exec_module(cohere_module)
+
+                    model = cohere_module.CohereAsrForConditionalGeneration.from_pretrained(
+                        model_name,
+                        device_map="auto" if self.device == "cuda" else None,
+                        dtype=torch.float32,
+                        trust_remote_code=True
+                    )
+                    model_loaded = True
+                    logger.info("Loaded via direct import from model path")
+                except Exception as e:
+                    logger.error(f"All model loading methods failed. Direct import error: {e}")
+                    raise RuntimeError(f"Could not load Cohere model {model_name} with the correct architecture.")
 
             model.eval()
             self.models[model_name] = model
             self.current_model = model
 
             logger.info(f"Loaded Cohere model class: {type(model)}")
+
+            # Verify it's the right class/has generate
+            if not hasattr(model, 'generate'):
+                raise RuntimeError(f"Loaded model {type(model)} does not have generate() method. Expected a Conditional Generation model.")
+
             return {"status": "loaded", "model": "cohere", "device": self.device}
 
         except Exception as e:
