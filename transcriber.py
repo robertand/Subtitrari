@@ -473,6 +473,8 @@ class WhisperTranscriber:
             # Move inputs to model device with CORRECT dtypes
             model_inputs = {}
             for k, v in inputs.items():
+                if k == "length": # Skip unused length kwarg that causes Cohere generate to crash
+                    continue
                 if isinstance(v, torch.Tensor):
                     if k == 'decoder_input_ids':
                         model_inputs[k] = v.to(self.current_model.device, dtype=torch.long)
