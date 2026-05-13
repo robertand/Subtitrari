@@ -1560,3 +1560,33 @@ function addSegment() {
 
     showToast('Segment adăugat', 'success');
 }
+
+function toggleEngineOptions() {
+    const engine = document.getElementById('engineSelect').value;
+    const whisperGroup = document.getElementById('whisperModelGroup');
+    const cohereGroup = document.getElementById('coherePromptGroup');
+
+    if (whisperGroup) whisperGroup.style.display = engine === 'whisper' ? 'block' : 'none';
+    if (cohereGroup) cohereGroup.style.display = engine === 'cohere' ? 'block' : 'none';
+}
+
+function updateModelOptions() {
+    const engine = document.getElementById('translationEngine').value;
+    const llmGroup = document.getElementById('llmModelGroup');
+    const promptGroup = document.getElementById('promptGroup');
+
+    if (llmGroup) llmGroup.style.display = (engine === 'llm' || engine === 'vllm') ? 'block' : 'none';
+    if (promptGroup) promptGroup.style.display = engine === 'llm' ? 'block' : 'none';
+}
+
+function toggleSubtitlePosition() {
+    const isTop = document.getElementById('subtitleTopToggle').checked;
+    const overlay = document.getElementById('subtitleOverlay');
+    if (overlay) {
+        if (isTop) {
+            overlay.classList.add('top');
+        } else {
+            overlay.classList.remove('top');
+        }
+    }
+}
