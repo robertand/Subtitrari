@@ -1506,3 +1506,59 @@ function deleteSegment(index) {
         showToast('Segment șters cu succes', 'success');
     }
 }
+
+function addSegment() {
+    let index = state.segments.length;
+    if (state.selectedSegment !== null && state.selectedSegment >= 0) {
+        index = state.selectedSegment + 1;
+    }
+
+    let startTime = 0;
+    if (index > 0) {
+        startTime = state.segments[index - 1].end;
+    } else if (state.videoPlayer) {
+        startTime = state.videoPlayer.currentTime;
+    }
+
+    let endTime = startTime + 2.0;
+    if (index < state.segments.length) {
+        endTime = state.segments[index].start;
+    }
+
+    if (endTime <= startTime) {
+        endTime = startTime + 1.0;
+    }
+
+    const newSegment = {
+        start: startTime,
+        end: endTime,
+        text: 'Segment nou'
+    };
+
+    state.segments.splice(index, 0, newSegment);
+
+    // Add empty strings to all translations at the same index
+    Object.keys(state.translations).forEach(lang => {
+        if (Array.isArray(state.translations[lang])) {
+            state.translations[lang].splice(index, 0, '');
+        }
+    });
+
+    state.selectedSegment = index;
+
+    // Refresh UI
+    renderSegments();
+    renderTimeline();
+    displayTranslations();
+    updateFullText();
+
+    // Scroll to new segment
+    setTimeout(() => {
+        const newEl = document.querySelector(`.segment-item[data-index="${index}"]`);
+        if (newEl) {
+            newEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, 100);
+
+    showToast('Segment adăugat', 'success');
+}
