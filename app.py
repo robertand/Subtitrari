@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import logging
+import librosa
 from pathlib import Path
 from datetime import datetime
 import shutil
@@ -513,41 +514,40 @@ def process_task(task):
         if task.cancel_flag.is_set():
             return
         
+        engine = task.options.get('engine', Config.DEFAULT_ENGINE)
         model_name = task.options.get('model', Config.DEFAULT_MODEL)
         language = task.options.get('language', Config.DEFAULT_LANGUAGE)
         
+        logger.info(f"Task {task.task_id} - Engine: {engine}, Model: {model_name}, Lang: {language}")
+
         if language == 'auto':
             language = None
         
-        # Whisper transcription
-        result = transcriber.transcribe_with_windowing(
-            str(audio_path),
-            model_name=model_name,
-            language=language,
-            window_size=60,
-            overlap=10,
-            progress_callback=lambda p, m: update_task_progress(task, p, m)
-        )
-        
-        # Optional WhisperX transcription for verification
-        whisperx_result = None
-        if task.options.get('use_whisperx'):
-            task.message = 'Running WhisperX verification...'
-            try:
-                whisperx_result = transcriber.transcribe_whisperx(
-                    str(audio_path),
-                    model_name=model_name,
-                    language=result.get('language'),
-                    progress_callback=lambda p, m: update_task_progress(task, 10 + p*0.5, f"WhisperX: {m}")
-                )
-            except Exception as e:
-                logger.error(f"WhisperX verification failed: {e}")
+        if engine == 'cohere':
+            task.message = 'Initializing Cohere Transcribe...'
+            if transcriber.current_model and transcriber.current_model != transcriber.models.get(Config.COHERE_MODEL):
+                transcriber.unload_model()
 
-        if task.cancel_flag.is_set():
-            return
+            # NU mai trimite prompt, deoarece Cohere nu îl suportă oficial
+            result = transcriber.transcribe_with_cohere_chunked(
+                audio_path, 
+                language=lang,
+                chunk_duration=30,  # Ajustează în funcție de necesități
+                use_forced_alignment=True
+            )
+        else:
+            # Whisper transcription
+            result = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                window_size=60,
+                overlap=10,
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
         
         # Segment
-        task.progress = 70
+        task.progress = 60
         task.message = 'Segmenting subtitles...'
         
         segments = result.get('segments', [])
@@ -555,8 +555,8 @@ def process_task(task):
         min_dur = task.options.get('min_duration', Config.MIN_SEGMENT_DURATION)
         max_dur = task.options.get('max_duration', Config.MAX_SEGMENT_DURATION)
         max_chars = task.options.get('max_chars', Config.MAX_CHARS_PER_SEGMENT)
-        use_vad = task.options.get('use_vad', False)
-        
+        use_vad = task.options.get('use_vad', True) # Default True
+
         # If prevent_overlap is on, we force overlap to 0 during segmentation
         segment_overlap = 0.0 if task.options.get('prevent_overlap') else task.options.get('overlap', 0.5)
 
@@ -577,16 +577,6 @@ def process_task(task):
                 overlap=segment_overlap
             )
         
-        # Merge segments if requested
-        merge_method = task.options.get('merge_method', 'none')
-        if merge_method == 'similarity':
-            task.message = 'Merging segments by similarity...'
-            segments = segmenter.merge_segments_similarity(segments, threshold=0.6)
-        elif merge_method == 'llm':
-            task.message = 'Merging and verifying segments using LLM...'
-            whisperx_segments = whisperx_result.get('segments') if whisperx_result else None
-            segments = segmenter.merge_segments_llm(segments, translator, whisperx_segments=whisperx_segments)
-
         # Deduplication
         if task.options.get('deduplicate'):
             task.message = 'Removing repetitions...'
@@ -596,6 +586,9 @@ def process_task(task):
         if task.options.get('prevent_overlap'):
             task.message = 'Ensuring sequential segments...'
             segments = segmenter.ensure_sequential(segments)
+        else:
+            # Even if not strictly sequential, we should merge identical overlaps
+            segments = segmenter.merge_identical_overlapping(segments)
 
         if task.cancel_flag.is_set():
             return
@@ -603,23 +596,43 @@ def process_task(task):
         # Translate if requested
         translations = {}
         if task.options.get('translate'):
+            # Eliberează memoria GPU ocupată de Whisper înainte de a începe traducerea cu LLM
+            task.message = 'Cleaning up VRAM for translation...'
+            transcriber.unload_model()
+
             task.progress = 80
             task.message = 'Translating...'
             
             target_langs = task.options.get('target_languages', ['en'])
             source_lang = result.get('language', 'en')
+            engine = task.options.get('translation_engine', 'vllm')
             
             texts = [seg.get('text', '') for seg in segments]
             
+            llm_model = task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
+            custom_prompt = task.options.get('custom_prompt')
+
             for target_lang in target_langs:
                 if task.cancel_flag.is_set():
                     return
                 
-                task.message = f'Translating to {Config.SUPPORTED_LANGUAGES.get(target_lang, target_lang)}...'
+                task.message = f'Translating to {Config.SUPPORTED_LANGUAGES.get(target_lang, target_lang)} ({engine})...'
                 
-                translated_texts = translator.translate_batch(
-                    texts, source_lang, target_lang
-                )
+                if engine == 'vllm':
+                    translated_texts = translator.translate_with_vllm_grouped(
+                        texts, source_lang, target_lang,
+                        model_name=llm_model
+                    )
+                elif engine == 'llm':
+                    translated_texts = translator.translate_with_llm(
+                        texts, source_lang, target_lang,
+                        model_name=llm_model,
+                        custom_prompt=custom_prompt
+                    )
+                else:
+                    translated_texts = translator.translate_batch(
+                        texts, source_lang, target_lang
+                    )
                 
                 translations[target_lang] = translated_texts
             

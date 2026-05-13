@@ -1,0 +1,57 @@
+2026-05-04 14:24:35,965 - transcriber - INFO - No GPU detected, using CPU
+2026-05-04 14:24:35,979 - __main__ - INFO - Starting Whisper Transcriber Application
+2026-05-04 14:24:35,979 - __main__ - INFO - Device: cpu
+2026-05-04 14:24:35,979 - __main__ - INFO - Server: http://0.0.0.0:5000
+ * Serving Flask app 'app'
+ * Debug mode: on
+2026-05-04 14:24:35,992 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.0.2:5000
+2026-05-04 14:24:35,993 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
+2026-05-04 14:24:35,994 - werkzeug - INFO -  * Restarting with stat
+2026-05-04 14:24:48,355 - transcriber - INFO - No GPU detected, using CPU
+2026-05-04 14:24:48,369 - __main__ - INFO - Starting Whisper Transcriber Application
+2026-05-04 14:24:48,370 - __main__ - INFO - Device: cpu
+2026-05-04 14:24:48,370 - __main__ - INFO - Server: http://0.0.0.0:5000
+2026-05-04 14:24:48,377 - werkzeug - WARNING -  * Debugger is active!
+2026-05-04 14:24:48,377 - werkzeug - INFO -  * Debugger PIN: 631-326-424
+2026-05-04 14:26:13,782 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:26:13] "GET / HTTP/1.1" 200 -
+2026-05-04 14:26:13,818 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:26:13] "GET /static/css/style.css HTTP/1.1" 200 -
+2026-05-04 14:26:13,827 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:26:13] "GET /static/js/app.js HTTP/1.1" 200 -
+2026-05-04 14:26:13,944 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:26:13] "GET /api/languages HTTP/1.1" 200 -
+2026-05-04 14:26:13,945 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:26:13] "GET /api/models HTTP/1.1" 200 -
+2026-05-04 14:28:41,597 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:28:41] "GET / HTTP/1.1" 200 -
+2026-05-04 14:28:41,618 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:28:41] "GET /static/css/style.css HTTP/1.1" 200 -
+2026-05-04 14:28:41,622 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:28:41] "GET /static/js/app.js HTTP/1.1" 200 -
+2026-05-04 14:28:41,736 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:28:41] "GET /api/languages HTTP/1.1" 200 -
+2026-05-04 14:28:41,739 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:28:41] "GET /api/models HTTP/1.1" 200 -
+2026-05-04 14:28:41,752 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:28:41] "GET /api/models HTTP/1.1" 200 -
+2026-05-04 14:30:57,618 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:30:57] "GET / HTTP/1.1" 200 -
+2026-05-04 14:30:57,631 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:30:57] "GET /static/css/style.css HTTP/1.1" 200 -
+2026-05-04 14:30:57,633 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:30:57] "GET /static/js/app.js HTTP/1.1" 200 -
+2026-05-04 14:30:57,645 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:30:57] "GET /api/languages HTTP/1.1" 200 -
+2026-05-04 14:30:57,647 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:30:57] "GET /api/models HTTP/1.1" 200 -
+2026-05-04 14:30:57,651 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:30:57] "GET /api/models HTTP/1.1" 200 -
+2026-05-04 14:33:13,953 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:33:13] "GET / HTTP/1.1" 200 -
+2026-05-04 14:33:13,969 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:33:13] "GET /static/css/style.css HTTP/1.1" 200 -
+2026-05-04 14:33:13,971 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:33:13] "GET /static/js/app.js HTTP/1.1" 200 -
+2026-05-04 14:33:14,040 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:33:14] "GET /api/languages HTTP/1.1" 200 -
+2026-05-04 14:33:14,044 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:33:14] "GET /api/models HTTP/1.1" 200 -
+2026-05-04 14:33:14,056 - werkzeug - INFO - 127.0.0.1 - - [04/May/2026 14:33:14] "GET /api/models HTTP/1.1" 200 -
+2026-05-04 14:36:26,241 - werkzeug - INFO -  * Detected change in '/app/translator.py', reloading
+2026-05-04 14:36:27,552 - werkzeug - INFO -  * Restarting with stat
+2026-05-04 14:36:35,793 - transcriber - INFO - No GPU detected, using CPU
+2026-05-04 14:36:35,807 - __main__ - INFO - Starting Whisper Transcriber Application
+2026-05-04 14:36:35,807 - __main__ - INFO - Device: cpu
+2026-05-04 14:36:35,807 - __main__ - INFO - Server: http://0.0.0.0:5000
+2026-05-04 14:36:35,812 - werkzeug - WARNING -  * Debugger is active!
+2026-05-04 14:36:35,813 - werkzeug - INFO -  * Debugger PIN: 631-326-424
+2026-05-04 14:42:51,330 - werkzeug - INFO -  * Detected change in '/app/test_segmenter.py', reloading
+2026-05-04 14:42:52,523 - werkzeug - INFO -  * Restarting with stat
+2026-05-04 14:43:01,023 - transcriber - INFO - No GPU detected, using CPU
+2026-05-04 14:43:01,036 - __main__ - INFO - Starting Whisper Transcriber Application
+2026-05-04 14:43:01,036 - __main__ - INFO - Device: cpu
+2026-05-04 14:43:01,036 - __main__ - INFO - Server: http://0.0.0.0:5000
+2026-05-04 14:43:01,041 - werkzeug - WARNING -  * Debugger is active!
+2026-05-04 14:43:01,042 - werkzeug - INFO -  * Debugger PIN: 631-326-424

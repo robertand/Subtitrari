@@ -1,3 +1,38 @@
+import sys
+import types
+from unittest.mock import MagicMock
+
+# Mock torchcodec to prevent environment crashes on load
+_torchcodec_mock = types.ModuleType('torchcodec')
+_torchcodec_mock.__spec__ = MagicMock()
+_torchcodec_mock.__spec__.name = 'torchcodec'
+_torchcodec_mock.__spec__.loader = MagicMock()
+_torchcodec_mock.__spec__.origin = 'mock'
+_torchcodec_mock.__spec__.submodule_search_locations = []
+_torchcodec_mock.__version__ = '0.0.0'
+_torchcodec_mock.__path__ = []
+_torchcodec_mock.__file__ = 'mock'
+_torchcodec_mock.decoders = MagicMock()
+_torchcodec_mock.decoders.VideoDecoder = MagicMock
+_torchcodec_mock.decoders.AudioDecoder = MagicMock
+_torchcodec_mock.decoders.Decoder = MagicMock
+_torchcodec_mock.encoders = MagicMock()
+_torchcodec_mock.encoders.VideoEncoder = MagicMock
+_torchcodec_mock.encoders.AudioEncoder = MagicMock
+_torchcodec_mock.load = MagicMock(return_value={})
+_torchcodec_mock.dump = MagicMock()
+_torchcodec_mock.is_available = MagicMock(return_value=False)
+_torchcodec_mock.get_version = MagicMock(return_value="0.0.0")
+_torchcodec_mock.VideoDecoder = MagicMock
+_torchcodec_mock.AudioDecoder = MagicMock
+_torchcodec_mock.VideoEncoder = MagicMock
+_torchcodec_mock.AudioEncoder = MagicMock
+_torchcodec_mock.Decoder = MagicMock
+_torchcodec_mock.Encoder = MagicMock
+_torchcodec_mock.StreamReader = MagicMock
+_torchcodec_mock.StreamWriter = MagicMock
+sys.modules['torchcodec'] = _torchcodec_mock
+
 import whisper
 import whisperx
 import torch
@@ -8,8 +43,10 @@ import soundfile as sf
 from pathlib import Path
 import logging
 import re
-from typing import Optional, Dict, Any, List
+import gc
+from typing import Optional, Dict, Any, List, Tuple
 import time
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +55,9 @@ class WhisperTranscriber:
         self.models = {}
         self.current_model = None
         self.device = self._detect_device()
+        self.cohere_processor = None
+        self.alignment_model = None
+        self.alignment_metadata = None
         
     def _detect_device(self) -> str:
         if torch.cuda.is_available():
@@ -45,7 +85,6 @@ class WhisperTranscriber:
             load_time = time.time() - start_time
             self.models[model_name] = self.current_model
             
-            # Free memory if another model was loaded
             if len(self.models) > 2:
                 oldest_model = list(self.models.keys())[0]
                 del self.models[oldest_model]
@@ -61,7 +100,6 @@ class WhisperTranscriber:
             
         except Exception as e:
             logger.error(f"Error loading model {model_name}: {e}")
-            # Fallback to CPU if GPU fails
             if self.device == "cuda":
                 logger.info("Falling back to CPU")
                 self.device = "cpu"
@@ -83,16 +121,12 @@ class WhisperTranscriber:
             if progress_callback:
                 progress_callback(10, "Loading audio...")
             
-            # Load and preprocess audio
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
-            
-            # Normalize audio
             audio = self._normalize_audio(audio)
             
             if progress_callback:
                 progress_callback(20, "Transcribing...")
             
-            # Prepare options
             options = {
                 "task": "transcribe",
                 "verbose": False,
@@ -102,13 +136,11 @@ class WhisperTranscriber:
             if language and language != 'auto':
                 options["language"] = language
             
-            # Transcribe
             result = self.current_model.transcribe(audio, **options)
             
             if progress_callback:
                 progress_callback(90, "Post-processing...")
             
-            # Clean hallucinations
             result = self._clean_hallucinations(result)
             
             if progress_callback:
@@ -137,12 +169,10 @@ class WhisperTranscriber:
             if total_duration <= window_size:
                 return self.transcribe_audio(audio_path, model_name, language, progress_callback)
             
-            # Process in windows
             segments = []
             window_samples = window_size * sr
             overlap_samples = overlap * sr
             step = window_samples - overlap_samples
-            
             total_windows = int(np.ceil(len(audio) / step))
             
             for i in range(0, len(audio), step):
@@ -152,33 +182,22 @@ class WhisperTranscriber:
                     progress_callback(progress, f"Processing window {window_num}/{total_windows}")
                 
                 window_audio = audio[i:i + window_samples]
-                
-                # Save window to temp file
                 temp_file = Path(f"data/temp/window_{window_num}.wav")
                 temp_file.parent.mkdir(parents=True, exist_ok=True)
                 sf.write(temp_file, window_audio, sr)
                 
-                # Transcribe window
-                result = self.transcribe_audio(
-                    str(temp_file), 
-                    model_name, 
-                    language
-                )
+                result = self.transcribe_audio(str(temp_file), model_name, language)
                 
-                # Adjust timestamps and avoid duplicates from overlapping windows
                 offset = i / sr
                 step_duration = step / sr
 
                 for seg in result.get('segments', []):
-                    # Only add segments that start in the unique part of this window
-                    # (except for the last window where we take everything remaining)
                     is_last_window = (i + window_samples) >= len(audio)
                     if is_last_window or seg['start'] < step_duration:
                         seg['start'] += offset
                         seg['end'] += offset
                         segments.append(seg)
                 
-                # Cleanup temp file
                 temp_file.unlink(missing_ok=True)
             
             return {
@@ -195,7 +214,6 @@ class WhisperTranscriber:
         """Isolate voice by reducing background noise and music"""
         try:
             logger.info("Isolating voice using spectral gating...")
-            # Use noisereduce for spectral gating
             reduced_noise = nr.reduce_noise(y=audio, sr=sr, prop_decrease=0.8)
             return reduced_noise
         except Exception as e:
@@ -216,8 +234,12 @@ class WhisperTranscriber:
             r'(?i)(please like and subscribe|check out my channel|thanks for watching)',
             r'(?i)(visit our website|follow us on|subscribe to)',
             r'(?i)(background music playing|music fades|applause)',
-            r'(?i)^\s*$',  # Empty lines
-            r'(?i)(♪|♫|♬|♩|♭)'
+            r'(?i)(subtitles by|amara\.org|opensubtitles)',
+            r'(?i)(thank you for watching|see you in the next video)',
+            r'(?i)^\s*$',
+            r'(?i)(♪|♫|♬|♩|♭)',
+            r'(?i)(\[.*?\])',
+            r'(?i)(\*.*?\*)'
         ]
         
         if 'segments' in result:
@@ -231,6 +253,18 @@ class WhisperTranscriber:
                         is_hallucination = True
                         break
                 
+                words = text.split()
+                if len(words) > 4:
+                    from collections import Counter
+                    counts = Counter(words)
+                    most_common, count = counts.most_common(1)[0]
+                    if count / len(words) > 0.7:
+                        is_hallucination = True
+
+                duration = segment.get('end', 0) - segment.get('start', 0)
+                if duration < 0.1 and len(text) > 10:
+                    is_hallucination = True
+
                 if not is_hallucination and text:
                     cleaned_segments.append(segment)
             
@@ -245,13 +279,7 @@ class WhisperTranscriber:
         
         try:
             stream = ffmpeg.input(video_path)
-            stream = ffmpeg.output(
-                stream, 
-                output_path,
-                acodec='pcm_s16le',
-                ac=1,
-                ar='16k'
-            )
+            stream = ffmpeg.output(stream, output_path, acodec='pcm_s16le', ac=1, ar='16k')
             ffmpeg.run(stream, overwrite_output=True, quiet=True)
             return output_path
         except ffmpeg.Error as e:
@@ -284,7 +312,6 @@ class WhisperTranscriber:
             if progress_callback:
                 progress_callback(60, "Aligning WhisperX results...")
 
-            # Alignment
             model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
             result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
 
@@ -300,9 +327,548 @@ class WhisperTranscriber:
             logger.error(f"WhisperX transcription error: {e}")
             raise
 
+    def load_cohere_model(self):
+        """Load Cohere Transcribe model and processor"""
+        try:
+            from transformers import AutoProcessor, CohereAsrForConditionalGeneration
+            
+            model_name = Config.COHERE_MODEL
+
+            if model_name not in self.models:
+                logger.info(f"Loading Cohere model: {model_name}")
+
+                self.cohere_processor = AutoProcessor.from_pretrained(model_name)
+                logger.info(f"Processor class: {type(self.cohere_processor)}")
+
+                model = CohereAsrForConditionalGeneration.from_pretrained(
+                    model_name,
+                    device_map="auto" if self.device == "cuda" else None,
+                    torch_dtype=torch.float32,
+                )
+                
+                logger.info(f"Loaded model class: {type(model)}")
+                logger.info(f"Has generate: {hasattr(model, 'generate')}")
+                
+                model.eval()
+                self.models[model_name] = model
+
+            self.current_model = self.models[model_name]
+            return {"status": "loaded", "model": "cohere", "device": self.device}
+
+        except Exception as e:
+            logger.error(f"Error loading Cohere model: {e}")
+            raise
+
+    def load_alignment_model(self, language_code: str = "en"):
+        """Load wav2vec2 alignment model for forced alignment of Cohere text"""
+        try:
+            if self.alignment_model is not None and self.alignment_metadata is not None:
+                return self.alignment_model, self.alignment_metadata
+            
+            logger.info(f"Loading wav2vec2 alignment model for language: {language_code}")
+            
+            # This is the wav2vec2 phoneme recognition model used for forced alignment
+            # NOT Whisper - it's specifically for aligning text to audio
+            self.alignment_model, self.alignment_metadata = whisperx.load_align_model(
+                language_code=language_code,
+                device=self.device
+            )
+            
+            logger.info("Wav2vec2 alignment model loaded successfully")
+            return self.alignment_model, self.alignment_metadata
+            
+        except Exception as e:
+            logger.error(f"Error loading alignment model: {e}")
+            raise
+
+    def align_cohere_transcription_with_phonemes(
+        self,
+        audio: np.ndarray,
+        cohere_segments: List[Dict[str, Any]],
+        language_code: str = "en",
+        return_char_alignments: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Use phoneme-based forced alignment (wav2vec2) to precisely align Cohere's 
+        transcription text to the audio timeline.
+        
+        Pipeline:
+        - Cohere: Provides the TEXT transcription (accurate text, rough timestamps)
+        - wav2vec2: Does FORCED ALIGNMENT (precise word-level timestamps)
+        
+        Args:
+            audio: Audio array (16kHz, mono, float32)
+            cohere_segments: Segments from Cohere with text but inaccurate timestamps
+            language_code: Language code for phoneme model
+            return_char_alignments: Whether to return character-level timestamps
+            
+        Returns:
+            Dictionary with precisely aligned segments
+        """
+        try:
+            logger.info("Starting wav2vec2 forced alignment for Cohere transcription...")
+            
+            # Load the wav2vec2 alignment model
+            model_a, metadata = self.load_alignment_model(language_code)
+            logger.info(f"Loaded wav2vec2 alignment model for {language_code}")
+            
+            # Run forced alignment
+            # This takes Cohere's text and finds EXACTLY where each word occurs in the audio
+            result = whisperx.align(
+                cohere_segments,           # Cohere's transcription text
+                model_a,                   # wav2vec2 phoneme model
+                metadata,                  # Language metadata
+                audio,                     # Original audio
+                self.device,               # Device (cuda/cpu)
+                return_char_alignments=return_char_alignments,
+                print_progress=False       # Suppress debug output
+            )
+            
+            # Add alignment metadata
+            aligned_word_count = 0
+            for segment in result["segments"]:
+                if "words" in segment:
+                    # Each word now has precise start/end timestamps
+                    aligned_word_count += len(segment["words"])
+                    segment["alignment_source"] = "wav2vec2_phoneme_forced"
+                    
+                    # Calculate per-word alignment confidence
+                    word_scores = [w.get("score", 0.0) for w in segment["words"]]
+                    segment["mean_alignment_score"] = np.mean(word_scores) if word_scores else 0.0
+            
+            logger.info(
+                f"Alignment complete: {aligned_word_count} words aligned "
+                f"across {len(result['segments'])} segments"
+            )
+            
+            return {
+                "segments": result["segments"],
+                "aligned": True,
+                "alignment_method": "wav2vec2_phoneme_forced_alignment",
+                "word_count": aligned_word_count
+            }
+            
+        except Exception as e:
+            logger.error(f"Phoneme alignment failed: {e}")
+            logger.info("Falling back to basic timestamp estimation")
+            return self._basic_timestamp_estimation(audio, cohere_segments)
+
+    def _basic_timestamp_estimation(
+        self, 
+        audio: np.ndarray, 
+        segments: List[Dict[str, Any]],
+        sample_rate: int = 16000
+    ) -> Dict[str, Any]:
+        """Fallback alignment using speech activity detection"""
+        logger.info("Using basic VAD-based timestamp estimation...")
+        
+        # Detect speech regions using energy-based VAD
+        speech_intervals = librosa.effects.split(audio, top_db=30, frame_length=2048, hop_length=512)
+        
+        if not speech_intervals or len(segments) == 0:
+            return {"segments": segments, "aligned": False}
+        
+        # Filter valid speech intervals
+        valid_intervals = []
+        for start, end in speech_intervals:
+            duration = (end - start) / sample_rate
+            if 0.1 <= duration <= 30:
+                valid_intervals.append((start / sample_rate, end / sample_rate))
+        
+        if not valid_intervals:
+            return {"segments": segments, "aligned": False}
+        
+        # Distribute segments across speech intervals proportionally
+        aligned_segments = []
+        total_speech_duration = sum(end - start for start, end in valid_intervals)
+        segment_texts = [seg.get("text", "").strip() for seg in segments if seg.get("text", "").strip()]
+        
+        if not segment_texts:
+            return {"segments": segments, "aligned": False}
+        
+        total_chars = sum(len(text) for text in segment_texts)
+        char_position = 0
+        
+        for segment_text in segment_texts:
+            segment_chars = len(segment_text)
+            
+            if total_chars > 0 and total_speech_duration > 0:
+                start_ratio = char_position / total_chars
+                end_ratio = (char_position + segment_chars) / total_chars
+                
+                start_time = valid_intervals[0][0] + start_ratio * total_speech_duration
+                end_time = valid_intervals[0][0] + end_ratio * total_speech_duration
+            else:
+                start_time = 0
+                end_time = 1
+            
+            start_time = max(0, min(start_time, valid_intervals[-1][1]))
+            end_time = max(start_time + 0.1, min(end_time, valid_intervals[-1][1]))
+            
+            aligned_segments.append({
+                "start": start_time,
+                "end": end_time,
+                "text": segment_text,
+                "aligned": False,
+                "alignment_method": "basic_vad_estimation"
+            })
+            
+            char_position += segment_chars
+        
+        return {"segments": aligned_segments, "aligned": False}
+
+    def _create_initial_segments(
+        self, 
+        audio: np.ndarray, 
+        text: str, 
+        sample_rate: int = 16000
+    ) -> List[Dict[str, Any]]:
+        """Create initial segments based on speech activity detection"""
+        try:
+            # Clean up repeated text hallucinations first
+            text = self._clean_repeated_text(text)
+            
+            # Use VAD to find speech regions
+            speech_intervals = librosa.effects.split(audio, top_db=30)
+            
+            # Convert to list of tuples and handle the NumPy array properly
+            if isinstance(speech_intervals, np.ndarray):
+                if speech_intervals.size == 0:
+                    speech_intervals = []
+                else:
+                    speech_intervals = [(int(start), int(end)) for start, end in speech_intervals]
+            elif not speech_intervals:
+                speech_intervals = []
+            
+            # If no speech detected or no text, return single segment
+            if not speech_intervals or not text or not text.strip():
+                return [{
+                    "start": 0,
+                    "end": float(len(audio)) / sample_rate if isinstance(audio, np.ndarray) else len(audio) / sample_rate,
+                    "text": text if text else ""
+                }]
+            
+            # Filter and merge close intervals
+            valid_intervals = []
+            min_duration = int(0.1 * sample_rate)
+            max_duration = int(15 * sample_rate)
+            merge_gap = int(0.3 * sample_rate)
+            
+            # Ensure speech_intervals is iterable and contains valid data
+            if not speech_intervals or len(speech_intervals) == 0:
+                return [{
+                    "start": 0,
+                    "end": float(len(audio)) / sample_rate,
+                    "text": text
+                }]
+            
+            merged_start = int(speech_intervals[0][0])
+            merged_end = int(speech_intervals[0][1])
+            
+            for start, end in speech_intervals[1:]:
+                start_int = int(start)
+                end_int = int(end)
+                
+                if start_int - merged_end < merge_gap:
+                    merged_end = end_int
+                else:
+                    if min_duration <= (merged_end - merged_start) <= max_duration:
+                        valid_intervals.append((float(merged_start) / sample_rate, float(merged_end) / sample_rate))
+                    merged_start = start_int
+                    merged_end = end_int
+            
+            # Add last interval
+            if min_duration <= (merged_end - merged_start) <= max_duration:
+                valid_intervals.append((float(merged_start) / sample_rate, float(merged_end) / sample_rate))
+            
+            if not valid_intervals:
+                return [{
+                    "start": 0,
+                    "end": float(len(audio)) / sample_rate,
+                    "text": text
+                }]
+            
+            # Split text into sentences
+            sentences = self._split_into_sentences(text)
+            
+            if not sentences:
+                return [{
+                    "start": valid_intervals[0][0],
+                    "end": valid_intervals[-1][1],
+                    "text": text
+                }]
+            
+            # Distribute sentences across speech intervals
+            total_speech_time = float(sum(end - start for start, end in valid_intervals))
+            segments = []
+            
+            total_chars = sum(len(s) for s in sentences)
+            if total_chars > 0 and total_speech_time > 0:
+                chars_per_second = float(total_chars) / total_speech_time
+            else:
+                chars_per_second = 15.0
+            
+            current_time = float(valid_intervals[0][0])
+            
+            for sentence in sentences:
+                if chars_per_second > 0:
+                    sentence_duration = float(len(sentence)) / chars_per_second
+                else:
+                    sentence_duration = 2.0
+                
+                sentence_start = current_time
+                sentence_end = min(current_time + sentence_duration, float(valid_intervals[-1][1]))
+                
+                if sentence_end - sentence_start < 0.1:
+                    sentence_end = sentence_start + 0.1
+                
+                segments.append({
+                    "start": float(sentence_start),
+                    "end": float(sentence_end),
+                    "text": str(sentence)
+                })
+                
+                current_time = sentence_end
+            
+            return segments
+            
+        except Exception as e:
+            logger.error(f"Error creating initial segments: {e}")
+            # Fallback: single segment for entire audio
+            audio_length = len(audio) / sample_rate if isinstance(audio, np.ndarray) else 0
+            return [{
+                "start": 0,
+                "end": float(audio_length),
+                "text": text if text else ""
+            }]
+
+    def _clean_repeated_text(self, text: str) -> str:
+        """Clean up repeated text hallucinations from Cohere"""
+        if not text:
+            return ""
+        
+        # Split into sentences
+        sentences = text.split('. ')
+        
+        # Remove consecutive duplicate sentences
+        cleaned_sentences = []
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if sentence and (not cleaned_sentences or sentence != cleaned_sentences[-1]):
+                cleaned_sentences.append(sentence)
+        
+        # Remove duplicates that appear multiple times
+        from collections import Counter
+        sentence_counts = Counter(cleaned_sentences)
+        
+        # If the same sentence appears more than twice, it's likely a hallucination
+        final_sentences = []
+        for sentence in cleaned_sentences:
+            if sentence_counts[sentence] <= 2:  # Allow up to 2 repetitions
+                final_sentences.append(sentence)
+            elif sentence not in final_sentences:  # Keep first occurrence only
+                final_sentences.append(sentence)
+        
+        return '. '.join(final_sentences) + ('.' if final_sentences else '')
+
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """Split text into sentences for better alignment"""
+        if not text or not isinstance(text, str):
+            return []
+        
+        try:
+            # Handle Korean and other languages that might use different punctuation
+            sentences = re.split(r'(?<=[.!?])\s+', text)
+            return [s.strip() for s in sentences if s.strip()]
+        except Exception as e:
+            logger.error(f"Error splitting sentences: {e}")
+            return [text] if text else []
+
+    def _post_process_segments(
+        self, 
+        segments: List[Dict[str, Any]], 
+        total_duration: float
+    ) -> List[Dict[str, Any]]:
+        """Post-process aligned segments to ensure consistency"""
+        cleaned_segments = []
+        
+        if not isinstance(total_duration, (int, float)) or total_duration <= 0:
+            total_duration = 1.0
+        
+        for i, segment in enumerate(segments):
+            try:
+                # Ensure we're working with Python floats, not NumPy types
+                start = float(max(0, segment.get("start", 0)))
+                end = float(min(total_duration, segment.get("end", total_duration)))
+                
+                if start >= end:
+                    end = float(min(start + 0.1, total_duration))
+                
+                segment["id"] = int(i)
+                segment["start"] = start
+                segment["end"] = end
+                segment["text"] = str(segment.get("text", "")).strip()
+                
+                if segment["text"]:
+                    cleaned_segments.append(segment)
+            except Exception as e:
+                logger.error(f"Error processing segment {i}: {e}")
+                continue
+        
+        return cleaned_segments
+
+    def transcribe_with_cohere(
+        self,
+        audio_path: str,
+        language: str = "en",
+        progress_callback = None,
+        use_forced_alignment: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Full pipeline:
+        1. Cohere transcribes audio (ASR) - accurate text, rough timestamps
+        2. OPTIONAL: wav2vec2 forced alignment - precise word-level timestamps
+        """
+        try:
+            self.load_cohere_model()
+            
+            if progress_callback:
+                progress_callback(10, "Loading audio...")
+            
+            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
+            audio_float32 = audio.astype(np.float32)
+            
+            if progress_callback:
+                progress_callback(20, "Cohere transcribing...")
+            
+            # Cohere transcription
+            inputs = self.cohere_processor(
+                audio_float32,
+                sampling_rate=sr,
+                return_tensors="pt",
+                language=language,
+                punctuation=True
+            )
+            
+            audio_chunk_index = inputs.pop("audio_chunk_index", None)
+            
+            model_inputs = {}
+            for k, v in inputs.items():
+                if isinstance(v, torch.Tensor):
+                    if k == 'decoder_input_ids':
+                        model_inputs[k] = v.to(self.current_model.device, dtype=torch.long)
+                    elif k in ['input_features', 'attention_mask']:
+                        model_inputs[k] = v.to(self.current_model.device, dtype=self.current_model.dtype)
+                    else:
+                        model_inputs[k] = v.to(self.current_model.device)
+                else:
+                    model_inputs[k] = v
+            
+            # Add better generation parameters to avoid repetition
+            with torch.no_grad():
+                outputs = self.current_model.generate(
+                    **model_inputs, 
+                    max_new_tokens=256,
+                    repetition_penalty=1.2,  # Add repetition penalty
+                    no_repeat_ngram_size=3,  # Prevent repeating trigrams
+                    do_sample=False  # Use greedy decoding for consistency
+                )
+            
+            # Decode Cohere's output
+            if audio_chunk_index is not None:
+                result = self.cohere_processor.decode(
+                    outputs,
+                    skip_special_tokens=True,
+                    audio_chunk_index=audio_chunk_index,
+                    language=language
+                )
+                cohere_text = " ".join(result) if isinstance(result, list) else result
+            else:
+                cohere_text = self.cohere_processor.decode(
+                    outputs[0] if outputs.dim() > 1 else outputs,
+                    skip_special_tokens=True
+                )
+            
+            # Clean up the text
+            cohere_text = str(cohere_text).strip()
+            cohere_text = self._clean_repeated_text(cohere_text)
+            
+            logger.info(f"Cohere transcription: {cohere_text[:200]}...")
+            
+            if progress_callback:
+                progress_callback(40, "Creating initial segments...")
+            
+            initial_segments = self._create_initial_segments(audio_float32, cohere_text, sr)
+            
+            if progress_callback:
+                progress_callback(50, "Starting forced alignment..." if use_forced_alignment else "Finalizing...")
+            
+            if use_forced_alignment:
+                try:
+                    # wav2vec2 forced alignment of Cohere's text
+                    aligned_result = self.align_cohere_transcription_with_phonemes(
+                        audio=audio_float32,
+                        cohere_segments=initial_segments,
+                        language_code=language
+                    )
+                    final_segments = aligned_result["segments"]
+                    is_aligned = aligned_result["aligned"]
+                    alignment_method = aligned_result.get("alignment_method", "none")
+                except Exception as e:
+                    logger.error(f"Forced alignment failed: {e}, using basic segments")
+                    final_segments = initial_segments
+                    is_aligned = False
+                    alignment_method = "alignment_failed_basic_fallback"
+            else:
+                final_segments = initial_segments
+                is_aligned = False
+                alignment_method = "speech_activity_detection_only"
+            
+            if progress_callback:
+                progress_callback(90, "Post-processing segments...")
+            
+            total_duration = float(len(audio_float32)) / float(sr)
+            final_segments = self._post_process_segments(final_segments, total_duration)
+            
+            if progress_callback:
+                progress_callback(100, "Complete!")
+            
+            return {
+                "segments": final_segments,
+                "language": language,
+                "text": cohere_text,
+                "aligned": is_aligned,
+                "alignment_method": alignment_method,
+                "pipeline": "cohere_asr + wav2vec2_alignment" if use_forced_alignment else "cohere_asr_only"
+            }
+            
+        except Exception as e:
+            logger.error(f"Cohere pipeline error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+
+    def unload_alignment_model(self):
+        """Unload wav2vec2 alignment model to free memory"""
+        if self.alignment_model is not None:
+            logger.info("Unloading wav2vec2 alignment model...")
+            self.alignment_model = None
+            self.alignment_metadata = None
+            gc.collect()
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+
     def unload_model(self):
-        """Free GPU memory"""
-        if self.current_model and self.device == "cuda":
-            del self.current_model
+        """Free GPU memory by unloading all models"""
+        if self.device == "cuda":
+            logger.info("Unloading all transcription models to free VRAM...")
             self.current_model = None
+            self.cohere_processor = None
+            self.models.clear()
+            self.unload_alignment_model()
+
+            gc.collect()
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            time.sleep(1)
+            logger.info("VRAM cleared.")
