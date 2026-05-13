@@ -541,8 +541,8 @@ def process_task(task):
                 str(audio_path),
                 model_name=model_name,
                 language=language,
-                window_size=60,
-                overlap=10,
+                window_size=task.options.get('transcribe_window', Config.DEFAULT_TRANSCRIBE_WINDOW),
+                overlap=task.options.get('transcribe_overlap', Config.DEFAULT_TRANSCRIBE_OVERLAP),
                 progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
         
@@ -621,7 +621,8 @@ def process_task(task):
                 if engine == 'vllm':
                     translated_texts = translator.translate_with_vllm_grouped(
                         texts, source_lang, target_lang,
-                        model_name=llm_model
+                        model_name=llm_model,
+                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
                     )
                 elif engine == 'llm':
                     translated_texts = translator.translate_with_llm(
@@ -634,6 +635,15 @@ def process_task(task):
                         texts, source_lang, target_lang
                     )
                 
+                # Apply LLM correction if requested and language is Romanian
+                if task.options.get('use_romistral') and target_lang == 'ro':
+                    task.message = 'Refining translation with RoMistral...'
+                    translated_texts = translator.correct_with_romistral(
+                        translated_texts,
+                        target_lang,
+                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
+                    )
+
                 translations[target_lang] = translated_texts
             
             task.progress = 95
