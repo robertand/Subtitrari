@@ -1335,6 +1335,25 @@ function renderTimeline() {
     if (!window.timelineInited) {
         window.addEventListener('mousemove', handleTimelineMove);
         window.addEventListener('mouseup', handleTimelineUp);
+
+        elements.timelineContainer.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY > 0 ? 0.9 : 1.1;
+
+            // Calculate time at cursor to keep it anchored
+            const rect = elements.timelineContainer.getBoundingClientRect();
+            const x = e.clientX - rect.left + elements.timelineContainer.scrollLeft;
+            const pps = state.pixelsPerSecond * state.zoomLevel;
+            const timeAtCursor = x / pps;
+
+            zoomTimeline(factor);
+
+            // Re-adjust scroll to keep timeAtCursor at same physical position
+            const newPps = state.pixelsPerSecond * state.zoomLevel;
+            const newX = timeAtCursor * newPps;
+            elements.timelineContainer.scrollLeft = newX - (e.clientX - rect.left);
+        }, { passive: false });
+
         window.timelineInited = true;
     }
 
