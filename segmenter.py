@@ -443,14 +443,11 @@ class SubtitleSegmenter:
                              speech_end_time = times[mask][last_speech_idx]
                              actual_end = min(end, speech_end_time + margin)
 
-                    # SILENCE-BASED HALLUCINATION DETECTION (STRICT)
+                    # SILENCE-BASED HALLUCINATION DETECTION
                     # If the segment occurs in a very silent area (low speech ratio)
-                    if speech_ratio < 0.05:
-                        # Discard segments with almost no voice detected
-                        continue
-
+                    # but is short or has suspiciously repetitive text, it's likely a hallucination
                     if speech_ratio < 0.1:
-                        # For very low ratio, only keep if it's long and likely contains quiet speech
+                        # Only keep if it's a long segment that might have very quiet speech
                         if (end - start) < 2.0:
                             continue
 
@@ -540,12 +537,7 @@ class SubtitleSegmenter:
                 continue
 
             context_text = "\n".join([f"[{seg['start']}-{seg['end']}] {seg['text']}" for seg in group])
-            prompt = "Următoarele segmente de subtitrare provin din multiple treceri de transcriere și se suprapun. "
-            prompt += "Folosește contextul și logica pentru a decide care este varianta corectă pentru fiecare porțiune de audio. "
-            prompt += "Dacă segmentele spun același lucru cu mici variații, alege-o pe cea mai corectă gramatical și logic. "
-            prompt += "Dacă sunt complet diferite, decide care se potrivește mai bine în fluxul conversației. "
-            prompt += "Retranscrie totul într-un flux coerent de segmente care nu se suprapun, păstrând timpii corespunzători. "
-            prompt += "Returnează rezultatul EXCLUSIV în format JSON: [{\"start\": float, \"end\": float, \"text\": string}, ...]\n\n"
+            prompt = "Următoarele segmente de subtitrare se suprapun. Te rog să deduci după logica textului și context ce rămâne și ce arunci la gunoi, retranscriind totul într-un flux coerent, păstrând timpii de început și sfârșit corespunzători segmentelor rezultate. Returnează doar segmentele în format JSON: [{\"start\": float, \"end\": float, \"text\": string}, ...]\n\n"
             prompt += context_text
 
             try:

@@ -536,65 +536,15 @@ def process_task(task):
                 use_forced_alignment=True
             )
         else:
-            # Triple-Pass Whisper transcription
-            all_segments = []
-
-            # Pass 1: UI settings
-            task.message = "Whisper Pass 1 (UI Settings)..."
-            res1 = transcriber.transcribe_with_windowing(
-                str(audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=task.options.get("transcribe_window", Config.DEFAULT_TRANSCRIBE_WINDOW),
-                overlap=task.options.get("transcribe_overlap", Config.DEFAULT_TRANSCRIBE_OVERLAP),
-                progress_callback=lambda p, m: update_task_progress(task, p * 0.33, f"Pass 1: {m}")
-            )
-            all_segments.extend(res1.get("segments", []))
-
-            if task.cancel_flag.is_set(): return
-
-            # Pass 2: 45s window, 10s overlap, always voice isolated
-            task.message = "Whisper Pass 2 (45s window, isolated)..."
-            pass2_audio_path = audio_path
-            if not task.options.get("isolate_voice"):
-                task.message = "Isolating voice for Pass 2..."
-                audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
-                audio_2 = transcriber.isolate_voice(audio_2, sr_2)
-                pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2.wav"
-                import soundfile as sf
-                sf.write(str(pass2_audio_path), audio_2, sr_2)
-
-            res2 = transcriber.transcribe_with_windowing(
-                str(pass2_audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=45,
-                overlap=10,
-                progress_callback=lambda p, m: update_task_progress(task, 33 + p * 0.33, f"Pass 2: {m}")
-            )
-            all_segments.extend(res2.get("segments", []))
-            if pass2_audio_path != audio_path:
-                Path(pass2_audio_path).unlink(missing_ok=True)
-
-            if task.cancel_flag.is_set(): return
-
-            # Pass 3: 60s window, 22s overlap, UI isolate_voice
-            task.message = "Whisper Pass 3 (60s window, 22s overlap)..."
-            res3 = transcriber.transcribe_with_windowing(
+            # Whisper transcription
+            result = transcriber.transcribe_with_windowing(
                 str(audio_path),
                 model_name=model_name,
                 language=language,
                 window_size=60,
-                overlap=22,
-                progress_callback=lambda p, m: update_task_progress(task, 66 + p * 0.34, f"Pass 3: {m}")
+                overlap=10,
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
-            all_segments.extend(res3.get("segments", []))
-
-            result = {
-                "segments": all_segments,
-                "text": " ".join([s.get("text", "") for s in all_segments]),
-                "language": res1.get("language", "unknown")
-            }
         
         # Segment
         task.progress = 60
@@ -627,11 +577,6 @@ def process_task(task):
                 overlap=segment_overlap
             )
         
-        # If we did triple-pass Whisper, use LLM to resolve overlaps and select best versions
-        if engine != "cohere":
-            task.message = "Refining multi-pass segments with LLM..."
-            segments = segmenter.merge_segments_llm(segments, translator)
-
         # Deduplication
         if task.options.get('deduplicate'):
             task.message = 'Removing repetitions...'
@@ -676,8 +621,7 @@ def process_task(task):
                 if engine == 'vllm':
                     translated_texts = translator.translate_with_vllm_grouped(
                         texts, source_lang, target_lang,
-                        model_name=llm_model,
-                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
+                        model_name=llm_model
                     )
                 elif engine == 'llm':
                     translated_texts = translator.translate_with_llm(
@@ -690,15 +634,6 @@ def process_task(task):
                         texts, source_lang, target_lang
                     )
                 
-                # Apply LLM correction if requested and language is Romanian
-                if task.options.get('use_romistral') and target_lang == 'ro':
-                    task.message = 'Refining translation with RoMistral...'
-                    translated_texts = translator.correct_with_romistral(
-                        translated_texts,
-                        target_lang,
-                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
-                    )
-
                 translations[target_lang] = translated_texts
             
             task.progress = 95

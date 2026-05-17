@@ -1170,8 +1170,3 @@ body {
 .timeline-segment-block:hover .timeline-delete-btn {
     display: flex;
 }
-
-.subtitle-overlay.top {
-    bottom: auto;
-    top: 60px;
-}
