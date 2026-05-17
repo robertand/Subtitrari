@@ -542,7 +542,8 @@ class Translator:
                 "1. Corectează greșelile gramaticale și de punctuație.\n"
                 "2. Asigură-te că topica frazei sună natural în limba română.\n"
                 "3. Păstrează sensul original dar adaptează-l contextului dacă este necesar.\n"
-                "4. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'corrections'.\n"
+                "4. Dacă întâlnești secvențe repetitive sau variante multiple ale aceluiași enunț, folosește contextul pentru a decide care este varianta corectă și elimină redundanțele.\n"
+                "5. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'corrections'.\n"
                 "Exemplu format răspuns: {\"corrections\": [\"text corectat 1\", \"text corectat 2\", ...]}"
             )
 
