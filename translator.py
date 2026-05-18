@@ -1,11 +1,14 @@
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, NllbTokenizer
 from deep_translator import GoogleTranslator
 import torch
+import gc
 import numpy as np
 import json
 from typing import List, Dict, Optional, Any
 import logging
 import re
+import time
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +102,7 @@ class Translator:
             # deep-translator can translate lists
             # Note: translate_batch in deep-translator takes a list
             translations = translator.translate_batch(texts)
-            
+
             return translations
 
         except Exception as e:
@@ -217,6 +220,127 @@ class Translator:
         
         return prompt
     
+    def translate_with_vllm_grouped(
+        self,
+        texts: List[str],
+        source_lang: str,
+        target_lang: str,
+        model_name: str = "Qwen/Qwen3-235B-A22B-Instruct",
+        group_size: int = 10
+    ) -> List[str]:
+        """Translate using VLLM with context grouping"""
+        try:
+            from vllm import LLM, SamplingParams
+
+            # Load VLLM model
+            if model_name not in self.models:
+                # Eliberează memoria GPU înainte de a încărca noul model greu
+                if torch.cuda.is_available():
+                    logger.info("Cleaning up VRAM before loading VLLM...")
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    time.sleep(1)
+
+                # Scurtcircuitare pentru calea exactă dacă utilizatorul a descărcat modelul
+                # Căutăm orice director care începe cu numele modelului în Config.MODELS_DIR
+                actual_model_to_load = model_name
+                base_name = model_name.split('/')[-1]
+
+                if Config.MODELS_DIR.exists():
+                    # Căutare inteligentă: verificăm dacă există un folder care conține numele de bază
+                    for item in Config.MODELS_DIR.iterdir():
+                        if item.is_dir() and base_name in item.name:
+                            actual_model_to_load = str(item.absolute())
+                            logger.info(f"Found local model directory: {actual_model_to_load}")
+                            break
+
+                logger.info(f"Loading VLLM model: {actual_model_to_load}")
+                # We use pipeline-parallelism if multiple GPUs are available, otherwise 1
+                self.models[model_name] = LLM(
+                    model=actual_model_to_load,
+                    trust_remote_code=True,
+                    tensor_parallel_size=torch.cuda.device_count() or 1,
+                    max_model_len=4096,
+                    gpu_memory_utilization=Config.VLLM_GPU_MEMORY_UTILIZATION,
+                    enforce_eager=Config.VLLM_ENFORCE_EAGER,
+                    disable_log_stats=True
+                )
+
+            llm = self.models[model_name]
+            sampling_params = SamplingParams(
+                temperature=0.3,
+                top_p=0.95,
+                max_tokens=2048,
+                stop=["<|endoftext|>", "<|im_end|>"]
+            )
+
+            system_prompt = (
+                "Ești un traducător profesionist expert în subtitrări. "
+                f"Tradu textul primit din {source_lang} în {target_lang}. "
+                "Cerințe CRUCIALE:\n"
+                "1. Adaptează limbajul natural: metafore, nume, topică și expresii idiomatice în funcție de contextul conversației.\n"
+                "2. Păstrează tonul și stilul vorbitorului.\n"
+                "3. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri, "
+                "păstrând exact numărul și ordinea segmentelor primite.\n"
+                "Exemplu format răspuns: {\"translations\": [\"text 1\", \"text 2\", ...]}"
+            )
+
+            all_translations = ["" for _ in range(len(texts))]
+
+            # Group segments for context
+            for i in range(0, len(texts), group_size):
+                batch = texts[i:i + group_size]
+
+                # Prepare prompt for the group
+                user_content = "Vă rog să traduceți următoarele segmente de subtitrare consecutive:\n"
+                for idx, text in enumerate(batch):
+                    user_content += f"{idx + 1}. {text}\n"
+
+                full_prompt = (
+                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{user_content}<|im_end|>\n"
+                    f"<|im_start|>assistant\n"
+                )
+
+                outputs = llm.generate([full_prompt], sampling_params)
+                response_text = outputs[0].outputs[0].text
+
+                try:
+                    # Parse JSON response
+                    # Find JSON block in case model added fluff
+                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                    if json_match:
+                        data = json.loads(json_match.group(0))
+                        batch_translations = data.get('translations', [])
+
+                        if len(batch_translations) == len(batch):
+                            for j, t in enumerate(batch_translations):
+                                all_translations[i + j] = t
+                        else:
+                            # Fallback if counts mismatch: try splitting by newline or something
+                            logger.warning(f"Batch {i//group_size} translation count mismatch. Using heuristic fallback.")
+                            # Very basic fallback: just split by lines if it looks like a list
+                            lines = [l.strip() for l in response_text.split('\n') if l.strip() and not l.startswith('{')]
+                            for j in range(min(len(lines), len(batch))):
+                                all_translations[i + j] = lines[j]
+                    else:
+                        raise ValueError("No JSON found in VLLM response")
+
+                except Exception as e:
+                    logger.error(f"Error parsing VLLM response for batch {i}: {e}")
+                    # Ultimate fallback to Google Translate for this batch if LLM fails
+                    fallback_translations = self.translate_batch(batch, source_lang, target_lang)
+                    for j, t in enumerate(fallback_translations):
+                        all_translations[i + j] = t
+
+            return all_translations
+
+        except Exception as e:
+            logger.error(f"VLLM translation fatal error: {e}")
+            # Fallback to Google Translate for entire list
+            return self.translate_batch(texts, source_lang, target_lang)
+
     def translate_with_llm(
         self,
         texts: List[str],
@@ -226,6 +350,8 @@ class Translator:
         custom_prompt: Optional[str] = None
     ) -> List[str]:
         """Translate using LLM (Gemma or similar)"""
+        # If user chooses 'llm' engine, they might want Qwen3 now.
+        # But we keep this for smaller local models if needed.
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
             
@@ -246,18 +372,24 @@ class Translator:
             translations = []
             
             for text in texts:
+                if not text or not text.strip():
+                    translations.append("")
+                    continue
+
                 prompt = self.format_translation_prompt(
                     text, source_lang, target_lang, custom_prompt
                 )
                 
                 inputs = tokenizer(prompt, return_tensors="pt").to(self.device)
                 
+                # Use safer sampling to prevent NaN/Inf errors on some architectures/quantizations
+                # do_sample=False is the safest (greedy decoding)
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=512,
-                    temperature=0.3,
-                    do_sample=True,
-                    top_p=0.95
+                    temperature=0.3, # This function is for standard LLM
+                    do_sample=False, # Switch to greedy to avoid probability tensor issues
+                    # top_p=0.95 # Not needed for greedy
                 )
                 
                 translation = tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -358,6 +490,93 @@ class Translator:
         except Exception as e:
             logger.error(f"LLM refinement error: {e}")
             return None
+
+    def correct_with_romistral(
+        self,
+        texts: List[str],
+        target_lang: str,
+        group_size: int = 10
+    ) -> List[str]:
+        """Refine and correct Romanian translation using RoMistral"""
+        if target_lang != 'ro':
+            return texts
+
+        try:
+            from vllm import LLM, SamplingParams
+            model_name = Config.ROMISTRAL_MODEL
+
+            # Use VLLM for Romistral if possible, or Fallback to standard HF
+            if model_name not in self.models:
+                actual_model_to_load = model_name
+                base_name = model_name.split('/')[-1]
+
+                if Config.MODELS_DIR.exists():
+                    for item in Config.MODELS_DIR.iterdir():
+                        if item.is_dir() and base_name in item.name:
+                            actual_model_to_load = str(item.absolute())
+                            break
+
+                logger.info(f"Loading RoMistral model: {actual_model_to_load}")
+                self.models[model_name] = LLM(
+                    model=actual_model_to_load,
+                    trust_remote_code=True,
+                    tensor_parallel_size=torch.cuda.device_count() or 1,
+                    max_model_len=2048,
+                    gpu_memory_utilization=Config.VLLM_GPU_MEMORY_UTILIZATION,
+                    enforce_eager=Config.VLLM_ENFORCE_EAGER,
+                    disable_log_stats=True
+                )
+
+            llm = self.models[model_name]
+            sampling_params = SamplingParams(
+                temperature=0.2,
+                top_p=0.9,
+                max_tokens=2048,
+                stop=["<|endoftext|>", "</s>"]
+            )
+
+            system_prompt = (
+                "Ești un expert în limba română specializat în corectarea și adaptarea subtitrărilor. "
+                "Sarcina ta este să corectezi gramatical și să îmbunătățești logica de context a textelor primite. "
+                "Cerințe:\n"
+                "1. Corectează greșelile gramaticale și de punctuație.\n"
+                "2. Asigură-te că topica frazei sună natural în limba română.\n"
+                "3. Păstrează sensul original dar adaptează-l contextului dacă este necesar.\n"
+                "4. Dacă întâlnești secvențe repetitive sau variante multiple ale aceluiași enunț, folosește contextul pentru a decide care este varianta corectă și elimină redundanțele.\n"
+                "5. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'corrections'.\n"
+                "Exemplu format răspuns: {\"corrections\": [\"text corectat 1\", \"text corectat 2\", ...]}"
+            )
+
+            all_corrections = [t for t in texts]
+
+            for i in range(0, len(texts), group_size):
+                batch = texts[i:i + group_size]
+                user_content = "Corectează următoarele segmente de subtitrare:\n"
+                for idx, text in enumerate(batch):
+                    user_content += f"{idx + 1}. {text}\n"
+
+                # RoMistral use Mistral format usually
+                full_prompt = f"<s>[INST] {system_prompt}\n\n{user_content} [/INST]"
+
+                outputs = llm.generate([full_prompt], sampling_params)
+                response_text = outputs[0].outputs[0].text
+
+                try:
+                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                    if json_match:
+                        data = json.loads(json_match.group(0))
+                        batch_corrections = data.get('corrections', [])
+                        if len(batch_corrections) == len(batch):
+                            for j, t in enumerate(batch_corrections):
+                                all_corrections[i + j] = t
+                except Exception as e:
+                    logger.error(f"Error parsing RoMistral response for batch {i}: {e}")
+
+            return all_corrections
+
+        except Exception as e:
+            logger.error(f"RoMistral correction fatal error: {e}")
+            return texts
 
     def unload_models(self):
         """Free memory by unloading models"""

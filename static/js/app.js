@@ -423,8 +423,8 @@ async function startProcessing() {
         isolate_voice: document.getElementById('isolateVoice').checked,
         deduplicate: document.getElementById('deduplicate').checked,
         prevent_overlap: document.getElementById('preventOverlap').checked,
-        merge_method: document.getElementById('mergeMethodSelect').value,
-        use_whisperx: document.getElementById('useWhisperX').checked,
+        transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
+        transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
         audio_only: audioOnly
     };
     
@@ -432,6 +432,8 @@ async function startProcessing() {
         options.translate = document.getElementById('enableTranslation').checked;
         if (options.translate) {
             options.target_languages = [document.getElementById('targetLanguageSelect').value];
+            options.translate_group = parseInt(document.getElementById('translateGroup').value);
+            options.use_romistral = document.getElementById('useRomistral').checked;
             
             // Adaugă limbile suplimentare
             const additionalSelects = document.querySelectorAll('.translation-lang-select');
@@ -1333,6 +1335,25 @@ function renderTimeline() {
     if (!window.timelineInited) {
         window.addEventListener('mousemove', handleTimelineMove);
         window.addEventListener('mouseup', handleTimelineUp);
+
+        elements.timelineContainer.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY > 0 ? 0.9 : 1.1;
+
+            // Calculate time at cursor to keep it anchored
+            const rect = elements.timelineContainer.getBoundingClientRect();
+            const x = e.clientX - rect.left + elements.timelineContainer.scrollLeft;
+            const pps = state.pixelsPerSecond * state.zoomLevel;
+            const timeAtCursor = x / pps;
+
+            zoomTimeline(factor);
+
+            // Re-adjust scroll to keep timeAtCursor at same physical position
+            const newPps = state.pixelsPerSecond * state.zoomLevel;
+            const newX = timeAtCursor * newPps;
+            elements.timelineContainer.scrollLeft = newX - (e.clientX - rect.left);
+        }, { passive: false });
+
         window.timelineInited = true;
     }
 
@@ -1504,5 +1525,91 @@ function deleteSegment(index) {
         }
 
         showToast('Segment șters cu succes', 'success');
+    }
+}
+
+function addSegment() {
+    let index = state.segments.length;
+    if (state.selectedSegment !== null && state.selectedSegment >= 0) {
+        index = state.selectedSegment + 1;
+    }
+
+    let startTime = 0;
+    if (index > 0) {
+        startTime = state.segments[index - 1].end;
+    } else if (state.videoPlayer) {
+        startTime = state.videoPlayer.currentTime;
+    }
+
+    let endTime = startTime + 2.0;
+    if (index < state.segments.length) {
+        endTime = state.segments[index].start;
+    }
+
+    if (endTime <= startTime) {
+        endTime = startTime + 1.0;
+    }
+
+    const newSegment = {
+        start: startTime,
+        end: endTime,
+        text: 'Segment nou'
+    };
+
+    state.segments.splice(index, 0, newSegment);
+
+    // Add empty strings to all translations at the same index
+    Object.keys(state.translations).forEach(lang => {
+        if (Array.isArray(state.translations[lang])) {
+            state.translations[lang].splice(index, 0, '');
+        }
+    });
+
+    state.selectedSegment = index;
+
+    // Refresh UI
+    renderSegments();
+    renderTimeline();
+    displayTranslations();
+    updateFullText();
+
+    // Scroll to new segment
+    setTimeout(() => {
+        const newEl = document.querySelector(`.segment-item[data-index="${index}"]`);
+        if (newEl) {
+            newEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, 100);
+
+    showToast('Segment adăugat', 'success');
+}
+
+function toggleEngineOptions() {
+    const engine = document.getElementById('engineSelect').value;
+    const whisperGroup = document.getElementById('whisperModelGroup');
+    const cohereGroup = document.getElementById('coherePromptGroup');
+
+    if (whisperGroup) whisperGroup.style.display = engine === 'whisper' ? 'block' : 'none';
+    if (cohereGroup) cohereGroup.style.display = engine === 'cohere' ? 'block' : 'none';
+}
+
+function updateModelOptions() {
+    const engine = document.getElementById('translationEngine').value;
+    const llmGroup = document.getElementById('llmModelGroup');
+    const promptGroup = document.getElementById('promptGroup');
+
+    if (llmGroup) llmGroup.style.display = (engine === 'llm' || engine === 'vllm') ? 'block' : 'none';
+    if (promptGroup) promptGroup.style.display = engine === 'llm' ? 'block' : 'none';
+}
+
+function toggleSubtitlePosition() {
+    const isTop = document.getElementById('subtitleTopToggle').checked;
+    const overlay = document.getElementById('subtitleOverlay');
+    if (overlay) {
+        if (isTop) {
+            overlay.classList.add('top');
+        } else {
+            overlay.classList.remove('top');
+        }
     }
 }

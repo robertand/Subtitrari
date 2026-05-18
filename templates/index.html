@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Whisper Transcriber Pro - Transcriere și Traducere Audio/Video</title>
+    <title>Subtitratorul PRO - Transcriere și Traducere Audio/Video</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -21,7 +21,7 @@
             <div class="header-content">
                 <h1 class="app-title">
                     <span class="icon">🎙️</span>
-                    Whisper Transcriber Pro
+                    Subtitratorul PRO
                 </h1>
                 <div class="header-stats">
                     <span class="device-badge" id="deviceBadge">
@@ -51,6 +51,12 @@
                         onchange="changeSubtitleLanguage(this.value)">
                     <option value="original">Original</option>
                 </select>
+                <div class="subtitle-pos-toggle" style="margin-left: 10px;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="subtitleTopToggle" class="setting-checkbox" onchange="toggleSubtitlePosition()">
+                        <span>Subtitrare Sus</span>
+                    </label>
+                </div>
                 <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
                 <div class="zoom-controls">
                     <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(0.8)">➖</button>
@@ -62,11 +68,13 @@
 
         <!-- Timeline Section -->
         <div class="glass-container timeline-section" id="timelineSection" style="display: none; width: 100%; max-width: none;">
-            <div class="timeline-ruler" id="timelineRuler"></div>
             <div class="timeline-container" id="timelineContainer">
                 <div class="timeline-content" id="timelineContent">
+                    <div class="timeline-ruler" id="timelineRuler"></div>
                     <div class="timeline-segments" id="timelineSegments"></div>
-                    <div class="timeline-playhead" id="timelinePlayhead"></div>
+                    <div class="timeline-playhead" id="timelinePlayhead">
+                        <div class="playhead-handle" id="playheadHandle"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -128,8 +136,16 @@
                         Setări Procesare
                     </h2>
 
-                    <!-- Model Selection -->
+                    <!-- Engine & Model Selection -->
                     <div class="setting-group">
+                        <label class="setting-label">Motor Transcriere</label>
+                        <select id="engineSelect" class="setting-select" onchange="toggleEngineOptions()">
+                            <option value="whisper" selected>OpenAI Whisper</option>
+                            <option value="cohere">Cohere Transcribe (03-2026)</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-group" id="whisperModelGroup">
                         <label class="setting-label">Model Whisper</label>
                         <select id="modelSelect" class="setting-select">
                             <option value="tiny">Tiny (rapid, memorie redusă)</option>
@@ -144,12 +160,37 @@
                         </div>
                     </div>
 
+                    <div class="setting-group" id="coherePromptGroup" style="display: none;">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="useCoherePrompt" class="setting-checkbox">
+                            <span>Folosește Prompt Sistem (Cohere)</span>
+                        </label>
+                        <textarea id="coherePrompt" class="setting-textarea"
+                                  placeholder="Ex: Transcriere pentru un documentar despre natură..."
+                                  rows="2" style="margin-top: 8px;"></textarea>
+                    </div>
+
                     <!-- Language Selection -->
                     <div class="setting-group">
                         <label class="setting-label">Limba Sursă</label>
                         <select id="languageSelect" class="setting-select">
                             <option value="auto" selected>🔍 Detectare automată</option>
                         </select>
+                    </div>
+
+                    <div class="setting-group">
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label>Fereastră Transcriere (s)</label>
+                                <input type="number" id="transcribeWindow" class="setting-input"
+                                       value="60" min="10" max="300" step="10">
+                            </div>
+                            <div class="setting-half">
+                                <label>Overlap Transcriere (s)</label>
+                                <input type="number" id="transcribeOverlap" class="setting-input"
+                                       value="10" min="0" max="60" step="1">
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Segmentation Settings -->
@@ -175,7 +216,7 @@
                             </div>
                             <div class="setting-half">
                                 <label class="checkbox-label">
-                                    <input type="checkbox" id="useVAD" class="setting-checkbox">
+                                    <input type="checkbox" id="useVAD" class="setting-checkbox" checked>
                                     <span>VAD (pauze vorbire)</span>
                                 </label>
                             </div>
@@ -186,41 +227,25 @@
                                 </label>
                             </div>
                         </div>
-                        <div class="setting-row">
-                            <div class="setting-full">
-                                <label class="setting-label">Metodă îmbinare segmente</label>
-                                <select id="mergeMethodSelect" class="setting-select">
-                                    <option value="none" selected>Niciuna (păstrează suprapuneri)</option>
-                                    <option value="similarity">Similitudine (60%) - păstrează segment mai lung</option>
-                                    <option value="llm">LLM - Logică și context (retranscrie tot)</option>
-                                </select>
-                            </div>
-                        </div>
                     </div>
 
-                    <!-- Verification Settings -->
+                    <!-- Processing Options -->
                     <div class="setting-group">
                         <div class="setting-row">
                             <div class="setting-half">
-                                <label class="checkbox-label" title="Folosește WhisperX pentru o a doua opinie și aliniere mai precisă">
-                                    <input type="checkbox" id="useWhisperX" class="setting-checkbox">
-                                    <span>Verifică cu WhisperX</span>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="isolateVoice" class="setting-checkbox" checked>
+                                    <span>Izolare Voce</span>
                                 </label>
                             </div>
                             <div class="setting-half">
                                 <label class="checkbox-label">
-                                    <input type="checkbox" id="isolateVoice" class="setting-checkbox">
-                                    <span>Izolare Voce</span>
+                                    <input type="checkbox" id="deduplicate" class="setting-checkbox" checked>
+                                    <span>Elimină repetiții</span>
                                 </label>
                             </div>
                         </div>
                         <div class="setting-row" style="margin-top: 8px;">
-                            <div class="setting-half">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" id="deduplicate" class="setting-checkbox">
-                                    <span>Elimină repetiții</span>
-                                </label>
-                            </div>
                             <div class="setting-half">
                                 <label class="checkbox-label">
                                     <input type="checkbox" id="preventOverlap" class="setting-checkbox">
@@ -264,9 +289,20 @@
 
                         <div class="setting-group">
                             <label class="setting-label">Engine Traducere</label>
-                            <select id="translationEngine" class="setting-select">
+                            <select id="translationEngine" class="setting-select" onchange="updateModelOptions()">
+                                <option value="vllm" selected>VLLM (Qwen3-235B) - Profesional</option>
+                                <option value="llm">LLM Local</option>
                                 <option value="nllb">NLLB-200 (rapid, bun)</option>
-                                <option value="llm">LLM (Gemma) - precis</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group" id="llmModelGroup" style="display: none;">
+                            <label class="setting-label">Model LLM</label>
+                            <select id="llmModelSelect" class="setting-select">
+                                <option value="Qwen/Qwen3-235B-A22B-Instruct">Qwen3-235B (Implicit)</option>
+                                <option value="google/gemma-3-12b-it">Gemma 3 - 12B</option>
+                                <option value="google/gemma-4-E4B-it">Gemma 4 - E4B</option>
+                                <option value="google/gemma-4-26B-A4B-it">Gemma 4 - 26B-A4B</option>
                             </select>
                         </div>
 
@@ -275,6 +311,22 @@
                             <textarea id="customPrompt" class="setting-textarea" 
                                       placeholder="Tradu textul din {source} în {target}..."
                                       rows="3"></textarea>
+                        </div>
+
+                        <div class="setting-group">
+                            <div class="setting-row">
+                                <div class="setting-half">
+                                    <label>Mărime Grup Traducere</label>
+                                    <input type="number" id="translateGroup" class="setting-input"
+                                           value="10" min="1" max="50" step="1">
+                                </div>
+                                <div class="setting-half">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="useRomistral" class="setting-checkbox">
+                                        <span>Corectură LLM (RoMistral)</span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="setting-group">
@@ -315,6 +367,7 @@
                             Rezultate
                         </h2>
                         <div class="toolbar-actions">
+                            <button class="btn btn-sm" onclick="addSegment()">➕ Adaugă segment</button>
                             <button class="btn btn-sm" onclick="copyFullText()">📋 Copiază text</button>
                             <button class="btn btn-sm" onclick="exportSRT()">💾 Export SRT</button>
                             <button class="btn btn-sm" onclick="showDOCXDialog()">📄 Export DOCX</button>
