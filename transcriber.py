@@ -78,11 +78,23 @@ class WhisperTranscriber:
             logger.info(f"Loading model: {model_name} on {self.device}")
             start_time = time.time()
             
-            self.current_model = whisper.load_model(
-                model_name,
-                device=self.device,
-                download_root='data/models'
-            )
+            try:
+                self.current_model = whisper.load_model(
+                    model_name,
+                    device=self.device,
+                    download_root='data/models'
+                )
+            except Exception as e:
+                if 'turbo' in model_name:
+                    alt_name = 'turbo' if model_name != 'turbo' else 'large-v3-turbo'
+                    logger.warning(f"Failed to load {model_name}, trying alternative: {alt_name}")
+                    self.current_model = whisper.load_model(
+                        alt_name,
+                        device=self.device,
+                        download_root='data/models'
+                    )
+                else:
+                    raise
             
             load_time = time.time() - start_time
             self.models[model_name] = self.current_model
@@ -307,12 +319,25 @@ class WhisperTranscriber:
                     progress_callback(5, f"Loading WhisperX model {model_name}...")
 
                 logger.info(f"Loading WhisperX model: {model_name} on {device}")
-                self.whisperx_models[model_name] = whisperx.load_model(
-                    model_name,
-                    device,
-                    compute_type=compute_type,
-                    download_root='data/models'
-                )
+                try:
+                    self.whisperx_models[model_name] = whisperx.load_model(
+                        model_name,
+                        device,
+                        compute_type=compute_type,
+                        download_root='data/models'
+                    )
+                except Exception as e:
+                    if 'turbo' in model_name:
+                        alt_name = 'turbo' if model_name != 'turbo' else 'large-v3-turbo'
+                        logger.warning(f"Failed to load WhisperX {model_name}, trying alternative: {alt_name}")
+                        self.whisperx_models[model_name] = whisperx.load_model(
+                            alt_name,
+                            device,
+                            compute_type=compute_type,
+                            download_root='data/models'
+                        )
+                    else:
+                        raise
 
             model = self.whisperx_models[model_name]
 

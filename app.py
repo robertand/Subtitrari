@@ -638,8 +638,10 @@ def process_task(task):
             )
         
         # If we did triple-pass Whisper, use LLM to resolve overlaps and select best versions
-        if engine != "cohere":
+        if engine != "cohere" and task.options.get('multi_pass'):
             task.message = "Refining multi-pass segments with LLM..."
+            # For multi-pass, we also need to clear VRAM before LLM refinement if it's heavy
+            transcriber.unload_model()
             segments = segmenter.merge_segments_llm(segments, translator)
 
         # Deduplication
@@ -662,8 +664,9 @@ def process_task(task):
         translations = {}
         if task.options.get('translate'):
             # Eliberează memoria GPU ocupată de Whisper înainte de a începe traducerea cu LLM
-            task.message = 'Cleaning up VRAM for translation...'
+            task.message = 'Cleaning up VRAM for translation/LLM tasks...'
             transcriber.unload_model()
+            translator.unload_models() # Ensure no old translation models are lingering
 
             task.progress = 80
             task.message = 'Translating...'

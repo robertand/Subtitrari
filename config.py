@@ -24,8 +24,8 @@ class Config:
     # Processing
     DEFAULT_ENGINE = 'whisper'
     AVAILABLE_ENGINES = ['whisper', 'cohere']
-    DEFAULT_MODEL = 'large-v3-turbo'
-    AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3', 'large-v3-turbo']
+    DEFAULT_MODEL = 'turbo'
+    AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3', 'large-v3-turbo', 'turbo']
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
     DEFAULT_TRANSCRIBE_WINDOW = 30
     DEFAULT_TRANSCRIBE_OVERLAP = 10
@@ -41,7 +41,7 @@ class Config:
     ]
     ROMISTRAL_MODEL = 'OpenLLM-Ro/RoMistral-7b-Instruct'
     DEFAULT_TRANSLATE_GROUP = 10
-    VLLM_GPU_MEMORY_UTILIZATION = 0.6  # 60% for even better safety with huge models like Qwen3-235B
+    VLLM_GPU_MEMORY_UTILIZATION = 0.5  # Reduced to 50% to prevent "No available memory for cache blocks"
     VLLM_ENFORCE_EAGER = True  # Use eager mode to save VRAM from CUDA graphs
 
     DEFAULT_LANGUAGE = 'auto'
