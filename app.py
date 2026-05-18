@@ -528,15 +528,15 @@ def process_task(task):
             if transcriber.current_model and transcriber.current_model != transcriber.models.get(Config.COHERE_MODEL):
                 transcriber.unload_model()
 
-            # NU mai trimite prompt, deoarece Cohere nu îl suportă oficial
-            result = transcriber.transcribe_with_cohere_chunked(
-                audio_path, 
-                language=lang,
-                chunk_duration=30,  # Ajustează în funcție de necesități
-                use_forced_alignment=True
+            # Cohere non-chunked as it seems transcribe_with_cohere is what's available
+            result = transcriber.transcribe_with_cohere(
+                str(audio_path),
+                language=language or 'en',
+                use_forced_alignment=True,
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
-        else:
-            # Triple-Pass Whisper transcription
+        elif task.options.get('multi_pass'):
+            # Triple-Pass Whisper transcription (Legacy/High-Accuracy)
             all_segments = []
 
             # Pass 1: UI settings
@@ -595,6 +595,16 @@ def process_task(task):
                 "text": " ".join([s.get("text", "") for s in all_segments]),
                 "language": res1.get("language", "unknown")
             }
+        else:
+            # Primary Path: WhisperX
+            task.message = f"Starting WhisperX ({model_name})..."
+            result = transcriber.transcribe_whisperx(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                batch_size=16,
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
         
         # Segment
         task.progress = 60

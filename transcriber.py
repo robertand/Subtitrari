@@ -52,11 +52,13 @@ logger = logging.getLogger(__name__)
 
 class WhisperTranscriber:
     def __init__(self):
-        self.models = {}
+        self.models = {}  # Vanilla Whisper models
+        self.whisperx_models = {}  # WhisperX models
+        self.alignment_models = {}  # WhisperX alignment models
         self.current_model = None
         self.device = self._detect_device()
         self.cohere_processor = None
-        self.alignment_model = None
+        self.alignment_model = None # For Cohere fallback alignment
         self.alignment_metadata = None
         
     def _detect_device(self) -> str:
@@ -158,7 +160,7 @@ class WhisperTranscriber:
         model_name: str = 'small',
         language: Optional[str] = None,
         window_size: int = 30,
-        overlap: int = 5,
+        overlap: int = 10,
         progress_callback = None
     ) -> Dict[str, Any]:
         """Process large audio files in windows to save memory"""
@@ -289,43 +291,75 @@ class WhisperTranscriber:
     def transcribe_whisperx(
         self,
         audio_path: str,
-        model_name: str = 'small',
+        model_name: str = 'large-v3',
         language: Optional[str] = None,
+        batch_size: int = 16,
         progress_callback = None
     ) -> Dict[str, Any]:
-        """Transcribe audio using WhisperX for better alignment and alternative version"""
+        """Transcribe audio using WhisperX for state-of-the-art alignment and accuracy"""
         try:
             device = self.device
             compute_type = "float16" if device == "cuda" else "int8"
 
-            if progress_callback:
-                progress_callback(10, "Loading WhisperX model...")
+            # 1. Load/Get WhisperX Model
+            if model_name not in self.whisperx_models:
+                if progress_callback:
+                    progress_callback(5, f"Loading WhisperX model {model_name}...")
 
-            model = whisperx.load_model(model_name, device, compute_type=compute_type, download_root='data/models')
+                logger.info(f"Loading WhisperX model: {model_name} on {device}")
+                self.whisperx_models[model_name] = whisperx.load_model(
+                    model_name,
+                    device,
+                    compute_type=compute_type,
+                    download_root='data/models'
+                )
 
+            model = self.whisperx_models[model_name]
+
+            # 2. Transcribe
             if progress_callback:
-                progress_callback(30, "Transcribing with WhisperX...")
+                progress_callback(15, "Transcribing with WhisperX...")
 
             audio = whisperx.load_audio(audio_path)
-            result = model.transcribe(audio, batch_size=16, language=language)
+            # WhisperX transcribe takes audio array, model, and other params
+            result = model.transcribe(audio, batch_size=batch_size, language=language)
+
+            # 3. Align
+            lang_code = result["language"]
+            if progress_callback:
+                progress_callback(60, f"Aligning results ({lang_code})...")
+
+            # Load/Get Alignment Model
+            if lang_code not in self.alignment_models:
+                logger.info(f"Loading WhisperX alignment model for {lang_code}")
+                model_a, metadata = whisperx.load_align_model(language_code=lang_code, device=device)
+                self.alignment_models[lang_code] = (model_a, metadata)
+
+            model_a, metadata = self.alignment_models[lang_code]
+
+            result = whisperx.align(
+                result["segments"],
+                model_a,
+                metadata,
+                audio,
+                device,
+                return_char_alignments=False
+            )
 
             if progress_callback:
-                progress_callback(60, "Aligning WhisperX results...")
-
-            model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
-            result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
-
-            if progress_callback:
-                progress_callback(100, "WhisperX complete!")
+                progress_callback(100, "WhisperX transcription and alignment complete!")
 
             return {
                 "segments": result["segments"],
                 "language": result["language"],
-                "text": " ".join([seg["text"] for seg in result["segments"]])
+                "text": " ".join([seg["text"] for seg in result["segments"]]),
+                "method": "whisperx"
             }
         except Exception as e:
             logger.error(f"WhisperX transcription error: {e}")
-            raise
+            # Fallback to vanilla whisper if whisperx fails (optional, but safer)
+            logger.info("Falling back to vanilla Whisper...")
+            return self.transcribe_audio(audio_path, model_name, language, progress_callback=progress_callback)
 
     def load_cohere_model(self):
         """Load Cohere Transcribe model and processor"""
@@ -865,6 +899,8 @@ class WhisperTranscriber:
             self.current_model = None
             self.cohere_processor = None
             self.models.clear()
+            self.whisperx_models.clear()
+            self.alignment_models.clear()
             self.unload_alignment_model()
 
             gc.collect()
