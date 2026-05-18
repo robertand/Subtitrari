@@ -78,6 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initModels();
     initVideoPlayer();
     checkDevice();
+    toggleEngineOptions();
 });
 
 function initUpload() {
@@ -415,6 +416,8 @@ async function startProcessing() {
     const options = {
         model: document.getElementById('modelSelect').value,
         language: document.getElementById('languageSelect').value,
+        transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
+        transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
         min_duration: parseFloat(document.getElementById('minDuration').value),
         max_duration: parseFloat(document.getElementById('maxDuration').value),
         max_chars: parseInt(document.getElementById('maxChars').value),
@@ -423,8 +426,7 @@ async function startProcessing() {
         isolate_voice: document.getElementById('isolateVoice').checked,
         deduplicate: document.getElementById('deduplicate').checked,
         prevent_overlap: document.getElementById('preventOverlap').checked,
-        merge_method: document.getElementById('mergeMethodSelect').value,
-        use_whisperx: document.getElementById('useWhisperX').checked,
+        use_romistral: document.getElementById('useRomistral').checked,
         audio_only: audioOnly
     };
     
@@ -1224,6 +1226,29 @@ window.addEventListener('beforeunload', () => {
         URL.revokeObjectURL(state.videoUrl);
     }
 });
+
+function toggleEngineOptions() {
+    const engine = document.getElementById('engineSelect').value;
+    document.getElementById('whisperModelGroup').style.display = engine === 'whisper' ? 'block' : 'none';
+    document.getElementById('coherePromptGroup').style.display = engine === 'cohere' ? 'block' : 'none';
+}
+
+function updateModelOptions() {
+    const engine = document.getElementById('translationEngine').value;
+    document.getElementById('llmModelGroup').style.display = engine === 'llm' || engine === 'vllm' ? 'block' : 'none';
+    document.getElementById('promptGroup').style.display = engine === 'llm' ? 'block' : 'none';
+}
+
+function toggleSubtitlePosition() {
+    const isTop = document.getElementById('subtitleTopToggle').checked;
+    const overlay = document.getElementById('subtitleOverlay');
+    if (isTop) {
+        overlay.classList.add('top');
+    } else {
+        overlay.classList.remove('top');
+    }
+}
+
 // === Timeline Logic ===
 function renderTimeline() {
     if (!elements.mainVideoPlayer || isNaN(elements.mainVideoPlayer.duration)) return;
@@ -1331,9 +1356,51 @@ function renderTimeline() {
 
     // Add Global Mouse Listeners
     if (!window.timelineInited) {
+        initTimelineInteractions();
+        window.timelineInited = true;
+    }
+
+    function initTimelineInteractions() {
         window.addEventListener('mousemove', handleTimelineMove);
         window.addEventListener('mouseup', handleTimelineUp);
-        window.timelineInited = true;
+
+        // Zoom based on mouse wheel with cursor anchoring
+        elements.timelineContent.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.1 : 0.9;
+
+            const rect = elements.timelineContent.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const pps = state.pixelsPerSecond * state.zoomLevel;
+            const timeAtCursor = x / pps;
+
+            zoomTimeline(factor, timeAtCursor);
+        }, { passive: false });
+
+        // Middle mouse button for horizontal panning
+        elements.timelineContainer.addEventListener('mousedown', (e) => {
+            if (e.button === 1) { // Middle mouse button
+                state.isPanning = true;
+                state.panStartX = e.clientX;
+                state.panStartScrollLeft = elements.timelineContainer.scrollLeft;
+                elements.timelineContainer.style.cursor = 'grabbing';
+                e.preventDefault();
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (state.isPanning) {
+                const dx = e.clientX - state.panStartX;
+                elements.timelineContainer.scrollLeft = state.panStartScrollLeft - dx;
+            }
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if (e.button === 1) {
+                state.isPanning = false;
+                elements.timelineContainer.style.cursor = '';
+            }
+        });
     }
 
     // Adjust container height based on tracks
@@ -1422,11 +1489,35 @@ function updateTimelinePlayhead(currentTime) {
     }
 }
 
-function zoomTimeline(factor) {
+function zoomTimeline(factor, anchorTime = null) {
+    const oldZoom = state.zoomLevel;
     state.zoomLevel *= factor;
-    state.zoomLevel = Math.max(0.1, Math.min(state.zoomLevel, 10));
+    state.zoomLevel = Math.max(0.1, Math.min(state.zoomLevel, 20));
     elements.zoomLevel.textContent = Math.round(state.zoomLevel * 100) + '%';
-    renderTimeline();
+
+    const pps = state.pixelsPerSecond;
+    const container = elements.timelineContainer;
+
+    if (anchorTime !== null) {
+        const oldScrollLeft = container.scrollLeft;
+        const anchorX = anchorTime * pps * oldZoom;
+        const relativeX = anchorX - oldScrollLeft;
+
+        renderTimeline();
+
+        const newAnchorX = anchorTime * pps * state.zoomLevel;
+        container.scrollLeft = newAnchorX - relativeX;
+    } else {
+        const currentTime = elements.mainVideoPlayer.currentTime;
+        const oldScrollLeft = container.scrollLeft;
+        const relativeX = (currentTime * pps * oldZoom) - oldScrollLeft;
+
+        renderTimeline();
+
+        const newX = (currentTime * pps * state.zoomLevel);
+        container.scrollLeft = newX - relativeX;
+    }
+
     updateTimelinePlayhead(elements.mainVideoPlayer.currentTime);
 }
 
@@ -1505,4 +1596,57 @@ function deleteSegment(index) {
 
         showToast('Segment șters cu succes', 'success');
     }
+}
+
+function addSegment() {
+    let index = state.segments.length;
+    if (state.selectedSegment !== null && state.selectedSegment >= 0) {
+        index = state.selectedSegment + 1;
+    }
+
+    let startTime = 0;
+    if (index > 0) {
+        startTime = state.segments[index - 1].end;
+    } else if (state.videoPlayer) {
+        startTime = state.videoPlayer.currentTime;
+    }
+
+    let endTime = startTime + 2.0;
+    if (index < state.segments.length) {
+        endTime = state.segments[index].start;
+    }
+
+    if (endTime <= startTime) {
+        endTime = startTime + 1.0;
+    }
+
+    const newSegment = {
+        start: startTime,
+        end: endTime,
+        text: 'Segment nou'
+    };
+
+    state.segments.splice(index, 0, newSegment);
+
+    // Sync translations
+    Object.keys(state.translations).forEach(lang => {
+        if (Array.isArray(state.translations[lang])) {
+            state.translations[lang].splice(index, 0, '');
+        }
+    });
+
+    state.selectedSegment = index;
+
+    // Refresh UI
+    renderSegments();
+    renderTimeline();
+    displayTranslations();
+    updateFullText();
+
+    if (state.videoPlayer) {
+        updateSubtitleDisplay(state.videoPlayer.currentTime);
+        updateActiveSegment(state.videoPlayer.currentTime);
+    }
+
+    showToast('Segment adăugat', 'success');
 }

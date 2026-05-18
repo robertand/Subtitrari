@@ -443,13 +443,9 @@ class SubtitleSegmenter:
                              speech_end_time = times[mask][last_speech_idx]
                              actual_end = min(end, speech_end_time + margin)
 
-                    # SILENCE-BASED HALLUCINATION DETECTION
-                    # If the segment occurs in a very silent area (low speech ratio)
-                    # but is short or has suspiciously repetitive text, it's likely a hallucination
-                    if speech_ratio < 0.1:
-                        # Only keep if it's a long segment that might have very quiet speech
-                        if (end - start) < 2.0:
-                            continue
+                    # STRICT SILENCE-BASED HALLUCINATION DETECTION
+                    if speech_ratio < 0.05: # Strict threshold for hallucinations
+                         continue
 
                     # If there are significant pauses, split segment
                     if speech_ratio < 0.6 and (end - start) > max_duration:
@@ -577,3 +573,45 @@ class SubtitleSegmenter:
             text = text.replace(old, new)
         
         return text
+
+    def merge_passes_romistral(self, res1, res2, res3, translator):
+        """Use RoMistral to refine and merge three transcription passes"""
+        # Combine all segments for consideration
+        all_segments = res1['segments'] + res2['segments'] + res3['segments']
+        # Sort by start time
+        all_segments.sort(key=lambda x: x['start'])
+
+        # Implement a context-aware merging using RoMistral
+        prompt = (
+            "Am trei versiuni de transcriere pentru același segment audio. "
+            "Trebuie să le combini într-o singură variantă finală corectă din punct de vedere gramatical și logic în limba română. "
+            "Elimină redundanțele și segmentele care par a fi halucinații (zgomot de fundal interpretat ca vorbire). "
+            "Dacă versiunile diferă, alege-o pe cea care are cel mai mult sens în context. "
+            "Returnează rezultatul final sub formă de listă JSON de segmente: [{\"start\": float, \"end\": float, \"text\": string}].\n\n"
+        )
+
+        # We group segments into ~30s windows to avoid LLM context overflow
+        final_segments = []
+        window_size = 30.0
+        max_time = max(s['end'] for s in all_segments) if all_segments else 0
+
+        for t in range(0, int(max_time) + 1, int(window_size)):
+            window_segments = [s for s in all_segments if s['start'] >= t and s['start'] < t + window_size]
+            if not window_segments: continue
+
+            # Format window for LLM
+            window_text = "\n".join([f"[{s['start']:.2f}-{s['end']:.2f}] {s['text']}" for s in window_segments])
+
+            try:
+                # Use RoMistral specifically for Romanian refinement
+                refined = translator.refine_with_romistral(prompt + window_text)
+                if refined:
+                    final_segments.extend(refined)
+                else:
+                    # Fallback to simple deduplication if LLM fails
+                    final_segments.extend(self.remove_repetitions(window_segments))
+            except Exception:
+                final_segments.extend(self.remove_repetitions(window_segments))
+
+        # Final pass to ensure no overlaps if desired
+        return self.ensure_sequential(self.merge_identical_overlapping(final_segments))
