@@ -425,6 +425,7 @@ async function startProcessing() {
         prevent_overlap: document.getElementById('preventOverlap').checked,
         transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
         transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
+        multi_pass: document.getElementById('multiPass').checked,
         audio_only: audioOnly
     };
     

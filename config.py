@@ -24,10 +24,10 @@ class Config:
     # Processing
     DEFAULT_ENGINE = 'whisper'
     AVAILABLE_ENGINES = ['whisper', 'cohere']
-    DEFAULT_MODEL = 'small'
-    AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3']
+    DEFAULT_MODEL = 'large-v3-turbo'
+    AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3', 'large-v3-turbo']
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
-    DEFAULT_TRANSCRIBE_WINDOW = 60
+    DEFAULT_TRANSCRIBE_WINDOW = 30
     DEFAULT_TRANSCRIBE_OVERLAP = 10
 
     # LLM Models
