@@ -27,6 +27,7 @@ class Config:
     DEFAULT_MODEL = 'small'
     AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3']
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
+    ROMISTRAL_MODEL = "OpenLLM-Ro/RoMistral-7b-Instruct"
 
     # LLM Models
     DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'
@@ -36,7 +37,7 @@ class Config:
         'google/gemma-4-E4B-it',
         'google/gemma-4-26B-A4B-it'
     ]
-    VLLM_GPU_MEMORY_UTILIZATION = 0.6  # 60% for even better safety with huge models like Qwen3-235B
+    VLLM_GPU_MEMORY_UTILIZATION = 0.5  # Reduced for more headroom when running triple-pass
     VLLM_ENFORCE_EAGER = True  # Use eager mode to save VRAM from CUDA graphs
 
     DEFAULT_LANGUAGE = 'auto'

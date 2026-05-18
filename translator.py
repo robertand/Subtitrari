@@ -498,6 +498,52 @@ class Translator:
         if self.device == "cuda":
             torch.cuda.empty_cache()
 
+    def refine_with_romistral(self, prompt: str) -> Optional[List[Dict]]:
+        """Refine text or segments specifically for Romanian using RoMistral"""
+        model_name = Config.ROMISTRAL_MODEL
+        try:
+            # Use same infrastructure as translate_with_llm but with RoMistral
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            if model_name not in self.models:
+                logger.info(f"Loading RoMistral: {model_name}")
+                self.tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
+                self.models[model_name] = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    device_map="auto"
+                )
+
+            model = self.models[model_name]
+            tokenizer = self.tokenizers[model_name]
+
+            # RoMistral formatting (assuming Instruct style)
+            full_prompt = f"<s>[INST] {prompt} [/INST]"
+
+            inputs = tokenizer(full_prompt, return_tensors="pt").to(self.device)
+
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=1024,
+                    temperature=0.2,
+                    do_sample=True
+                )
+
+            response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+            # Extract JSON from response
+            json_match = re.search(r'\[\s*\{.*\}\s*\]', response, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    return None
+            return None
+        except Exception as e:
+            logger.error(f"RoMistral refinement error: {e}")
+            return None
+
 # Helper function to test language code mapping
 def test_language_codes():
     """Test if language codes are properly mapped"""
