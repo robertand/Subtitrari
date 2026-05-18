@@ -574,6 +574,16 @@ class SubtitleSegmenter:
         
         return text
 
+    def merge_passes_simple(self, res1, res2, res3):
+        """Merge three transcription passes without LLM refinement (useful for non-Romanian)"""
+        # Combine all segments
+        all_segments = res1['segments'] + res2['segments'] + res3['segments']
+        # Sort by start time
+        all_segments.sort(key=lambda x: x['start'])
+
+        # Deduplicate and ensure sequential
+        return self.ensure_sequential(self.merge_identical_overlapping(all_segments))
+
     def merge_passes_romistral(self, res1, res2, res3, translator):
         """Use RoMistral to refine and merge three transcription passes"""
         # Combine all segments for consideration

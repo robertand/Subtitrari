@@ -560,13 +560,26 @@ def process_task(task):
                 window_size=60, overlap=22
             )
 
-            # Use RoMistral to refine and merge the results
-            if task.options.get('use_romistral'):
+            # Use RoMistral to refine and merge the results ONLY if language is Romanian
+            is_romanian = language == 'ro' or res1.get('language') == 'ro'
+
+            if task.options.get('use_romistral') and is_romanian:
                 task.message = "RoMistral Refinement..."
-                result = segmenter.merge_passes_romistral(res1, res2, res3, translator)
+                merged_segments = segmenter.merge_passes_romistral(res1, res2, res3, translator)
+                result = {
+                    'segments': merged_segments,
+                    'language': res1.get('language', 'unknown'),
+                    'text': " ".join([s.get('text', '') for s in merged_segments])
+                }
             else:
-                # Fallback: Just use the best scoring one (simplification)
-                result = res1
+                # Merge passes without LLM for other languages
+                task.message = "Merging passes..."
+                merged_segments = segmenter.merge_passes_simple(res1, res2, res3)
+                result = {
+                    'segments': merged_segments,
+                    'language': res1.get('language', 'unknown'),
+                    'text': " ".join([s['text'] for s in merged_segments])
+                }
         
         # Segment
         task.progress = 60
