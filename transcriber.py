@@ -91,8 +91,8 @@ class WhisperTranscriber:
             
             # Handle Hugging Face models (containing '/')
             if '/' in model_name:
-                logger.info(f"Loading custom Hugging Face model via pipeline: {model_name}")
-                from transformers import pipeline
+                logger.info(f"Loading custom Hugging Face model: {model_name}")
+                from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
                 # Check if already loaded
                 if model_name in self.models:
@@ -102,14 +102,32 @@ class WhisperTranscriber:
                 # Ensure downloaded
                 self.ensure_model_downloaded(model_name)
 
-                # Use transformers pipeline for ASR
+                # Load model
+                model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    low_cpu_mem_usage=True,
+                    use_safetensors=True,
+                    cache_dir="data/models",
+                    trust_remote_code=True
+                ).to(self.device)
+
+                # Load processor (with fallback to base turbo)
+                try:
+                    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+                except Exception as e:
+                    logger.warning(f"AutoProcessor failed for {model_name}, falling back to base turbo processor: {e}")
+                    processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
+
+                # Create pipeline using explicitly loaded model and processor
                 pipe = pipeline(
                     "automatic-speech-recognition",
-                    model=model_name,
+                    model=model,
+                    tokenizer=processor.tokenizer,
+                    feature_extractor=processor.feature_extractor,
+                    chunk_length_s=30,
                     device=0 if self.device == "cuda" else -1,
                     torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                    model_kwargs={"cache_dir": "data/models"},
-                    trust_remote_code=True
                 )
 
                 self.current_model = pipe
@@ -462,7 +480,11 @@ class WhisperTranscriber:
 
             try:
                 # 2. Align with WhisperX
-                logger.info("Attempting WhisperX alignment on vanilla results...")
+                # Clear VRAM before loading alignment model if needed
+                if self.device == "cuda":
+                    self.unload_model()
+
+                logger.info("Attempting WhisperX alignment on results...")
                 audio = whisperx.load_audio(audio_path)
                 lang_code = whisper_result.get("language", language or "en")
 
