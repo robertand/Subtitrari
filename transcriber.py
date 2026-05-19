@@ -46,8 +46,8 @@ logger = logging.getLogger(__name__)
 
 class WhisperTranscriber:
     def __init__(self):
-        self.models = {}  # Vanilla Whisper models
-        self.models_processors = {} # Processors for custom HF models
+        self.models = {}  # Vanilla Whisper models or Transformers Pipelines
+        self.models_processors = {} # Processors for custom HF models (not used for pipelines)
         self.whisperx_models = {}  # WhisperX models
         self.alignment_models = {}  # WhisperX alignment models
         self.current_model = None
@@ -91,44 +91,29 @@ class WhisperTranscriber:
             
             # Handle Hugging Face models (containing '/')
             if '/' in model_name:
-                logger.info(f"Loading custom Hugging Face model: {model_name}")
-                from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, WhisperProcessor, WhisperTokenizer
+                logger.info(f"Loading custom Hugging Face model via pipeline: {model_name}")
+                from transformers import pipeline
+
+                # Check if already loaded
+                if model_name in self.models:
+                    self.current_model = self.models[model_name]
+                    return {"status": "loaded", "model": model_name, "device": self.device}
 
                 # Ensure downloaded
-                model_path = self.ensure_model_downloaded(model_name)
+                self.ensure_model_downloaded(model_name)
 
-                # Robust processor/tokenizer loading
-                processor = None
-
-                # Strategy 1: Load from repo ID directly (more robust for tokenizers)
-                try:
-                    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-                except Exception:
-                    # Strategy 2: Load from local path
-                    try:
-                        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-                    except Exception as e:
-                        logger.warning(f"AutoProcessor failed, trying fallbacks: {e}")
-                        try:
-                            processor = WhisperProcessor.from_pretrained(model_path, trust_remote_code=True)
-                        except Exception:
-                            # Strategy 3: Fallback to the base turbo model processor
-                            # (most Whisper turbo models share the same architecture/tokenizer)
-                            logger.warning(f"Failed to load processor for {model_name}, falling back to base turbo processor")
-                            processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
-
-                model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                    model_path,
+                # Use transformers pipeline for ASR
+                pipe = pipeline(
+                    "automatic-speech-recognition",
+                    model=model_name,
+                    device=0 if self.device == "cuda" else -1,
                     torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                    low_cpu_mem_usage=True,
-                    use_safetensors=True,
+                    model_kwargs={"cache_dir": "data/models"},
                     trust_remote_code=True
-                ).to(self.device)
+                )
 
-                model.eval()
-                self.current_model = model
-                self.models[model_name] = model
-                self.models_processors[model_name] = processor
+                self.current_model = pipe
+                self.models[model_name] = pipe
             else:
                 try:
                     self.current_model = whisper.load_model(
@@ -193,73 +178,37 @@ class WhisperTranscriber:
             if progress_callback:
                 progress_callback(20, "Transcribing...")
 
-            # Handle custom HF models (using AutoModelForSpeechSeq2Seq)
-            if model_name in self.models_processors:
-                logger.info("Using AutoModelForSpeechSeq2Seq for transcription")
-                processor = self.models_processors[model_name]
+            # Handle Transformers Pipeline objects
+            if hasattr(self.current_model, "__call__") and hasattr(self.current_model, "task") and self.current_model.task == "automatic-speech-recognition":
+                logger.info("Using transformers pipeline for transcription")
+                generate_kwargs = {}
+                if language and language != 'auto':
+                    generate_kwargs["language"] = language
 
-                # Get the sampling rate from the feature extractor
-                sampling_rate = processor.feature_extractor.sampling_rate
+                # Whisper turbo models have a hard limit of 448 tokens.
+                # Pipeline handles chunking but we should be careful with generate_kwargs.
+                generate_kwargs["max_new_tokens"] = 128 # Smaller chunks for better stability
 
-                inputs = processor(
+                pipe_res = self.current_model(
                     audio,
-                    sampling_rate=sampling_rate,
-                    return_tensors="pt"
-                ).to(self.device, dtype=torch.float16 if self.device == "cuda" else torch.float32)
+                    chunk_length_s=30,
+                    stride_length_s=5,
+                    return_timestamps=True,
+                    generate_kwargs=generate_kwargs
+                )
 
-                # Generate transcription
-                with torch.no_grad():
-                    forced_decoder_ids = None
-                    if language and language != 'auto':
-                        # Try to get language code from processor
-                        try:
-                            forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
-                        except Exception:
-                            pass
-
-                    # Whisper models have a hard limit of 448 tokens (max_target_positions)
-                    # We must ensure max_new_tokens + input_ids doesn't exceed this.
-                    # Standard start tokens count is usually 3-4.
-                    max_allowed = 448
-                    input_len = len(forced_decoder_ids) if forced_decoder_ids else 3
-                    safe_max_new_tokens = max_allowed - input_len - 1
-
-                    generated_ids = self.current_model.generate(
-                        inputs.input_features,
-                        forced_decoder_ids=forced_decoder_ids,
-                        return_timestamps=True,
-                        max_new_tokens=safe_max_new_tokens
-                    )
-
-                # Decode output with timestamps
-                # We need to handle the output differently to get segments
-                # For simplicity and robust segments, we use the processor to decode with timestamps
-                transcription = processor.batch_decode(generated_ids, skip_special_tokens=True, decode_with_timestamps=True)[0]
-
-                # We need to parse the decodings with timestamps into segments
-                # Format is often <|0.00|> text <|5.00|> ...
                 segments = []
-                # Simple parser for <|time|> text <|time|>
-                parts = re.split(r'(<\|\d+\.\d+\|>)', transcription)
-                current_start = 0.0
-                current_text = ""
-
-                for part in parts:
-                    if part.startswith("<|") and part.endswith("|>"):
-                        time_val = float(part[2:-2])
-                        if current_text.strip():
-                            segments.append({
-                                "start": current_start,
-                                "end": time_val,
-                                "text": current_text.strip()
-                            })
-                        current_start = time_val
-                        current_text = ""
-                    else:
-                        current_text += part
+                for chunk in pipe_res.get("chunks", []):
+                    ts = chunk.get("timestamp")
+                    if ts and len(ts) == 2:
+                        segments.append({
+                            "start": float(ts[0]) if ts[0] is not None else 0.0,
+                            "end": float(ts[1]) if ts[1] is not None else 0.0,
+                            "text": chunk.get("text", "").strip()
+                        })
 
                 result = {
-                    "text": processor.batch_decode(generated_ids, skip_special_tokens=True)[0],
+                    "text": pipe_res.get("text", ""),
                     "segments": segments,
                     "language": language or "unknown"
                 }
