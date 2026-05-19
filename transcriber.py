@@ -3,39 +3,29 @@ import types
 from unittest.mock import MagicMock
 
 # Mock torchcodec to prevent environment crashes on load
-# Refined to avoid circular imports and better simulate the module structure
-class MockAudioSamples: pass
+# Refined to satisfy the most common import patterns in pyannote and other libs
+def create_torchcodec_mock():
+    mock = types.ModuleType('torchcodec')
+    mock.__spec__ = MagicMock()
+    mock.__spec__.name = 'torchcodec'
+    mock.__spec__.loader = MagicMock()
+    mock.__spec__.origin = 'mock'
+    mock.__spec__.submodule_search_locations = []
+    mock.__version__ = '0.0.0'
+    mock.__path__ = []
+    mock.__file__ = 'mock'
 
-_torchcodec_mock = types.ModuleType('torchcodec')
-_torchcodec_mock.__spec__ = MagicMock()
-_torchcodec_mock.__spec__.name = 'torchcodec'
-_torchcodec_mock.__spec__.loader = MagicMock()
-_torchcodec_mock.__spec__.origin = 'mock'
-_torchcodec_mock.__spec__.submodule_search_locations = []
-_torchcodec_mock.__version__ = '0.0.0'
-_torchcodec_mock.__path__ = []
-_torchcodec_mock.__file__ = 'mock'
-_torchcodec_mock.AudioSamples = MockAudioSamples
-_torchcodec_mock.decoders = MagicMock()
-_torchcodec_mock.decoders.VideoDecoder = MagicMock
-_torchcodec_mock.decoders.AudioDecoder = MagicMock
-_torchcodec_mock.decoders.Decoder = MagicMock
-_torchcodec_mock.encoders = MagicMock()
-_torchcodec_mock.encoders.VideoEncoder = MagicMock
-_torchcodec_mock.encoders.AudioEncoder = MagicMock
-_torchcodec_mock.load = MagicMock(return_value={})
-_torchcodec_mock.dump = MagicMock()
-_torchcodec_mock.is_available = MagicMock(return_value=False)
-_torchcodec_mock.get_version = MagicMock(return_value="0.0.0")
-_torchcodec_mock.VideoDecoder = MagicMock
-_torchcodec_mock.AudioDecoder = MagicMock
-_torchcodec_mock.VideoEncoder = MagicMock
-_torchcodec_mock.AudioEncoder = MagicMock
-_torchcodec_mock.Decoder = MagicMock
-_torchcodec_mock.Encoder = MagicMock
-_torchcodec_mock.StreamReader = MagicMock
-_torchcodec_mock.StreamWriter = MagicMock
-sys.modules['torchcodec'] = _torchcodec_mock
+    class MockAudioSamples: pass
+    mock.AudioSamples = MockAudioSamples
+
+    mock.decoders = MagicMock()
+    mock.encoders = MagicMock()
+    mock.load = MagicMock(return_value={})
+    mock.is_available = MagicMock(return_value=False)
+
+    return mock
+
+sys.modules['torchcodec'] = create_torchcodec_mock()
 
 import whisper
 import whisperx
@@ -108,19 +98,24 @@ class WhisperTranscriber:
                 model_path = self.ensure_model_downloaded(model_name)
 
                 # Robust processor/tokenizer loading
+                processor = None
+
+                # Strategy 1: Load from repo ID directly (more robust for tokenizers)
                 try:
-                    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-                except Exception as e:
-                    logger.warning(f"AutoProcessor failed for {model_name}, trying WhisperProcessor: {e}")
+                    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+                except Exception:
+                    # Strategy 2: Load from local path
                     try:
-                        processor = WhisperProcessor.from_pretrained(model_path, trust_remote_code=True)
-                    except Exception:
-                        # Some models (like Turkish Turbo) might need explicit tokenizer
-                        logger.warning("WhisperProcessor failed, trying explicit feature extractor and tokenizer")
-                        from transformers import AutoFeatureExtractor
-                        feature_extractor = AutoFeatureExtractor.from_pretrained(model_path)
-                        tokenizer = WhisperTokenizer.from_pretrained(model_path, trust_remote_code=True)
-                        processor = WhisperProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+                        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+                    except Exception as e:
+                        logger.warning(f"AutoProcessor failed, trying fallbacks: {e}")
+                        try:
+                            processor = WhisperProcessor.from_pretrained(model_path, trust_remote_code=True)
+                        except Exception:
+                            # Strategy 3: Fallback to the base turbo model processor
+                            # (most Whisper turbo models share the same architecture/tokenizer)
+                            logger.warning(f"Failed to load processor for {model_name}, falling back to base turbo processor")
+                            processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
 
                 model = AutoModelForSpeechSeq2Seq.from_pretrained(
                     model_path,

@@ -610,7 +610,7 @@ def process_task(task):
             # The transcribe_whisperx method now handles the fallback to Transcribe-then-Align
             # but we explicitly verify here if we have precise timestamps.
             if result.get("method") != "whisperx" and result.get("segments"):
-                task.message = "Ensuring forced alignment..."
+                task.message = "Ensuring forced alignment (post-transcription)..."
                 # If result came from vanilla fallback, it's already been aligned in transcribe_whisperx
                 # but if it was missing segments or failed, we'd know here.
                 pass
