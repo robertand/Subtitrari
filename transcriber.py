@@ -217,11 +217,18 @@ class WhisperTranscriber:
                         except Exception:
                             pass
 
+                    # Whisper models have a hard limit of 448 tokens (max_target_positions)
+                    # We must ensure max_new_tokens + input_ids doesn't exceed this.
+                    # Standard start tokens count is usually 3-4.
+                    max_allowed = 448
+                    input_len = len(forced_decoder_ids) if forced_decoder_ids else 3
+                    safe_max_new_tokens = max_allowed - input_len - 1
+
                     generated_ids = self.current_model.generate(
                         inputs.input_features,
                         forced_decoder_ids=forced_decoder_ids,
                         return_timestamps=True,
-                        max_new_tokens=448
+                        max_new_tokens=safe_max_new_tokens
                     )
 
                 # Decode output with timestamps
