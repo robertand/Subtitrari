@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 class WhisperTranscriber:
     def __init__(self):
         self.models = {}  # Vanilla Whisper models
+        self.models_processors = {} # Processors for custom HF models
         self.whisperx_models = {}  # WhisperX models
         self.alignment_models = {}  # WhisperX alignment models
         self.current_model = None
@@ -81,17 +82,31 @@ class WhisperTranscriber:
             # Handle Hugging Face models (containing '/')
             if '/' in model_name:
                 logger.info(f"Loading custom Hugging Face model: {model_name}")
-                from transformers import pipeline
-                # For vanilla whisper path, we use transformers pipeline as a wrapper
-                self.current_model = pipeline(
-                    "automatic-speech-recognition",
-                    model=model_name,
-                    device=0 if self.device == "cuda" else -1,
-                    model_kwargs={"cache_dir": "data/models"}
+                from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+
+                # Check if already loaded
+                if model_name in self.models:
+                    self.current_model = self.models[model_name]
+                    return {"status": "loaded", "model": model_name, "device": self.device}
+
+                processor = AutoProcessor.from_pretrained(
+                    model_name,
+                    cache_dir="data/models",
+                    trust_remote_code=True
                 )
-                # We need to monkey-patch or handle this differently since pipeline object
-                # doesn't have .transcribe() like whisper model.
-                # Actually, it's better to keep current_model as the pipeline and adapt transcribe_audio.
+                model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    low_cpu_mem_usage=True,
+                    use_safetensors=True,
+                    cache_dir="data/models",
+                    trust_remote_code=True
+                ).to(self.device)
+
+                model.eval()
+                self.current_model = model
+                self.models[model_name] = model
+                self.models_processors[model_name] = processor
             else:
                 try:
                     self.current_model = whisper.load_model(
@@ -156,35 +171,66 @@ class WhisperTranscriber:
             if progress_callback:
                 progress_callback(20, "Transcribing...")
 
-            # Handle transformers pipeline models
-            if hasattr(self.current_model, "task") and self.current_model.task == "automatic-speech-recognition":
-                logger.info("Using transformers pipeline for transcription")
-                generate_kwargs = {}
-                if language and language != 'auto':
-                    generate_kwargs["language"] = language
+            # Handle custom HF models (using AutoModelForSpeechSeq2Seq)
+            if model_name in self.models_processors:
+                logger.info("Using AutoModelForSpeechSeq2Seq for transcription")
+                processor = self.models_processors[model_name]
 
-                # We need return_timestamps="word" or similar to get segments
-                pipe_res = self.current_model(
+                # Get the sampling rate from the feature extractor
+                sampling_rate = processor.feature_extractor.sampling_rate
+
+                inputs = processor(
                     audio,
-                    chunk_length_s=30,
-                    stride_length_s=5,
-                    return_timestamps=True,
-                    generate_kwargs=generate_kwargs
-                )
+                    sampling_rate=sampling_rate,
+                    return_tensors="pt"
+                ).to(self.device, dtype=torch.float16 if self.device == "cuda" else torch.float32)
 
-                # Convert pipeline output to whisper-like output
+                # Generate transcription
+                with torch.no_grad():
+                    forced_decoder_ids = None
+                    if language and language != 'auto':
+                        # Try to get language code from processor
+                        try:
+                            forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
+                        except Exception:
+                            pass
+
+                    generated_ids = self.current_model.generate(
+                        inputs.input_features,
+                        forced_decoder_ids=forced_decoder_ids,
+                        return_timestamps=True,
+                        max_new_tokens=448
+                    )
+
+                # Decode output with timestamps
+                # We need to handle the output differently to get segments
+                # For simplicity and robust segments, we use the processor to decode with timestamps
+                transcription = processor.batch_decode(generated_ids, skip_special_tokens=True, decode_with_timestamps=True)[0]
+
+                # We need to parse the decodings with timestamps into segments
+                # Format is often <|0.00|> text <|5.00|> ...
                 segments = []
-                # Pipeline returns {'text': '...', 'chunks': [{'text': '...', 'timestamp': (0.0, 5.0)}, ...]}
-                for chunk in pipe_res.get("chunks", []):
-                    ts = chunk.get("timestamp", (0.0, 0.0))
-                    segments.append({
-                        "start": ts[0] or 0.0,
-                        "end": ts[1] or (ts[0] or 0.0) + 1.0,
-                        "text": chunk.get("text", "")
-                    })
+                # Simple parser for <|time|> text <|time|>
+                parts = re.split(r'(<\|\d+\.\d+\|>)', transcription)
+                current_start = 0.0
+                current_text = ""
+
+                for part in parts:
+                    if part.startswith("<|") and part.endswith("|>"):
+                        time_val = float(part[2:-2])
+                        if current_text.strip():
+                            segments.append({
+                                "start": current_start,
+                                "end": time_val,
+                                "text": current_text.strip()
+                            })
+                        current_start = time_val
+                        current_text = ""
+                    else:
+                        current_text += part
 
                 result = {
-                    "text": pipe_res.get("text", ""),
+                    "text": processor.batch_decode(generated_ids, skip_special_tokens=True)[0],
                     "segments": segments,
                     "language": language or "unknown"
                 }
@@ -1005,6 +1051,7 @@ class WhisperTranscriber:
             self.current_model = None
             self.cohere_processor = None
             self.models.clear()
+            self.models_processors.clear()
             self.whisperx_models.clear()
             self.alignment_models.clear()
             self.unload_alignment_model()

@@ -262,6 +262,7 @@ class Translator:
 
                 logger.info(f"Loading VLLM model: {actual_model_to_load}")
                 # We use pipeline-parallelism if multiple GPUs are available, otherwise 1
+                # Llama 3.3 70B NVFP4 requires trust_remote_code=True and enough TP size
                 self.models[model_name] = LLM(
                     model=actual_model_to_load,
                     trust_remote_code=True,
@@ -269,7 +270,8 @@ class Translator:
                     max_model_len=4096,
                     gpu_memory_utilization=Config.VLLM_GPU_MEMORY_UTILIZATION,
                     enforce_eager=Config.VLLM_ENFORCE_EAGER,
-                    disable_log_stats=True
+                    disable_log_stats=True,
+                    download_dir=str(Config.MODELS_DIR)
                 )
 
             llm = self.models[model_name]
