@@ -3,6 +3,9 @@ import types
 from unittest.mock import MagicMock
 
 # Mock torchcodec to prevent environment crashes on load
+# Refined to avoid circular imports and better simulate the module structure
+class MockAudioSamples: pass
+
 _torchcodec_mock = types.ModuleType('torchcodec')
 _torchcodec_mock.__spec__ = MagicMock()
 _torchcodec_mock.__spec__.name = 'torchcodec'
@@ -12,6 +15,7 @@ _torchcodec_mock.__spec__.submodule_search_locations = []
 _torchcodec_mock.__version__ = '0.0.0'
 _torchcodec_mock.__path__ = []
 _torchcodec_mock.__file__ = 'mock'
+_torchcodec_mock.AudioSamples = MockAudioSamples
 _torchcodec_mock.decoders = MagicMock()
 _torchcodec_mock.decoders.VideoDecoder = MagicMock
 _torchcodec_mock.decoders.AudioDecoder = MagicMock
@@ -69,6 +73,22 @@ class WhisperTranscriber:
         logger.info("No GPU detected, using CPU")
         return "cpu"
     
+    def ensure_model_downloaded(self, model_id: str, cache_dir: str = "data/models") -> str:
+        """Explicitly ensure a Hugging Face model is downloaded"""
+        try:
+            from huggingface_hub import snapshot_download
+            logger.info(f"Checking/Downloading model: {model_id}")
+            # snapshot_download is smart enough to skip if already present
+            path = snapshot_download(
+                repo_id=model_id,
+                cache_dir=cache_dir,
+                trust_remote_code=True
+            )
+            return path
+        except Exception as e:
+            logger.error(f"Error downloading {model_id}: {e}")
+            return model_id # Fallback to original ID
+
     def load_model(self, model_name: str = 'small') -> Dict[str, Any]:
         """Load Whisper model with lazy loading, supporting both OpenAI names and HF IDs"""
         try:
@@ -82,24 +102,31 @@ class WhisperTranscriber:
             # Handle Hugging Face models (containing '/')
             if '/' in model_name:
                 logger.info(f"Loading custom Hugging Face model: {model_name}")
-                from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+                from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, WhisperProcessor, WhisperTokenizer
 
-                # Check if already loaded
-                if model_name in self.models:
-                    self.current_model = self.models[model_name]
-                    return {"status": "loaded", "model": model_name, "device": self.device}
+                # Ensure downloaded
+                model_path = self.ensure_model_downloaded(model_name)
 
-                processor = AutoProcessor.from_pretrained(
-                    model_name,
-                    cache_dir="data/models",
-                    trust_remote_code=True
-                )
+                # Robust processor/tokenizer loading
+                try:
+                    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+                except Exception as e:
+                    logger.warning(f"AutoProcessor failed for {model_name}, trying WhisperProcessor: {e}")
+                    try:
+                        processor = WhisperProcessor.from_pretrained(model_path, trust_remote_code=True)
+                    except Exception:
+                        # Some models (like Turkish Turbo) might need explicit tokenizer
+                        logger.warning("WhisperProcessor failed, trying explicit feature extractor and tokenizer")
+                        from transformers import AutoFeatureExtractor
+                        feature_extractor = AutoFeatureExtractor.from_pretrained(model_path)
+                        tokenizer = WhisperTokenizer.from_pretrained(model_path, trust_remote_code=True)
+                        processor = WhisperProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+
                 model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                    model_name,
+                    model_path,
                     torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
                     low_cpu_mem_usage=True,
                     use_safetensors=True,
-                    cache_dir="data/models",
                     trust_remote_code=True
                 ).to(self.device)
 

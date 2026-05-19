@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Any
 import logging
 import re
 import time
+from pathlib import Path
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -220,6 +221,25 @@ class Translator:
         
         return prompt
     
+    def ensure_model_downloaded(self, model_id: str, cache_dir: Optional[Path] = None) -> str:
+        """Explicitly ensure a Hugging Face model is downloaded for vLLM"""
+        try:
+            from huggingface_hub import snapshot_download
+            logger.info(f"Checking/Downloading vLLM model: {model_id}")
+
+            # Using Config.MODELS_DIR as default
+            target_dir = cache_dir or Config.MODELS_DIR
+
+            path = snapshot_download(
+                repo_id=model_id,
+                cache_dir=str(target_dir),
+                trust_remote_code=True
+            )
+            return path
+        except Exception as e:
+            logger.error(f"Error downloading vLLM model {model_id}: {e}")
+            return model_id
+
     def translate_with_vllm_grouped(
         self,
         texts: List[str],
@@ -242,23 +262,8 @@ class Translator:
                     torch.cuda.synchronize()
                     time.sleep(1)
 
-                # Scurtcircuitare pentru calea exactă dacă utilizatorul a descărcat modelul
-                # Căutăm orice director care începe cu numele modelului în Config.MODELS_DIR
-                actual_model_to_load = model_name
-                base_name = model_name.split('/')[-1]
-
-                if Config.MODELS_DIR.exists():
-                    # Căutare inteligentă: verificăm dacă există un folder care conține numele de bază
-                    found_local = False
-                    for item in Config.MODELS_DIR.iterdir():
-                        if item.is_dir() and base_name in item.name:
-                            actual_model_to_load = str(item.absolute())
-                            logger.info(f"Found local model directory: {actual_model_to_load}")
-                            found_local = True
-                            break
-
-                    if not found_local:
-                        logger.info(f"Model {model_name} not found in {Config.MODELS_DIR}, it will be downloaded automatically.")
+                # Ensure the model is downloaded locally
+                actual_model_to_load = self.ensure_model_downloaded(model_name)
 
                 logger.info(f"Loading VLLM model: {actual_model_to_load}")
                 # We use pipeline-parallelism if multiple GPUs are available, otherwise 1
@@ -270,8 +275,7 @@ class Translator:
                     max_model_len=4096,
                     gpu_memory_utilization=Config.VLLM_GPU_MEMORY_UTILIZATION,
                     enforce_eager=Config.VLLM_ENFORCE_EAGER,
-                    disable_log_stats=True,
-                    download_dir=str(Config.MODELS_DIR)
+                    disable_log_stats=True
                 )
 
             llm = self.models[model_name]
