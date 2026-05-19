@@ -598,25 +598,22 @@ def process_task(task):
         else:
             # Primary Path: WhisperX
             task.message = f"Starting WhisperX ({model_name})..."
-            result = transcriber.transcribe_whisperx(
-                str(audio_path),
-                model_name=model_name,
-                language=language,
-                batch_size=16,
-                progress_callback=lambda p, m: update_task_progress(task, p, m)
-            )
+            try:
+                result = transcriber.transcribe_whisperx(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    batch_size=16,
+                    progress_callback=lambda p, m: update_task_progress(task, p, m)
+                )
 
-            # ENSURE FORCED ALIGNMENT for non-WhisperX internal results
-            # The transcribe_whisperx method now handles the fallback to Transcribe-then-Align
-            # but we explicitly verify here if we have precise timestamps.
-            if result.get("method") != "whisperx" and result.get("segments"):
-                task.message = "Ensuring forced alignment (post-transcription)..."
-                # If result came from vanilla fallback, it's already been aligned in transcribe_whisperx
-                # but if it was missing segments or failed, we'd know here.
-                pass
-
-            # Important: Clear VRAM after transcription before potential LLM/Translation work
-            transcriber.unload_model()
+                # ENSURE FORCED ALIGNMENT for non-WhisperX internal results
+                if result.get("method") != "whisperx" and result.get("segments"):
+                    task.message = "Ensuring forced alignment (post-transcription)..."
+            finally:
+                # Important: Clear VRAM after transcription before potential LLM/Translation work
+                logger.info("Transcription step finished, unloading models...")
+                transcriber.unload_model()
         
         # Segment
         task.progress = 60

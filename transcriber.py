@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 # Mock torchcodec to prevent environment crashes on load
 # Refined to satisfy the most common import patterns in pyannote and other libs
+# and avoid circular initialization issues.
 def create_torchcodec_mock():
     mock = types.ModuleType('torchcodec')
     mock.__spec__ = MagicMock()
@@ -15,8 +16,8 @@ def create_torchcodec_mock():
     mock.__path__ = []
     mock.__file__ = 'mock'
 
-    class MockAudioSamples: pass
-    mock.AudioSamples = MockAudioSamples
+    class AudioSamples: pass
+    mock.AudioSamples = AudioSamples
 
     mock.decoders = MagicMock()
     mock.encoders = MagicMock()
@@ -25,7 +26,9 @@ def create_torchcodec_mock():
 
     return mock
 
-sys.modules['torchcodec'] = create_torchcodec_mock()
+# Apply mock before other imports
+if 'torchcodec' not in sys.modules:
+    sys.modules['torchcodec'] = create_torchcodec_mock()
 
 import whisper
 import whisperx
@@ -100,15 +103,14 @@ class WhisperTranscriber:
                     return {"status": "loaded", "model": model_name, "device": self.device}
 
                 # Ensure downloaded
-                self.ensure_model_downloaded(model_name)
+                model_path = self.ensure_model_downloaded(model_name)
 
                 # Load model
                 model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                    model_name,
+                    model_path,
                     torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
                     low_cpu_mem_usage=True,
                     use_safetensors=True,
-                    cache_dir="data/models",
                     trust_remote_code=True
                 ).to(self.device)
 
@@ -116,10 +118,15 @@ class WhisperTranscriber:
                 try:
                     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
                 except Exception as e:
-                    logger.warning(f"AutoProcessor failed for {model_name}, falling back to base turbo processor: {e}")
-                    processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
+                    logger.warning(f"AutoProcessor failed for {model_name}, trying local path: {e}")
+                    try:
+                        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+                    except Exception:
+                        logger.warning("Local AutoProcessor failed, falling back to base turbo processor")
+                        processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
 
                 # Create pipeline using explicitly loaded model and processor
+                # We don't pass torch_dtype here as the model is already loaded with the correct dtype
                 pipe = pipeline(
                     "automatic-speech-recognition",
                     model=model,
@@ -127,7 +134,6 @@ class WhisperTranscriber:
                     feature_extractor=processor.feature_extractor,
                     chunk_length_s=30,
                     device=0 if self.device == "cuda" else -1,
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
                 )
 
                 self.current_model = pipe
@@ -481,10 +487,12 @@ class WhisperTranscriber:
             try:
                 # 2. Align with WhisperX
                 # Clear VRAM before loading alignment model if needed
+                # BUT ONLY IF we are on GPU, as CPU alignment is memory-efficient
                 if self.device == "cuda":
+                    logger.info("Clearing VRAM for alignment phase...")
                     self.unload_model()
 
-                logger.info("Attempting WhisperX alignment on results...")
+                logger.info("Attempting WhisperX alignment on fallback results...")
                 audio = whisperx.load_audio(audio_path)
                 lang_code = whisper_result.get("language", language or "en")
 
