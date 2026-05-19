@@ -382,9 +382,41 @@ class WhisperTranscriber:
             }
         except Exception as e:
             logger.error(f"WhisperX transcription error: {e}")
-            # Fallback to vanilla whisper if whisperx fails (optional, but safer)
-            logger.info("Falling back to vanilla Whisper...")
-            return self.transcribe_audio(audio_path, model_name, language, progress_callback=progress_callback)
+            logger.info("Falling back to Transcribe-then-Align (Vanilla Whisper + WhisperX Align)...")
+
+            # 1. Transcribe with Vanilla Whisper (handles more model formats)
+            whisper_result = self.transcribe_audio(audio_path, model_name, language, progress_callback=progress_callback)
+
+            try:
+                # 2. Align with WhisperX
+                logger.info("Attempting WhisperX alignment on vanilla results...")
+                audio = whisperx.load_audio(audio_path)
+                lang_code = whisper_result.get("language", language or "en")
+
+                if lang_code not in self.alignment_models:
+                    model_a, metadata = whisperx.load_align_model(language_code=lang_code, device=self.device)
+                    self.alignment_models[lang_code] = (model_a, metadata)
+
+                model_a, metadata = self.alignment_models[lang_code]
+
+                aligned_result = whisperx.align(
+                    whisper_result["segments"],
+                    model_a,
+                    metadata,
+                    audio,
+                    self.device,
+                    return_char_alignments=False
+                )
+
+                return {
+                    "segments": aligned_result["segments"],
+                    "language": lang_code,
+                    "text": whisper_result["text"],
+                    "method": "whisper_plus_whisperx_align"
+                }
+            except Exception as align_e:
+                logger.error(f"Alignment fallback also failed: {align_e}")
+                return whisper_result
 
     def load_cohere_model(self):
         """Load Cohere Transcribe model and processor"""

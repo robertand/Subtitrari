@@ -605,6 +605,8 @@ def process_task(task):
                 batch_size=16,
                 progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
+            # Important: Clear VRAM after transcription before potential LLM/Translation work
+            transcriber.unload_model()
         
         # Segment
         task.progress = 60
@@ -729,15 +731,20 @@ def process_task(task):
         task.progress = 100
         task.message = 'Processing complete!'
         
-        # Cleanup audio if extracted
-        if audio_path != task.file_path:
-            Path(audio_path).unlink(missing_ok=True)
-        
     except Exception as e:
         logger.error(f"Processing error: {e}")
         task.status = 'failed'
         task.error = str(e)
         task.message = f'Error: {str(e)}'
+    finally:
+        # Cleanup VRAM aggressively after every process
+        logger.info(f"Task {task.task_id} finished, clearing VRAM...")
+        transcriber.unload_model()
+        translator.unload_models()
+
+        # Cleanup audio if extracted
+        if 'audio_path' in locals() and audio_path != task.file_path:
+            Path(audio_path).unlink(missing_ok=True)
 
 def update_task_progress(task, progress, message):
     """Update task progress"""
