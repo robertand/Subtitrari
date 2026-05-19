@@ -249,11 +249,16 @@ class Translator:
 
                 if Config.MODELS_DIR.exists():
                     # Căutare inteligentă: verificăm dacă există un folder care conține numele de bază
+                    found_local = False
                     for item in Config.MODELS_DIR.iterdir():
                         if item.is_dir() and base_name in item.name:
                             actual_model_to_load = str(item.absolute())
                             logger.info(f"Found local model directory: {actual_model_to_load}")
+                            found_local = True
                             break
+
+                    if not found_local:
+                        logger.info(f"Model {model_name} not found in {Config.MODELS_DIR}, it will be downloaded automatically.")
 
                 logger.info(f"Loading VLLM model: {actual_model_to_load}")
                 # We use pipeline-parallelism if multiple GPUs are available, otherwise 1

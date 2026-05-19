@@ -69,7 +69,7 @@ class WhisperTranscriber:
         return "cpu"
     
     def load_model(self, model_name: str = 'small') -> Dict[str, Any]:
-        """Load Whisper model with lazy loading"""
+        """Load Whisper model with lazy loading, supporting both OpenAI names and HF IDs"""
         try:
             if model_name in self.models:
                 self.current_model = self.models[model_name]
@@ -78,23 +78,38 @@ class WhisperTranscriber:
             logger.info(f"Loading model: {model_name} on {self.device}")
             start_time = time.time()
             
-            try:
-                self.current_model = whisper.load_model(
-                    model_name,
-                    device=self.device,
-                    download_root='data/models'
+            # Handle Hugging Face models (containing '/')
+            if '/' in model_name:
+                logger.info(f"Loading custom Hugging Face model: {model_name}")
+                from transformers import pipeline
+                # For vanilla whisper path, we use transformers pipeline as a wrapper
+                self.current_model = pipeline(
+                    "automatic-speech-recognition",
+                    model=model_name,
+                    device=0 if self.device == "cuda" else -1,
+                    model_kwargs={"cache_dir": "data/models"}
                 )
-            except Exception as e:
-                if 'turbo' in model_name:
-                    alt_name = 'turbo' if model_name != 'turbo' else 'large-v3-turbo'
-                    logger.warning(f"Failed to load {model_name}, trying alternative: {alt_name}")
+                # We need to monkey-patch or handle this differently since pipeline object
+                # doesn't have .transcribe() like whisper model.
+                # Actually, it's better to keep current_model as the pipeline and adapt transcribe_audio.
+            else:
+                try:
                     self.current_model = whisper.load_model(
-                        alt_name,
+                        model_name,
                         device=self.device,
                         download_root='data/models'
                     )
-                else:
-                    raise
+                except Exception as e:
+                    if 'turbo' in model_name:
+                        alt_name = 'turbo' if model_name != 'turbo' else 'large-v3-turbo'
+                        logger.warning(f"Failed to load {model_name}, trying alternative: {alt_name}")
+                        self.current_model = whisper.load_model(
+                            alt_name,
+                            device=self.device,
+                            download_root='data/models'
+                        )
+                    else:
+                        raise
             
             load_time = time.time() - start_time
             self.models[model_name] = self.current_model
@@ -140,17 +155,51 @@ class WhisperTranscriber:
             
             if progress_callback:
                 progress_callback(20, "Transcribing...")
-            
-            options = {
-                "task": "transcribe",
-                "verbose": False,
-                "fp16": self.device == "cuda"
-            }
-            
-            if language and language != 'auto':
-                options["language"] = language
-            
-            result = self.current_model.transcribe(audio, **options)
+
+            # Handle transformers pipeline models
+            if hasattr(self.current_model, "task") and self.current_model.task == "automatic-speech-recognition":
+                logger.info("Using transformers pipeline for transcription")
+                generate_kwargs = {}
+                if language and language != 'auto':
+                    generate_kwargs["language"] = language
+
+                # We need return_timestamps="word" or similar to get segments
+                pipe_res = self.current_model(
+                    audio,
+                    chunk_length_s=30,
+                    stride_length_s=5,
+                    return_timestamps=True,
+                    generate_kwargs=generate_kwargs
+                )
+
+                # Convert pipeline output to whisper-like output
+                segments = []
+                # Pipeline returns {'text': '...', 'chunks': [{'text': '...', 'timestamp': (0.0, 5.0)}, ...]}
+                for chunk in pipe_res.get("chunks", []):
+                    ts = chunk.get("timestamp", (0.0, 0.0))
+                    segments.append({
+                        "start": ts[0] or 0.0,
+                        "end": ts[1] or (ts[0] or 0.0) + 1.0,
+                        "text": chunk.get("text", "")
+                    })
+
+                result = {
+                    "text": pipe_res.get("text", ""),
+                    "segments": segments,
+                    "language": language or "unknown"
+                }
+            else:
+                # Standard Whisper model
+                options = {
+                    "task": "transcribe",
+                    "verbose": False,
+                    "fp16": self.device == "cuda"
+                }
+
+                if language and language != 'auto':
+                    options["language"] = language
+
+                result = self.current_model.transcribe(audio, **options)
             
             if progress_callback:
                 progress_callback(90, "Post-processing...")
