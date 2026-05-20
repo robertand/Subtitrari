@@ -232,8 +232,7 @@ class Translator:
 
             path = snapshot_download(
                 repo_id=model_id,
-                cache_dir=str(target_dir),
-                trust_remote_code=True
+                cache_dir=str(target_dir)
             )
             return path
         except Exception as e:

@@ -535,6 +535,50 @@ def process_task(task):
                 use_forced_alignment=True,
                 progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
+        elif task.options.get('mixed_turkish') and language == 'tr':
+            # Mixed Turkish Mode (Whisper Large V3 + Turbo TR)
+            all_segments = []
+
+            # Pass 1: OpenAI Whisper Large V3 (60s / 5s)
+            task.message = "Mixed TR Pass 1 (Whisper Large V3, 60s window)..."
+            res1 = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name='large-v3',
+                language='tr',
+                window_size=60,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1 (Large-V3): {m}")
+            )
+            all_segments.extend(res1.get("segments", []))
+
+            if task.cancel_flag.is_set(): return
+
+            # Pass 2: Whisper Turbo Turkish (30s / 5s, isolated)
+            task.message = "Mixed TR Pass 2 (Turbo Turkish, 30s window, isolated)..."
+            audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+            pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_tr_mixed.wav"
+            import soundfile as sf
+            sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+            res2 = transcriber.transcribe_with_windowing(
+                str(pass2_audio_path),
+                model_name='selimc/whisper-large-v3-turbo-turkish',
+                language='tr',
+                window_size=30,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2 (Turbo-TR): {m}")
+            )
+            all_segments.extend(res2.get("segments", []))
+            Path(pass2_audio_path).unlink(missing_ok=True)
+
+            result = {
+                "segments": all_segments,
+                "text": " ".join([s.get("text", "") for s in all_segments]),
+                "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                "language": "tr",
+                "method": "mixed_turkish_double_pass"
+            }
         elif task.options.get('multi_pass'):
             # Multi-Pass Whisper transcription (Legacy/High-Accuracy)
             all_segments = []

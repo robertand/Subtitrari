@@ -116,6 +116,12 @@ async function initLanguages() {
         const languages = await response.json();
         
         const languageSelect = document.getElementById('languageSelect');
+        const updateMixedTr = () => {
+            const mixedTr = document.getElementById('mixedTurkishGroup');
+            if (mixedTr) mixedTr.style.display = languageSelect.value === 'tr' ? 'block' : 'none';
+        };
+        languageSelect.addEventListener('change', updateMixedTr);
+
         const targetLanguageSelect = document.getElementById('targetLanguageSelect');
         
         // Păstrează opțiunea auto
@@ -135,6 +141,8 @@ async function initLanguages() {
         // Selectează Română implicit pentru limba țintă
         const roOption = targetLanguageSelect.querySelector('option[value="ro"]');
         if (roOption) roOption.selected = true;
+
+        updateMixedTr(); // Initial check after populating options
         
     } catch (error) {
         console.error('Error loading languages:', error);
@@ -417,6 +425,7 @@ async function startProcessing() {
     const options = {
         model: document.getElementById('modelSelect').value,
         language: document.getElementById('languageSelect').value,
+            mixed_turkish: document.getElementById('mixedTurkish').checked,
         min_duration: parseFloat(document.getElementById('minDuration').value),
         max_duration: parseFloat(document.getElementById('maxDuration').value),
         max_chars: parseInt(document.getElementById('maxChars').value),
@@ -435,6 +444,8 @@ async function startProcessing() {
         options.translate = document.getElementById('enableTranslation').checked;
         if (options.translate) {
             options.target_languages = [document.getElementById('targetLanguageSelect').value];
+            options.translation_engine = document.getElementById('translationEngine').value;
+            options.llm_model = document.getElementById('llmModelSelect').value;
             options.translate_group = parseInt(document.getElementById('translateGroup').value);
             options.use_romistral = document.getElementById('useRomistral').checked;
             

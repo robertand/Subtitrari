@@ -45,7 +45,7 @@ class Config:
     ]
     ROMISTRAL_MODEL = 'OpenLLM-Ro/RoMistral-7b-Instruct'
     DEFAULT_TRANSLATE_GROUP = 10
-    VLLM_GPU_MEMORY_UTILIZATION = 0.5  # Reduced to 50% to prevent "No available memory for cache blocks"
+    VLLM_GPU_MEMORY_UTILIZATION = 0.9  # Increased to 90% to allow loading large 70B models
     VLLM_ENFORCE_EAGER = True  # Use eager mode to save VRAM from CUDA graphs
 
     DEFAULT_LANGUAGE = 'auto'

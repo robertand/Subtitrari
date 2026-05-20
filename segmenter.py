@@ -331,7 +331,7 @@ class SubtitleSegmenter:
             gap = curr['start'] - prev['end']
 
             if curr_text == prev_text and curr_text != "":
-                if gap < 2.0: # If identical and close together
+                if gap < 2.5: # If identical and close together (increased gap tolerance for multi-pass)
                     prev['end'] = max(prev['end'], curr['end'])
                     continue
 
@@ -342,7 +342,7 @@ class SubtitleSegmenter:
                 if words1 and words2:
                     common = words1.intersection(words2)
                     similarity = len(common) / max(len(words1), len(words2))
-                    if similarity > 0.8 and gap < 1.0:
+                    if similarity > 0.85 and gap < 1.5:
                         # High similarity and small gap: likely a repetition artifact
                         prev['end'] = max(prev['end'], curr['end'])
                         if len(curr['text']) > len(prev['text']):
