@@ -332,6 +332,7 @@ class WhisperTranscriber:
             if progress_callback:
                 progress_callback(100, "Complete!")
             
+            result["raw_text"] = result.get("text", "")
             return result
             
         except Exception as e:
@@ -519,43 +520,60 @@ class WhisperTranscriber:
             # WhisperX transcribe takes audio array, model, and other params
             result = model.transcribe(audio, batch_size=batch_size, language=language)
 
-            # 3. Align
+            raw_text = " ".join([seg["text"] for seg in result["segments"]])
             lang_code = result["language"]
-            if progress_callback:
-                progress_callback(60, f"Aligning results ({lang_code})...")
 
-            # Load/Get Alignment Model
-            if lang_code not in self.alignment_models:
-                logger.info(f"Loading WhisperX alignment model for {lang_code}")
-                model_a, metadata = whisperx.load_align_model(language_code=lang_code, device=device)
-                self.alignment_models[lang_code] = (model_a, metadata)
+            # 3. Align
+            try:
+                if progress_callback:
+                    progress_callback(60, f"Aligning results ({lang_code})...")
 
-            model_a, metadata = self.alignment_models[lang_code]
+                # Load/Get Alignment Model
+                if lang_code not in self.alignment_models:
+                    logger.info(f"Loading WhisperX alignment model for {lang_code}")
+                    model_a, metadata = whisperx.load_align_model(language_code=lang_code, device=device)
+                    self.alignment_models[lang_code] = (model_a, metadata)
 
-            result = whisperx.align(
-                result["segments"],
-                model_a,
-                metadata,
-                audio,
-                device,
-                return_char_alignments=False
-            )
+                model_a, metadata = self.alignment_models[lang_code]
 
-            if progress_callback:
-                progress_callback(100, "WhisperX transcription and alignment complete!")
+                result = whisperx.align(
+                    result["segments"],
+                    model_a,
+                    metadata,
+                    audio,
+                    device,
+                    return_char_alignments=False
+                )
 
-            return {
-                "segments": result["segments"],
-                "language": result["language"],
-                "text": " ".join([seg["text"] for seg in result["segments"]]),
-                "method": "whisperx"
-            }
+                if progress_callback:
+                    progress_callback(100, "WhisperX transcription and alignment complete!")
+
+                return {
+                    "segments": result["segments"],
+                    "language": result["language"],
+                    "text": " ".join([seg["text"] for seg in result["segments"]]),
+                    "raw_text": raw_text,
+                    "method": "whisperx"
+                }
+            except Exception as align_e:
+                logger.error(f"WhisperX alignment failed: {align_e}")
+                # Return unaligned segments instead of falling back to vanilla whisper
+                return {
+                    "segments": result["segments"],
+                    "language": lang_code,
+                    "text": raw_text,
+                    "raw_text": raw_text,
+                    "method": "whisperx_unaligned",
+                    "alignment_error": str(align_e)
+                }
+
         except Exception as e:
             logger.error(f"WhisperX transcription error: {e}")
             logger.info("Falling back to Transcribe-then-Align (Vanilla Whisper + WhisperX Align)...")
 
             # 1. Transcribe with Vanilla Whisper (handles more model formats)
             whisper_result = self.transcribe_audio(audio_path, model_name, language, progress_callback=progress_callback)
+            raw_text = whisper_result.get("text", "")
 
             try:
                 # 2. Align with WhisperX
@@ -588,10 +606,12 @@ class WhisperTranscriber:
                     "segments": aligned_result["segments"],
                     "language": lang_code,
                     "text": whisper_result["text"],
+                    "raw_text": raw_text,
                     "method": "whisper_plus_whisperx_align"
                 }
             except Exception as align_e:
                 logger.error(f"Alignment fallback also failed: {align_e}")
+                whisper_result["raw_text"] = raw_text
                 return whisper_result
 
     def load_cohere_model(self):
@@ -1104,6 +1124,7 @@ class WhisperTranscriber:
                 "segments": final_segments,
                 "language": language,
                 "text": cohere_text,
+                "raw_text": cohere_text,
                 "aligned": is_aligned,
                 "alignment_method": alignment_method,
                 "pipeline": "cohere_asr + wav2vec2_alignment" if use_forced_alignment else "cohere_asr_only"

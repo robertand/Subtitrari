@@ -728,6 +728,7 @@ def process_task(task):
         # Prepare result
         task.result = {
             'full_text': result.get('text', ''),
+            'raw_text': result.get('raw_text', ''),
             'segments': segments,
             'language': result.get('language', 'unknown'),
             'translations': translations,

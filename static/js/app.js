@@ -55,6 +55,8 @@ const elements = {
     segmentsList: document.getElementById('segmentsList'),
     fullTextView: document.getElementById('fullTextView'),
     fullTextEditor: document.getElementById('fullTextEditor'),
+    rawTextView: document.getElementById('rawTextView'),
+    rawTextEditor: document.getElementById('rawTextEditor'),
     translationResults: document.getElementById('translationResults'),
     translationsContainer: document.getElementById('translationsContainer'),
     translationTab: document.getElementById('translationTab'),
@@ -545,6 +547,7 @@ function cancelProcessing() {
 function showResults(result) {
     state.segments = result.segments || [];
     state.translations = result.translations || {};
+    state.rawText = result.raw_text || '';
     state.displayLanguage = 'original';
     
     console.log('Showing results:', state.segments.length, 'segments');
@@ -580,6 +583,7 @@ function showResults(result) {
     // Render segments
     renderSegments();
     updateFullText();
+    if (elements.rawTextEditor) elements.rawTextEditor.value = state.rawText;
     
     // Scroll to top of segments
     elements.segmentsList.scrollTop = 0;
@@ -1028,18 +1032,24 @@ function switchTab(tab) {
         event.target.classList.add('active');
     }
     
+    // Hide all views first
+    document.getElementById('segmentsContainer').style.display = 'none';
+    elements.fullTextView.style.display = 'none';
+    if (elements.rawTextView) elements.rawTextView.style.display = 'none';
+
     if (tab === 'original') {
         state.displayLanguage = 'original';
-        elements.fullTextView.style.display = 'none';
         document.getElementById('segmentsContainer').style.display = 'block';
+    } else if (tab === 'raw') {
+        if (elements.rawTextView) elements.rawTextView.style.display = 'block';
+        if (elements.rawTextEditor) elements.rawTextEditor.value = state.rawText;
     } else {
         // Switch to the first translation if available
         const availableLangs = Object.keys(state.translations);
-        if (availableLangs.length > 0 && state.displayLanguage === 'original') {
+        if (availableLangs.length > 0 && (state.displayLanguage === 'original' || state.displayLanguage === 'raw')) {
             state.displayLanguage = availableLangs[0];
         }
 
-        document.getElementById('segmentsContainer').style.display = 'none';
         elements.fullTextView.style.display = 'block';
         updateFullText();
     }

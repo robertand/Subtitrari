@@ -388,6 +388,7 @@
                     <!-- Segments Tabs -->
                     <div class="tabs">
                         <button class="tab active" onclick="switchTab('original')">Original</button>
+                        <button class="tab" id="rawTab" onclick="switchTab('raw')">Raw</button>
                         <button class="tab" id="translationTab" style="display: none;" 
                                 onclick="switchTab('translation')">Traducere</button>
                     </div>
@@ -402,6 +403,11 @@
                     <!-- Full Text View -->
                     <div class="full-text-view" id="fullTextView" style="display: none;">
                         <textarea id="fullTextEditor" class="full-text-editor" rows="10"></textarea>
+                    </div>
+
+                    <!-- Raw Text View -->
+                    <div class="full-text-view" id="rawTextView" style="display: none;">
+                        <textarea id="rawTextEditor" class="full-text-editor" rows="10" readonly></textarea>
                     </div>
                 </div>
 
