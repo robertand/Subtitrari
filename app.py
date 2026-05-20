@@ -536,65 +536,108 @@ def process_task(task):
                 progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
         elif task.options.get('multi_pass'):
-            # Triple-Pass Whisper transcription (Legacy/High-Accuracy)
+            # Multi-Pass Whisper transcription (Legacy/High-Accuracy)
             all_segments = []
 
-            # Pass 1: UI settings
-            task.message = "Whisper Pass 1 (UI Settings)..."
-            res1 = transcriber.transcribe_with_windowing(
-                str(audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=task.options.get("transcribe_window", Config.DEFAULT_TRANSCRIBE_WINDOW),
-                overlap=task.options.get("transcribe_overlap", Config.DEFAULT_TRANSCRIBE_OVERLAP),
-                progress_callback=lambda p, m: update_task_progress(task, p * 0.33, f"Pass 1: {m}")
-            )
-            all_segments.extend(res1.get("segments", []))
+            if model_name == 'selimc/whisper-large-v3-turbo-turkish':
+                # Turkish Specific Multi-Pass (25s/5s and 35s/5s)
+                task.message = "Turkish Pass 1 (25s window)..."
+                res1 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=25,
+                    overlap=5,
+                    progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1: {m}")
+                )
+                all_segments.extend(res1.get("segments", []))
 
-            if task.cancel_flag.is_set(): return
+                if task.cancel_flag.is_set(): return
 
-            # Pass 2: 45s window, 10s overlap, always voice isolated
-            task.message = "Whisper Pass 2 (45s window, isolated)..."
-            pass2_audio_path = audio_path
-            if not task.options.get("isolate_voice"):
-                task.message = "Isolating voice for Pass 2..."
+                task.message = "Turkish Pass 2 (35s window, isolated)..."
+                # Always isolate for the second pass in Turkish multi-pass
                 audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
                 audio_2 = transcriber.isolate_voice(audio_2, sr_2)
-                pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2.wav"
+                pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_tr.wav"
                 import soundfile as sf
                 sf.write(str(pass2_audio_path), audio_2, sr_2)
 
-            res2 = transcriber.transcribe_with_windowing(
-                str(pass2_audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=45,
-                overlap=10,
-                progress_callback=lambda p, m: update_task_progress(task, 33 + p * 0.33, f"Pass 2: {m}")
-            )
-            all_segments.extend(res2.get("segments", []))
-            if pass2_audio_path != audio_path:
+                res2 = transcriber.transcribe_with_windowing(
+                    str(pass2_audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=35,
+                    overlap=5,
+                    progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2: {m}")
+                )
+                all_segments.extend(res2.get("segments", []))
                 Path(pass2_audio_path).unlink(missing_ok=True)
 
-            if task.cancel_flag.is_set(): return
+                result = {
+                    "segments": all_segments,
+                    "text": " ".join([s.get("text", "") for s in all_segments]),
+                    "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                    "language": res1.get("language", "tr")
+                }
+            else:
+                # Standard Triple-Pass
+                # Pass 1: UI settings
+                task.message = "Whisper Pass 1 (UI Settings)..."
+                res1 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=task.options.get("transcribe_window", Config.DEFAULT_TRANSCRIBE_WINDOW),
+                    overlap=task.options.get("transcribe_overlap", Config.DEFAULT_TRANSCRIBE_OVERLAP),
+                    progress_callback=lambda p, m: update_task_progress(task, p * 0.33, f"Pass 1: {m}")
+                )
+                all_segments.extend(res1.get("segments", []))
 
-            # Pass 3: 60s window, 22s overlap, UI isolate_voice
-            task.message = "Whisper Pass 3 (60s window, 22s overlap)..."
-            res3 = transcriber.transcribe_with_windowing(
-                str(audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=60,
-                overlap=22,
-                progress_callback=lambda p, m: update_task_progress(task, 66 + p * 0.34, f"Pass 3: {m}")
-            )
-            all_segments.extend(res3.get("segments", []))
+                if task.cancel_flag.is_set(): return
 
-            result = {
-                "segments": all_segments,
-                "text": " ".join([s.get("text", "") for s in all_segments]),
-                "language": res1.get("language", "unknown")
-            }
+                # Pass 2: 45s window, 10s overlap, always voice isolated
+                task.message = "Whisper Pass 2 (45s window, isolated)..."
+                pass2_audio_path = audio_path
+                if not task.options.get("isolate_voice"):
+                    task.message = "Isolating voice for Pass 2..."
+                    audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+                    audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+                    pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2.wav"
+                    import soundfile as sf
+                    sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+                res2 = transcriber.transcribe_with_windowing(
+                    str(pass2_audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=45,
+                    overlap=10,
+                    progress_callback=lambda p, m: update_task_progress(task, 33 + p * 0.33, f"Pass 2: {m}")
+                )
+                all_segments.extend(res2.get("segments", []))
+                if pass2_audio_path != audio_path:
+                    Path(pass2_audio_path).unlink(missing_ok=True)
+
+                if task.cancel_flag.is_set(): return
+
+                # Pass 3: 60s window, 22s overlap, UI isolate_voice
+                task.message = "Whisper Pass 3 (60s window, 22s overlap)..."
+                res3 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=60,
+                    overlap=22,
+                    progress_callback=lambda p, m: update_task_progress(task, 66 + p * 0.34, f"Pass 3: {m}")
+                )
+                all_segments.extend(res3.get("segments", []))
+
+                result = {
+                    "segments": all_segments,
+                    "text": " ".join([s.get("text", "") for s in all_segments]),
+                    "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                    "language": res1.get("language", "unknown")
+                }
         else:
             # Primary Path: WhisperX
             task.message = f"Starting WhisperX ({model_name})..."

@@ -327,12 +327,14 @@ class WhisperTranscriber:
             if progress_callback:
                 progress_callback(90, "Post-processing...")
             
+            # Capture raw text BEFORE hallucination cleaning
+            result["raw_text"] = result.get("text", "")
+
             result = self._clean_hallucinations(result)
             
             if progress_callback:
                 progress_callback(100, "Complete!")
             
-            result["raw_text"] = result.get("text", "")
             return result
             
         except Exception as e:
@@ -1055,7 +1057,7 @@ class WhisperTranscriber:
             with torch.no_grad():
                 outputs = self.current_model.generate(
                     **model_inputs, 
-                    max_new_tokens=256,
+                    max_new_tokens=4096, # Increased to prevent truncation
                     repetition_penalty=1.2,  # Add repetition penalty
                     no_repeat_ngram_size=3,  # Prevent repeating trigrams
                     do_sample=False  # Use greedy decoding for consistency

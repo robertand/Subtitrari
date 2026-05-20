@@ -1030,6 +1030,11 @@ function switchTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     if (event && event.target) {
         event.target.classList.add('active');
+    } else {
+        // Fallback for direct calls without event
+        const tabId = tab === 'original' ? 'originalTab' : (tab === 'raw' ? 'rawTab' : 'translationTab');
+        const tabEl = document.getElementById(tabId);
+        if (tabEl) tabEl.classList.add('active');
     }
     
     // Hide all views first
