@@ -3,8 +3,6 @@ import types
 from unittest.mock import MagicMock
 
 # Mock torchcodec to prevent environment crashes on load
-# Refined to satisfy the most common import patterns in pyannote and other libs
-# and avoid circular initialization issues.
 def create_torchcodec_mock():
     mock = types.ModuleType('torchcodec')
     mock.__spec__ = MagicMock()
@@ -16,13 +14,38 @@ def create_torchcodec_mock():
     mock.__path__ = []
     mock.__file__ = 'mock'
 
-    class AudioSamples: pass
-    mock.AudioSamples = AudioSamples
+    # Create proper classes that can be used with isinstance()
+    class AudioSamples:
+        pass
 
-    mock.decoders = MagicMock()
-    mock.encoders = MagicMock()
+    # Create decoders module with AudioDecoder class
+    mock.decoders = types.ModuleType('torchcodec.decoders')
+
+    class AudioDecoder:
+        """Mock AudioDecoder class that's a proper type"""
+        pass
+
+    # Add AudioDecoder to decoders module
+    mock.decoders.AudioDecoder = AudioDecoder
+
+    # Create encoders module
+    mock.encoders = types.ModuleType('torchcodec.encoders')
+
+    # Add other mock attributes
+    mock.AudioSamples = AudioSamples
     mock.load = MagicMock(return_value={})
     mock.is_available = MagicMock(return_value=False)
+
+    # Add VideoDecoder and other common classes that might be checked
+    class VideoDecoder:
+        pass
+
+    mock.decoders.VideoDecoder = VideoDecoder
+
+    # Ensure the decoders module is also accessible directly
+    # This handles cases where code does 'from torchcodec.decoders import AudioDecoder'
+    sys.modules['torchcodec.decoders'] = mock.decoders
+    sys.modules['torchcodec.encoders'] = mock.encoders
 
     return mock
 
@@ -138,23 +161,20 @@ class WhisperTranscriber:
                 self.current_model = pipe
                 self.models[model_name] = pipe
             else:
+                # Map names for OpenAI Whisper compatibility
+                whisper_model_name = model_name
+                if model_name == 'large-v3-turbo':
+                    whisper_model_name = 'turbo'
+
                 try:
                     self.current_model = whisper.load_model(
-                        model_name,
+                        whisper_model_name,
                         device=self.device,
                         download_root='data/models'
                     )
                 except Exception as e:
-                    if 'turbo' in model_name:
-                        alt_name = 'turbo' if model_name != 'turbo' else 'large-v3-turbo'
-                        logger.warning(f"Failed to load {model_name}, trying alternative: {alt_name}")
-                        self.current_model = whisper.load_model(
-                            alt_name,
-                            device=self.device,
-                            download_root='data/models'
-                        )
-                    else:
-                        raise
+                    logger.error(f"Failed to load Whisper {whisper_model_name}: {e}")
+                    raise
             
             load_time = time.time() - start_time
             self.models[model_name] = self.current_model
@@ -204,37 +224,93 @@ class WhisperTranscriber:
             # Handle Transformers Pipeline objects
             if hasattr(self.current_model, "__call__") and hasattr(self.current_model, "task") and self.current_model.task == "automatic-speech-recognition":
                 logger.info("Using transformers pipeline for transcription")
+
+                # Build generate_kwargs properly
                 generate_kwargs = {}
                 if language and language != 'auto':
                     generate_kwargs["language"] = language
+                    generate_kwargs["task"] = "transcribe"
 
-                # Whisper turbo models have a hard limit of 448 tokens.
-                # Pipeline handles chunking but we should be careful with generate_kwargs.
-                generate_kwargs["max_new_tokens"] = 128 # Smaller chunks for better stability
+                # Don't pass max_new_tokens through generate_kwargs - let the pipeline handle it
+                # The pipeline will use its own chunking mechanism
 
-                pipe_res = self.current_model(
-                    audio,
-                    chunk_length_s=30,
-                    stride_length_s=5,
-                    return_timestamps=True,
-                    generate_kwargs=generate_kwargs
-                )
+                try:
+                    # First try: pipeline call with chunking and timestamps
+                    pipe_res = self.current_model(
+                        audio,
+                        chunk_length_s=30,
+                        stride_length_s=5,
+                        return_timestamps=True,
+                        generate_kwargs=generate_kwargs if generate_kwargs else None
+                    )
+                except Exception as e1:
+                    logger.warning(f"First pipeline attempt failed: {e1}")
+                    try:
+                        # Second try: without return_timestamps but with chunking
+                        pipe_res = self.current_model(
+                            audio,
+                            chunk_length_s=30,
+                            stride_length_s=5,
+                            generate_kwargs=generate_kwargs if generate_kwargs else None
+                        )
+                    except Exception as e2:
+                        logger.warning(f"Second pipeline attempt failed: {e2}")
+                        # Third try: minimal call
+                        pipe_res = self.current_model(audio)
 
+                # Parse the result
                 segments = []
-                for chunk in pipe_res.get("chunks", []):
-                    ts = chunk.get("timestamp")
-                    if ts and len(ts) == 2:
+                if isinstance(pipe_res, dict):
+                    # Handle chunked output
+                    if "chunks" in pipe_res:
+                        current_time = 0.0
+                        for chunk in pipe_res["chunks"]:
+                            text = chunk.get("text", "").strip()
+                            if not text:
+                                continue
+
+                            ts = chunk.get("timestamp")
+                            if ts and len(ts) == 2:
+                                start = float(ts[0]) if ts[0] is not None else current_time
+                                end = float(ts[1]) if ts[1] is not None else start + 2.0
+                            else:
+                                start = current_time
+                                end = start + 2.0
+
+                            segments.append({
+                                "start": start,
+                                "end": end,
+                                "text": text
+                            })
+                            current_time = end
+                    elif "text" in pipe_res:
+                        # Single segment output
                         segments.append({
-                            "start": float(ts[0]) if ts[0] is not None else 0.0,
-                            "end": float(ts[1]) if ts[1] is not None else 0.0,
-                            "text": chunk.get("text", "").strip()
+                            "start": 0.0,
+                            "end": len(audio) / sr,
+                            "text": pipe_res["text"].strip()
                         })
 
-                result = {
-                    "text": pipe_res.get("text", ""),
-                    "segments": segments,
-                    "language": language or "unknown"
-                }
+                    result = {
+                        "text": pipe_res.get("text", ""),
+                        "segments": segments,
+                        "language": language or "unknown"
+                    }
+                elif isinstance(pipe_res, str):
+                    # Pipeline returned just text
+                    result = {
+                        "text": pipe_res,
+                        "segments": [{"start": 0.0, "end": len(audio) / sr, "text": pipe_res}],
+                        "language": language or "unknown"
+                    }
+                else:
+                    # Unknown format, try to convert
+                    logger.warning(f"Unexpected pipeline output type: {type(pipe_res)}")
+                    result = {
+                        "text": str(pipe_res),
+                        "segments": [{"start": 0.0, "end": len(audio) / sr, "text": str(pipe_res)}],
+                        "language": language or "unknown"
+                    }
             else:
                 # Standard Whisper model
                 options = {
@@ -260,6 +336,8 @@ class WhisperTranscriber:
             
         except Exception as e:
             logger.error(f"Transcription error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
     
     def transcribe_with_windowing(
@@ -409,33 +487,29 @@ class WhisperTranscriber:
             device = self.device
             compute_type = "float16" if device == "cuda" else "int8"
 
-            # 1. Load/Get WhisperX Model
-            if model_name not in self.whisperx_models:
-                if progress_callback:
-                    progress_callback(5, f"Loading WhisperX model {model_name}...")
+            # Map names for WhisperX / Faster-Whisper compatibility
+            wx_model_name = model_name
+            if model_name == 'large-v3-turbo':
+                wx_model_name = 'turbo'
 
-                logger.info(f"Loading WhisperX model: {model_name} on {device}")
+            # 1. Load/Get WhisperX Model
+            if wx_model_name not in self.whisperx_models:
+                if progress_callback:
+                    progress_callback(5, f"Loading WhisperX model {wx_model_name}...")
+
+                logger.info(f"Loading WhisperX model: {wx_model_name} on {device}")
                 try:
-                    self.whisperx_models[model_name] = whisperx.load_model(
-                        model_name,
+                    self.whisperx_models[wx_model_name] = whisperx.load_model(
+                        wx_model_name,
                         device,
                         compute_type=compute_type,
                         download_root='data/models'
                     )
                 except Exception as e:
-                    if 'turbo' in model_name:
-                        alt_name = 'turbo' if model_name != 'turbo' else 'large-v3-turbo'
-                        logger.warning(f"Failed to load WhisperX {model_name}, trying alternative: {alt_name}")
-                        self.whisperx_models[model_name] = whisperx.load_model(
-                            alt_name,
-                            device,
-                            compute_type=compute_type,
-                            download_root='data/models'
-                        )
-                    else:
-                        raise
+                    logger.error(f"Failed to load WhisperX {wx_model_name}: {e}")
+                    raise
 
-            model = self.whisperx_models[model_name]
+            model = self.whisperx_models[wx_model_name]
 
             # 2. Transcribe
             if progress_callback:
