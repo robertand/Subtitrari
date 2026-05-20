@@ -74,8 +74,7 @@ class WhisperTranscriber:
             # snapshot_download is smart enough to skip if already present
             path = snapshot_download(
                 repo_id=model_id,
-                cache_dir=cache_dir,
-                trust_remote_code=True
+                cache_dir=cache_dir
             )
             return path
         except Exception as e:

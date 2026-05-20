@@ -305,7 +305,7 @@ class SubtitleSegmenter:
         return merged
 
     def remove_repetitions(self, segments: List[Dict]) -> List[Dict]:
-        """Remove consecutive identical phrases while keeping segments with background voice if text is same"""
+        """Remove consecutive identical phrases or near-repetitions with aggressive merging"""
         if not segments:
             return []
 
@@ -330,24 +330,36 @@ class SubtitleSegmenter:
             # Check for exact matches or high similarity with significant overlap or small gap
             gap = curr['start'] - prev['end']
 
+            # Aggressive identity check: allow larger gap if identical
             if curr_text == prev_text and curr_text != "":
-                if gap < 2.0: # If identical and close together
+                if gap < 3.0: # Increased from 2.0
                     prev['end'] = max(prev['end'], curr['end'])
                     continue
 
-            # Fuzzy match for near-repetitions (often caused by windowing artifacts)
+            # Aggressive fuzzy match for near-repetitions
             if len(curr_text) > 0 and len(prev_text) > 0:
                 words1 = set(prev_text.split())
                 words2 = set(curr_text.split())
                 if words1 and words2:
                     common = words1.intersection(words2)
-                    similarity = len(common) / max(len(words1), len(words2))
-                    if similarity > 0.8 and gap < 1.0:
-                        # High similarity and small gap: likely a repetition artifact
+                    max_len = max(len(words1), len(words2))
+                    similarity = len(common) / max_len if max_len > 0 else 0
+
+                    # If high similarity and small gap/overlap
+                    if similarity > 0.75 and gap < 1.5: # Lowered threshold and increased gap
                         prev['end'] = max(prev['end'], curr['end'])
+                        # Keep the longer/more complete text
                         if len(curr['text']) > len(prev['text']):
                             prev['text'] = curr['text']
                         continue
+
+            # Substring repetition check (e.g. "Hello world" followed by "world")
+            if gap < 0.5:
+                if curr_text in prev_text or prev_text in curr_text:
+                    prev['end'] = max(prev['end'], curr['end'])
+                    if len(curr_text) > len(prev_text):
+                        prev['text'] = curr['text']
+                    continue
 
             result.append(curr)
         return result
