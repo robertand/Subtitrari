@@ -80,6 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initModels();
     initVideoPlayer();
     checkDevice();
+    initSettingsListeners();
 });
 
 function initUpload() {
@@ -411,12 +412,39 @@ function resetUpload() {
     elements.uploadPercentage.textContent = '0%';
 }
 
+function initSettingsListeners() {
+    // Listen for any changes in settings or translation sections to show the start button again
+    const settingsSections = document.querySelectorAll('.settings-section, .translation-section');
+    settingsSections.forEach(section => {
+        section.addEventListener('change', () => {
+            showStartButtonIfReady();
+        });
+        // Also catch input events for textareas/inputs that might not trigger 'change' until blur
+        section.addEventListener('input', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                showStartButtonIfReady();
+            }
+        });
+    });
+}
+
+function showStartButtonIfReady() {
+    if (state.taskId && elements.startButton) {
+        elements.startButton.style.display = 'flex';
+    }
+}
+
 // === Processing ===
 async function startProcessing() {
     if (!state.taskId) {
         showToast('Încărcați mai întâi un fișier', 'warning');
         return;
     }
+
+    // Reset UI for new processing run
+    elements.resultsSection.style.display = 'none';
+    elements.translationResults.style.display = 'none';
+    if (elements.timelineSection) elements.timelineSection.style.display = 'none';
     
     // Check audio only mode
     const audioOnly = document.getElementById('audioOnly').checked;
