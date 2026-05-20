@@ -24,14 +24,14 @@ class Config:
     # Processing
     DEFAULT_ENGINE = 'whisper'
     AVAILABLE_ENGINES = ['whisper', 'cohere']
-    DEFAULT_MODEL = 'turbo'
+    DEFAULT_MODEL = 'large-v3'
     AVAILABLE_MODELS = [
         'tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3', 'large-v3-turbo', 'turbo',
         'selimc/whisper-large-v3-turbo-turkish'
     ]
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
-    DEFAULT_TRANSCRIBE_WINDOW = 30
-    DEFAULT_TRANSCRIBE_OVERLAP = 10
+    DEFAULT_TRANSCRIBE_WINDOW = 50
+    DEFAULT_TRANSCRIBE_OVERLAP = 25
 
     # LLM Models
     DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'

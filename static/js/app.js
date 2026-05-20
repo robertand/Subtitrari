@@ -81,6 +81,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initVideoPlayer();
     checkDevice();
     initSettingsListeners();
+    // Set initial simple mode presets
+    setPresetValues();
 });
 
 function initUpload() {
@@ -800,6 +802,66 @@ function updateTranslationSegment(lang, index, text) {
             updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
         }
     }
+}
+
+function toggleAdvancedMode() {
+    const isAdvanced = document.getElementById('advancedModeToggle').checked;
+    const advancedContainer = document.getElementById('advancedSettingsContainer');
+    const advancedTranslation = document.getElementById('advancedTranslationContainer');
+    const simpleInfo = document.getElementById('simpleModeInfo');
+
+    if (isAdvanced) {
+        advancedContainer.style.display = 'block';
+        advancedTranslation.style.display = 'block';
+        simpleInfo.style.display = 'none';
+    } else {
+        advancedContainer.style.display = 'none';
+        advancedTranslation.style.display = 'none';
+        simpleInfo.style.display = 'block';
+        // Revert to presets when switching back to simple mode
+        setPresetValues();
+    }
+}
+
+function setPresetValues() {
+    // OpenAI Whisper cu large V3
+    document.getElementById('engineSelect').value = 'whisper';
+    document.getElementById('modelSelect').value = 'large-v3';
+
+    // Window 50s, Overlap 25s
+    document.getElementById('transcribeWindow').value = 50;
+    document.getElementById('transcribeOverlap').value = 25;
+
+    // VAD on, marja 1s on
+    document.getElementById('useVAD').checked = true;
+    document.getElementById('useMargin').checked = true;
+
+    // Izolare Voce off, Elimina repetitiile on, Segmente secvențiale on
+    document.getElementById('isolateVoice').checked = false;
+    document.getElementById('deduplicate').checked = true;
+    document.getElementById('preventOverlap').checked = true;
+
+    // Multipass off, TR Transcriere Turcă off, Doar extracție audio off
+    document.getElementById('multiPass').checked = false;
+    const mixedTr = document.getElementById('mixedTurkish');
+    if (mixedTr) mixedTr.checked = false;
+    document.getElementById('audioOnly').checked = false;
+
+    // Dacă activezi traducerea: default pe Română cu NLLB, corectură LLM off, mărime grup 10
+    const targetLang = document.getElementById('targetLanguageSelect');
+    if (targetLang) {
+        const roOption = targetLang.querySelector('option[value="ro"]');
+        if (roOption) roOption.selected = true;
+    }
+
+    document.getElementById('translationEngine').value = 'nllb';
+    document.getElementById('useRomistral').checked = false;
+    document.getElementById('translateGroup').value = 10;
+
+    // Refresh engine-specific views
+    toggleEngineOptions();
+    updateModelOptions();
+    toggleTranslation();
 }
 
 // === Video Player Controls ===

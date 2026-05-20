@@ -131,36 +131,49 @@
 
                 <!-- Settings Section -->
                 <div class="glass-container settings-section">
-                    <h2 class="section-title">
-                        <span class="icon">⚙️</span>
-                        Setări Procesare
-                    </h2>
-
-                    <!-- Engine & Model Selection -->
-                    <div class="setting-group">
-                        <label class="setting-label">Motor Transcriere</label>
-                        <select id="engineSelect" class="setting-select" onchange="toggleEngineOptions()">
-                            <option value="whisper" selected>OpenAI Whisper</option>
-                            <option value="cohere">Cohere Transcribe (03-2026)</option>
-                        </select>
-                    </div>
-
-                    <div class="setting-group" id="whisperModelGroup">
-                        <label class="setting-label">Model Whisper</label>
-                        <select id="modelSelect" class="setting-select">
-                            <option value="tiny">Tiny (rapid, memorie redusă)</option>
-                            <option value="base">Base</option>
-                            <option value="small" selected>Small (recomandat)</option>
-                            <option value="medium">Medium</option>
-                            <option value="large">Large</option>
-                            <option value="large-v3">Large v3 (cel mai precis)</option>
-                            <option value="large-v3-turbo" selected>Large v3 Turbo (Rapid & Precis)</option>
-                            <option value="selimc/whisper-large-v3-turbo-turkish">Turkish Turbo (High Accuracy)</option>
-                        </select>
-                        <div class="model-status" id="modelStatus">
-                            <span class="model-loading" style="display: none;">⏳ Se încarcă...</span>
+                    <div class="section-header-row">
+                        <h2 class="section-title">
+                            <span class="icon">⚙️</span>
+                            Setări Procesare
+                        </h2>
+                        <div class="mode-selector">
+                            <label class="mode-switch">
+                                <input type="checkbox" id="advancedModeToggle" onchange="toggleAdvancedMode()">
+                                <span class="mode-label">Mod Avansat</span>
+                            </label>
                         </div>
                     </div>
+
+                    <div id="simpleModeInfo" class="info-box">
+                        <p>✨ <strong>Mod Simplu activat:</strong> Folosește setări optimizate pentru acuratețe maximă (Whisper Large V3, Window 50s, Overlap 25s).</p>
+                    </div>
+
+                    <div id="advancedSettingsContainer" style="display: none;">
+                        <!-- Engine & Model Selection -->
+                        <div class="setting-group">
+                            <label class="setting-label">Motor Transcriere</label>
+                            <select id="engineSelect" class="setting-select" onchange="toggleEngineOptions()">
+                                <option value="whisper" selected>OpenAI Whisper</option>
+                                <option value="cohere">Cohere Transcribe (03-2026)</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group" id="whisperModelGroup">
+                            <label class="setting-label">Model Whisper</label>
+                            <select id="modelSelect" class="setting-select">
+                                <option value="tiny">Tiny (rapid, memorie redusă)</option>
+                                <option value="base">Base</option>
+                                <option value="small">Small</option>
+                                <option value="medium">Medium</option>
+                                <option value="large">Large</option>
+                                <option value="large-v3" selected>Large v3 (cel mai precis)</option>
+                                <option value="large-v3-turbo">Large v3 Turbo (Rapid & Precis)</option>
+                                <option value="selimc/whisper-large-v3-turbo-turkish">Turkish Turbo (High Accuracy)</option>
+                            </select>
+                            <div class="model-status" id="modelStatus">
+                                <span class="model-loading" style="display: none;">⏳ Se încarcă...</span>
+                            </div>
+                        </div>
 
                     <div class="setting-group" id="coherePromptGroup" style="display: none;">
                         <label class="checkbox-label">
@@ -257,37 +270,40 @@
                         </div>
                     </div>
 
-                    <!-- Multi-Pass Option -->
-                    <div class="setting-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="multiPass" class="setting-checkbox">
-                            <span>Multi-Pass (Acuratețe Maximă - LENT)</span>
-                        </label>
-                    </div>
+                        <!-- Multi-Pass Option -->
+                        <div class="setting-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="multiPass" class="setting-checkbox">
+                                <span>Multi-Pass (Acuratețe Maximă - LENT)</span>
+                            </label>
+                        </div>
 
-                    <!-- Mixed Turkish Option -->
-                    <div class="setting-group" id="mixedTurkishGroup" style="display: none;">
-                        <label class="checkbox-label" style="color: var(--accent);">
-                            <input type="checkbox" id="mixedTurkish" class="setting-checkbox">
-                            <span>🇹🇷 Transcriere Mixtă Turcă (V3 60s + Turbo 30s)</span>
-                        </label>
-                    </div>
+                        <!-- Mixed Turkish Option -->
+                        <div class="setting-group" id="mixedTurkishGroup" style="display: none;">
+                            <label class="checkbox-label" style="color: var(--accent);">
+                                <input type="checkbox" id="mixedTurkish" class="setting-checkbox">
+                                <span>🇹🇷 Transcriere Mixtă Turcă (V3 60s + Turbo 30s)</span>
+                            </label>
+                        </div>
 
-                    <!-- Audio Extraction Only -->
-                    <div class="setting-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="audioOnly" class="setting-checkbox">
-                            <span>Doar extracție audio (fără transcriere)</span>
-                        </label>
-                    </div>
+                        <!-- Audio Extraction Only -->
+                        <div class="setting-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="audioOnly" class="setting-checkbox">
+                                <span>Doar extracție audio (fără transcriere)</span>
+                            </label>
+                        </div>
+                    </div> <!-- End advancedSettingsContainer -->
                 </div>
 
                 <!-- Translation Section -->
                 <div class="glass-container translation-section">
-                    <h2 class="section-title">
-                        <span class="icon">🌍</span>
-                        Traducere
-                    </h2>
+                    <div class="section-header-row">
+                        <h2 class="section-title">
+                            <span class="icon">🌍</span>
+                            Traducere
+                        </h2>
+                    </div>
 
                     <div class="setting-group">
                         <label class="checkbox-label">
@@ -305,14 +321,15 @@
                             </select>
                         </div>
 
-                        <div class="setting-group">
-                            <label class="setting-label">Engine Traducere</label>
-                            <select id="translationEngine" class="setting-select" onchange="updateModelOptions()">
-                                <option value="vllm" selected>VLLM (Qwen3-235B) - Profesional</option>
-                                <option value="llm">LLM Local</option>
-                                <option value="nllb">NLLB-200 (rapid, bun)</option>
-                            </select>
-                        </div>
+                        <div id="advancedTranslationContainer" style="display: none;">
+                            <div class="setting-group">
+                                <label class="setting-label">Engine Traducere</label>
+                                <select id="translationEngine" class="setting-select" onchange="updateModelOptions()">
+                                    <option value="vllm" selected>VLLM (Qwen3-235B) - Profesional</option>
+                                    <option value="llm">LLM Local</option>
+                                    <option value="nllb">NLLB-200 (rapid, bun)</option>
+                                </select>
+                            </div>
 
                         <div class="setting-group" id="llmModelGroup" style="display: none;">
                             <label class="setting-label">Model LLM</label>
@@ -348,12 +365,13 @@
                             </div>
                         </div>
 
-                        <div class="setting-group">
-                            <button class="btn btn-secondary" onclick="addTranslationLanguage()">
-                                ➕ Adaugă altă limbă
-                            </button>
-                        </div>
-                        <div id="additionalLanguages"></div>
+                            <div class="setting-group">
+                                <button class="btn btn-secondary" onclick="addTranslationLanguage()">
+                                    ➕ Adaugă altă limbă
+                                </button>
+                            </div>
+                            <div id="additionalLanguages"></div>
+                        </div> <!-- End advancedTranslationContainer -->
                     </div>
                 </div>
             </div>
