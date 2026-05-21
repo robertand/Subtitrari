@@ -799,12 +799,14 @@ def process_task(task):
                         texts, source_lang, target_lang
                     )
                 
-                # Apply LLM correction if requested and language is Romanian
-                if task.options.get('use_romistral') and target_lang == 'ro':
-                    task.message = 'Refining translation with RoMistral...'
-                    translated_texts = translator.correct_with_romistral(
+                # Apply LLM correction if requested
+                if task.options.get('use_romistral'):
+                    task.message = f'Refining translation with {llm_model}...'
+                    # Use the same model selected for translation for correction as well
+                    translated_texts = translator.correct_with_vllm(
                         translated_texts,
                         target_lang,
+                        model_name=llm_model,
                         group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
                     )
 

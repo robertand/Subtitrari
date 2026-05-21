@@ -230,6 +230,16 @@ class Translator:
             # Using Config.MODELS_DIR as default
             target_dir = cache_dir or Config.MODELS_DIR
 
+            # Special handling for Llama-3.3-8B-Instruct as requested
+            if model_id == "allura-forge/Llama-3.3-8B-Instruct":
+                local_dir = target_dir / "Llama-3.3-8B-Instruct"
+                path = snapshot_download(
+                    repo_id=model_id,
+                    local_dir=str(local_dir),
+                    ignore_patterns=[".pt", ".bin"]  # only safetensors
+                )
+                return path
+
             path = snapshot_download(
                 repo_id=model_id,
                 cache_dir=str(target_dir)
@@ -278,11 +288,17 @@ class Translator:
                 )
 
             llm = self.models[model_name]
+
+            # Adjust stop tokens based on model
+            stop_tokens = ["<|endoftext|>", "<|im_end|>"]
+            if "Llama-3" in model_name:
+                stop_tokens = ["<|endoftext|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>"]
+
             sampling_params = SamplingParams(
                 temperature=0.3,
                 top_p=0.95,
                 max_tokens=2048,
-                stop=["<|endoftext|>", "<|im_end|>"]
+                stop=stop_tokens
             )
 
             system_prompt = (
@@ -307,11 +323,20 @@ class Translator:
                 for idx, text in enumerate(batch):
                     user_content += f"{idx + 1}. {text}\n"
 
-                full_prompt = (
-                    f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-                    f"<|im_start|>user\n{user_content}<|im_end|>\n"
-                    f"<|im_start|>assistant\n"
-                )
+                if "Llama-3" in model_name:
+                    # Llama 3 Prompt Template
+                    full_prompt = (
+                        f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
+                        f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
+                        f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+                    )
+                else:
+                    # Default ChatML (Qwen, etc.)
+                    full_prompt = (
+                        f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                        f"<|im_start|>user\n{user_content}<|im_end|>\n"
+                        f"<|im_start|>assistant\n"
+                    )
 
                 outputs = llm.generate([full_prompt], sampling_params)
                 response_text = outputs[0].outputs[0].text
@@ -501,32 +526,39 @@ class Translator:
             logger.error(f"LLM refinement error: {e}")
             return None
 
-    def correct_with_romistral(
+    def correct_with_vllm(
         self,
         texts: List[str],
         target_lang: str,
+        model_name: str = "OpenLLM-Ro/RoMistral-7b-Instruct",
         group_size: int = 10
     ) -> List[str]:
-        """Refine and correct Romanian translation using RoMistral"""
-        if target_lang != 'ro':
-            return texts
-
+        """Refine and correct translation using a VLLM model (RoMistral or Llama)"""
         try:
             from vllm import LLM, SamplingParams
-            model_name = Config.ROMISTRAL_MODEL
 
-            # Use VLLM for Romistral if possible, or Fallback to standard HF
+            # Use VLLM for correction
             if model_name not in self.models:
-                actual_model_to_load = model_name
-                base_name = model_name.split('/')[-1]
+                # Eliberează memoria GPU înainte de a încărca noul model greu
+                if torch.cuda.is_available():
+                    logger.info("Cleaning up VRAM before loading VLLM for correction...")
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    time.sleep(1)
 
-                if Config.MODELS_DIR.exists():
-                    for item in Config.MODELS_DIR.iterdir():
-                        if item.is_dir() and base_name in item.name:
-                            actual_model_to_load = str(item.absolute())
-                            break
+                actual_model_to_load = self.ensure_model_downloaded(model_name)
 
-                logger.info(f"Loading RoMistral model: {actual_model_to_load}")
+                # Special check for local folders if not found by snapshot_download (e.g. RoMistral manual folder)
+                if not Path(actual_model_to_load).exists():
+                    base_name = model_name.split('/')[-1]
+                    if Config.MODELS_DIR.exists():
+                        for item in Config.MODELS_DIR.iterdir():
+                            if item.is_dir() and base_name in item.name:
+                                actual_model_to_load = str(item.absolute())
+                                break
+
+                logger.info(f"Loading VLLM model for correction: {actual_model_to_load}")
                 self.models[model_name] = LLM(
                     model=actual_model_to_load,
                     trust_remote_code=True,
@@ -538,19 +570,25 @@ class Translator:
                 )
 
             llm = self.models[model_name]
+
+            # Adjust stop tokens based on model
+            stop_tokens = ["<|endoftext|>", "</s>", "<|im_end|>"]
+            if "Llama-3" in model_name:
+                stop_tokens = ["<|endoftext|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>"]
+
             sampling_params = SamplingParams(
                 temperature=0.2,
                 top_p=0.9,
                 max_tokens=2048,
-                stop=["<|endoftext|>", "</s>"]
+                stop=stop_tokens
             )
 
             system_prompt = (
-                "Ești un expert în limba română specializat în corectarea și adaptarea subtitrărilor. "
+                f"Ești un expert în limba {target_lang} specializat în corectarea și adaptarea subtitrărilor. "
                 "Sarcina ta este să corectezi gramatical și să îmbunătățești logica de context a textelor primite. "
                 "Cerințe:\n"
-                "1. Corectează greșelile gramaticale și de punctuație.\n"
-                "2. Asigură-te că topica frazei sună natural în limba română.\n"
+                f"1. Corectează greșelile gramaticale și de punctuație în limba {target_lang}.\n"
+                f"2. Asigură-te că topica frazei sună natural în limba {target_lang}.\n"
                 "3. Păstrează sensul original dar adaptează-l contextului dacă este necesar.\n"
                 "4. Dacă întâlnești secvențe repetitive sau variante multiple ale aceluiași enunț, folosește contextul pentru a decide care este varianta corectă și elimină redundanțele.\n"
                 "5. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'corrections'.\n"
@@ -565,8 +603,21 @@ class Translator:
                 for idx, text in enumerate(batch):
                     user_content += f"{idx + 1}. {text}\n"
 
-                # RoMistral use Mistral format usually
-                full_prompt = f"<s>[INST] {system_prompt}\n\n{user_content} [/INST]"
+                # Prompt Template Selection
+                if "Llama-3" in model_name:
+                    full_prompt = (
+                        f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|>"
+                        f"<|start_header_id|>user<|end_header_id|>\n\n{user_content}<|eot_id|>"
+                        f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+                    )
+                elif "RoMistral" in model_name or "Mistral" in model_name:
+                    full_prompt = f"<s>[INST] {system_prompt}\n\n{user_content} [/INST]"
+                else:
+                    full_prompt = (
+                        f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+                        f"<|im_start|>user\n{user_content}<|im_end|>\n"
+                        f"<|im_start|>assistant\n"
+                    )
 
                 outputs = llm.generate([full_prompt], sampling_params)
                 response_text = outputs[0].outputs[0].text
@@ -580,13 +631,17 @@ class Translator:
                             for j, t in enumerate(batch_corrections):
                                 all_corrections[i + j] = t
                 except Exception as e:
-                    logger.error(f"Error parsing RoMistral response for batch {i}: {e}")
+                    logger.error(f"Error parsing VLLM response for batch {i}: {e}")
 
             return all_corrections
 
         except Exception as e:
-            logger.error(f"RoMistral correction fatal error: {e}")
+            logger.error(f"VLLM correction fatal error: {e}")
             return texts
+
+    def correct_with_romistral(self, texts: List[str], target_lang: str, group_size: int = 10) -> List[str]:
+        """Backward compatibility for RoMistral correction"""
+        return self.correct_with_vllm(texts, target_lang, Config.ROMISTRAL_MODEL, group_size)
 
     def unload_models(self):
         """Free memory by unloading models"""

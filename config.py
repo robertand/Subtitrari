@@ -37,6 +37,7 @@ class Config:
     DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'
     AVAILABLE_LLM_MODELS = [
         'Qwen/Qwen3-235B-A22B-Instruct',
+        'allura-forge/Llama-3.3-8B-Instruct',
         'nvidia/Llama-3.3-70B-Instruct-NVFP4',
         'google/gemma-3-12b-it',
         'google/gemma-4-E4B-it',
