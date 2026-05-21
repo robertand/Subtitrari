@@ -86,29 +86,50 @@ class Translator:
         texts: List[str],
         source_lang: str,
         target_lang: str,
+        engine: str = "google",
         batch_size: int = 8
     ) -> List[str]:
-        """Translate a batch of texts using Google Translate (via deep-translator)"""
+        """Route translation request to the selected engine"""
+        if engine == "google":
+            return self._google_translate(texts, source_lang, target_lang)
+        elif engine == "vllm":
+            return self.translate_with_vllm_grouped(texts, source_lang, target_lang)
+        elif engine == "llm":
+            # Fallback to translate_with_llm for smaller models if configured
+            return self.translate_with_llm(texts, source_lang, target_lang)
+        else:
+            # Default to NLLB
+            return self._nllb_translate(texts, source_lang, target_lang, batch_size)
+
+    def _google_translate(
+        self,
+        texts: List[str],
+        source_lang: str,
+        target_lang: str
+    ) -> List[str]:
+        """Translate segments using Google Translate (via deep-translator)"""
         try:
             logger.info(f"Translating {len(texts)} segments using Google Translate: {source_lang} -> {target_lang}")
             
-            # Google Translate handles mapping internally usually, but let's be safe
-            # NLLB maps 'ro' to 'ron_Latn', but Google wants 'ro'
             s_lang = source_lang if source_lang != 'auto' else 'auto'
             t_lang = target_lang
 
             translator = GoogleTranslator(source=s_lang, target=t_lang)
 
-            # deep-translator can translate lists
-            # Note: translate_batch in deep-translator takes a list
-            translations = translator.translate_batch(texts)
+            # Use chunks for large lists as deep-translator might have limits per request
+            translations = []
+            chunk_size = 50
+
+            for i in range(0, len(texts), chunk_size):
+                batch = texts[i:i + chunk_size]
+                translations.extend(translator.translate_batch(batch))
 
             return translations
 
         except Exception as e:
             logger.error(f"Google Translate error: {e}")
             # Fallback to NLLB if Google fails
-            return self._nllb_translate(texts, source_lang, target_lang, batch_size)
+            return self._nllb_translate(texts, source_lang, target_lang)
 
     def _nllb_translate(
         self,

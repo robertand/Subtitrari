@@ -280,10 +280,11 @@
                             </select>
                         </div>
 
-                        <div class="setting-group advanced-only" style="display: none;">
+                        <div class="setting-group">
                             <label class="setting-label">Engine Traducere</label>
                             <select id="translationEngine" class="setting-select" onchange="updateModelOptions()">
-                                <option value="vllm" selected>VLLM (Qwen3-235B) - Profesional</option>
+                                <option value="google" selected>Google Translate (precis)</option>
+                                <option value="vllm">VLLM (Qwen3-235B) - Profesional</option>
                                 <option value="llm">LLM Local</option>
                                 <option value="nllb">NLLB-200 (rapid, bun)</option>
                             </select>

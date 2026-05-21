@@ -437,6 +437,10 @@ def translate_text():
                 texts, source_lang, target_lang,
                 custom_prompt=custom_prompt
             )
+        elif engine == 'google':
+            translations = translator.translate_batch(
+                texts, source_lang, target_lang, engine='google'
+            )
         else:
             translations = translator.translate_batch(
                 texts, source_lang, target_lang
@@ -629,6 +633,10 @@ def process_task(task):
                         texts, source_lang, target_lang,
                         model_name=llm_model,
                         custom_prompt=custom_prompt
+                    )
+                elif engine == 'google':
+                    translated_texts = translator.translate_batch(
+                        texts, source_lang, target_lang, engine='google'
                     )
                 else:
                     translated_texts = translator.translate_batch(
