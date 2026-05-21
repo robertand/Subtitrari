@@ -272,6 +272,13 @@
                         </label>
                     </div>
 
+                        <div class="setting-group advanced-only" id="refineTranslationGroup" style="display: none;">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="refineTranslation" class="setting-checkbox">
+                                <span>Corecție Traducere (LLM)</span>
+                            </label>
+                        </div>
+
                     <div id="translationSettings" style="display: none;">
                         <div class="setting-group">
                             <label class="setting-label">Limba Țintă</label>
@@ -293,7 +300,8 @@
                         <div class="setting-group advanced-only" id="llmModelGroup" style="display: none;">
                             <label class="setting-label">Model LLM</label>
                             <select id="llmModelSelect" class="setting-select">
-                                <option value="Qwen/Qwen3-235B-A22B-Instruct">Qwen3-235B (Implicit)</option>
+                                <option value="allura-forge/Llama-3.3-8B-Instruct" selected>Llama 3.3 - 8B (Implicit)</option>
+                                <option value="Qwen/Qwen3-235B-A22B-Instruct">Qwen3-235B - Profesional</option>
                                 <option value="google/gemma-3-12b-it">Gemma 3 - 12B</option>
                                 <option value="google/gemma-4-E4B-it">Gemma 4 - E4B</option>
                                 <option value="google/gemma-4-26B-A4B-it">Gemma 4 - 26B-A4B</option>

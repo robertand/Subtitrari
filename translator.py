@@ -246,16 +246,17 @@ class Translator:
         texts: List[str],
         source_lang: str,
         target_lang: str,
-        model_name: str = "Qwen/Qwen3-235B-A22B-Instruct",
-        group_size: int = 10
+        model_name: str = "allura-forge/Llama-3.3-8B-Instruct",
+        group_size: int = 10,
+        is_correction: bool = False
     ) -> List[str]:
-        """Translate using VLLM with context grouping"""
+        """Translate or correct translation using VLLM with context grouping"""
         try:
             from vllm import LLM, SamplingParams
 
             # Load VLLM model
             if model_name not in self.models:
-                # Eliberează memoria GPU înainte de a încărca noul model greu
+                # Eliberează memoria GPU înainte de a încărca noul model
                 if torch.cuda.is_available():
                     logger.info("Cleaning up VRAM before loading VLLM...")
                     gc.collect()
@@ -263,13 +264,24 @@ class Translator:
                     torch.cuda.synchronize()
                     time.sleep(1)
 
-                # Scurtcircuitare pentru calea exactă dacă utilizatorul a descărcat modelul
-                # Căutăm orice director care începe cu numele modelului în Config.MODELS_DIR
                 actual_model_to_load = model_name
                 base_name = model_name.split('/')[-1]
+                local_model_dir = Config.MODELS_DIR / base_name
+
+                # Download model automatically if it's the Llama model and not present
+                if "allura-forge/Llama-3.3-8B-Instruct" in model_name and not local_model_dir.exists():
+                    try:
+                        from huggingface_hub import snapshot_download
+                        logger.info(f"Downloading model {model_name} to {local_model_dir}...")
+                        snapshot_download(
+                            repo_id=model_name,
+                            local_dir=str(local_model_dir),
+                            ignore_patterns=["*.pt", "*.bin"]
+                        )
+                    except Exception as download_err:
+                        logger.error(f"Automatic download failed: {download_err}")
 
                 if Config.MODELS_DIR.exists():
-                    # Căutare inteligentă: verificăm dacă există un folder care conține numele de bază
                     for item in Config.MODELS_DIR.iterdir():
                         if item.is_dir() and base_name in item.name:
                             actual_model_to_load = str(item.absolute())
@@ -277,7 +289,6 @@ class Translator:
                             break
 
                 logger.info(f"Loading VLLM model: {actual_model_to_load}")
-                # We use pipeline-parallelism if multiple GPUs are available, otherwise 1
                 self.models[model_name] = LLM(
                     model=actual_model_to_load,
                     trust_remote_code=True,
@@ -296,16 +307,28 @@ class Translator:
                 stop=["<|endoftext|>", "<|im_end|>"]
             )
 
-            system_prompt = (
-                "Ești un traducător profesionist expert în subtitrări. "
-                f"Tradu textul primit din {source_lang} în {target_lang}. "
-                "Cerințe CRUCIALE:\n"
-                "1. Adaptează limbajul natural: metafore, nume, topică și expresii idiomatice în funcție de contextul conversației.\n"
-                "2. Păstrează tonul și stilul vorbitorului.\n"
-                "3. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri, "
-                "păstrând exact numărul și ordinea segmentelor primite.\n"
-                "Exemplu format răspuns: {\"translations\": [\"text 1\", \"text 2\", ...]}"
-            )
+            if not is_correction:
+                system_prompt = (
+                    "Ești un traducător profesionist expert în subtitrări. "
+                    f"Tradu textul primit din {source_lang} în {target_lang}. "
+                    "Cerințe CRUCIALE:\n"
+                    "1. Adaptează limbajul natural: metafore, nume, topică și expresii idiomatice în funcție de contextul conversației.\n"
+                    "2. Păstrează tonul și stilul vorbitorului.\n"
+                    "3. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri, "
+                    "păstrând exact numărul și ordinea segmentelor primite.\n"
+                    "Exemplu format răspuns: {\"translations\": [\"text 1\", \"text 2\", ...]}"
+                )
+            else:
+                system_prompt = (
+                    "Ești un expert în corectarea și rafinarea traducerilor de subtitrări. "
+                    f"Sarcina ta este să corectezi și să îmbunătățești traducerile din {target_lang} ale segmentelor primite, "
+                    "asigurându-te că sună natural, sunt gramatical corecte și păstrează sensul original. "
+                    "Cerințe CRUCIALE:\n"
+                    "1. Rafinează topică, gramatica și vocabularul.\n"
+                    "2. Păstrează tonul original.\n"
+                    "3. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri corectate.\n"
+                    "Exemplu format răspuns: {\"translations\": [\"text corectat 1\", \"text corectat 2\", ...]}"
+                )
 
             all_translations = ["" for _ in range(len(texts))]
 
@@ -314,7 +337,11 @@ class Translator:
                 batch = texts[i:i + group_size]
 
                 # Prepare prompt for the group
-                user_content = "Vă rog să traduceți următoarele segmente de subtitrare consecutive:\n"
+                if not is_correction:
+                    user_content = "Vă rog să traduceți următoarele segmente de subtitrare consecutive:\n"
+                else:
+                    user_content = "Vă rog să corectați următoarele traduceri consecutive:\n"
+
                 for idx, text in enumerate(batch):
                     user_content += f"{idx + 1}. {text}\n"
 

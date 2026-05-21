@@ -92,11 +92,16 @@ function toggleAdvancedMode() {
 
     advancedElements.forEach(el => {
         // Special cases for engine-dependent visibility
-        if (el.id === 'promptGroup' || el.id === 'llmModelGroup') {
+        if (el.id === 'promptGroup' || el.id === 'llmModelGroup' || el.id === 'refineTranslationGroup') {
             const translationEnabled = document.getElementById('enableTranslation').checked;
             const engine = document.getElementById('translationEngine').value;
             const isLLM = (engine === 'llm' || engine === 'vllm');
-            el.style.display = (isAdvanced && translationEnabled && isLLM) ? 'block' : 'none';
+
+            if (el.id === 'refineTranslationGroup') {
+                el.style.display = (isAdvanced && translationEnabled) ? 'block' : 'none';
+            } else {
+                el.style.display = (isAdvanced && translationEnabled && isLLM) ? 'block' : 'none';
+            }
         } else if (el.id === 'coherePromptGroup') {
             const engine = document.getElementById('engineSelect').value;
             el.style.display = (isAdvanced && engine === 'cohere') ? 'block' : 'none';
@@ -482,6 +487,7 @@ async function startProcessing() {
             options.translation_engine = document.getElementById('translationEngine').value;
             options.llm_model = document.getElementById('llmModelSelect').value;
             options.custom_prompt = document.getElementById('customPrompt').value;
+            options.refine_translation = document.getElementById('refineTranslation').checked;
             
             // Adaugă limbile suplimentare
             const additionalSelects = document.querySelectorAll('.translation-lang-select');

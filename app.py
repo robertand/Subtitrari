@@ -628,6 +628,15 @@ def process_task(task):
                         texts, source_lang, target_lang,
                         model_name=llm_model
                     )
+
+                    # Refinement pass if requested
+                    if task.options.get('refine_translation'):
+                        task.message = f'Refining translation for {Config.SUPPORTED_LANGUAGES.get(target_lang, target_lang)}...'
+                        translated_texts = translator.translate_with_vllm_grouped(
+                            translated_texts, source_lang, target_lang,
+                            model_name=llm_model,
+                            is_correction=True
+                        )
                 elif engine == 'llm':
                     translated_texts = translator.translate_with_llm(
                         texts, source_lang, target_lang,

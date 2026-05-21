@@ -29,8 +29,9 @@ class Config:
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
 
     # LLM Models
-    DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'
+    DEFAULT_LLM_MODEL = 'allura-forge/Llama-3.3-8B-Instruct'
     AVAILABLE_LLM_MODELS = [
+        'allura-forge/Llama-3.3-8B-Instruct',
         'Qwen/Qwen3-235B-A22B-Instruct',
         'google/gemma-3-12b-it',
         'google/gemma-4-E4B-it',
