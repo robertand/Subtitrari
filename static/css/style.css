@@ -175,9 +175,16 @@ body {
 }
 
 /* === Section Titles === */
+.section-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
 .section-title {
     font-size: 1.3rem;
-    margin-bottom: 20px;
+    margin-bottom: 0;
     display: flex;
     align-items: center;
     gap: 8px;

@@ -83,7 +83,28 @@ document.addEventListener('DOMContentLoaded', () => {
     initVideoPlayer();
     checkDevice();
     toggleEngineOptions(); // Initializa engine specific UI
+    toggleAdvancedMode();
 });
+
+function toggleAdvancedMode() {
+    const isAdvanced = document.getElementById('advancedModeToggle').checked;
+    const advancedElements = document.querySelectorAll('.advanced-only');
+
+    advancedElements.forEach(el => {
+        // Special cases for engine-dependent visibility
+        if (el.id === 'promptGroup' || el.id === 'llmModelGroup') {
+            const translationEnabled = document.getElementById('enableTranslation').checked;
+            const engine = document.getElementById('translationEngine').value;
+            const isLLM = (engine === 'llm' || engine === 'vllm');
+            el.style.display = (isAdvanced && translationEnabled && isLLM) ? 'block' : 'none';
+        } else if (el.id === 'coherePromptGroup') {
+            const engine = document.getElementById('engineSelect').value;
+            el.style.display = (isAdvanced && engine === 'cohere') ? 'block' : 'none';
+        } else {
+            el.style.display = isAdvanced ? 'block' : 'none';
+        }
+    });
+}
 
 function initUpload() {
     // Drag & Drop
@@ -411,13 +432,14 @@ function toggleEngineOptions() {
     const engine = document.getElementById('engineSelect').value;
     const whisperGroup = document.getElementById('whisperModelGroup');
     const coherePromptGroup = document.getElementById('coherePromptGroup');
+    const isAdvanced = document.getElementById('advancedModeToggle').checked;
 
     if (engine === 'whisper') {
         whisperGroup.style.display = 'block';
         if (coherePromptGroup) coherePromptGroup.style.display = 'none';
     } else {
         whisperGroup.style.display = 'none';
-        if (coherePromptGroup) coherePromptGroup.style.display = 'block';
+        if (coherePromptGroup) coherePromptGroup.style.display = isAdvanced ? 'block' : 'none';
     }
 }
 
@@ -1039,16 +1061,20 @@ function toggleTranslation() {
     if (enabled) {
         updateModelOptions();
     }
+
+    // Also re-trigger advanced mode logic to show/hide promptGroup
+    toggleAdvancedMode();
 }
 
 function updateModelOptions() {
     const engine = document.getElementById('translationEngine').value;
     const promptGroup = document.getElementById('promptGroup');
     const llmModelGroup = document.getElementById('llmModelGroup');
+    const isAdvanced = document.getElementById('advancedModeToggle').checked;
 
     if (engine === 'llm' || engine === 'vllm') {
-        promptGroup.style.display = 'block';
-        llmModelGroup.style.display = 'block';
+        promptGroup.style.display = isAdvanced ? 'block' : 'none';
+        llmModelGroup.style.display = isAdvanced ? 'block' : 'none';
     } else {
         promptGroup.style.display = 'none';
         llmModelGroup.style.display = 'none';

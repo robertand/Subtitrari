@@ -131,10 +131,18 @@
 
                 <!-- Settings Section -->
                 <div class="glass-container settings-section">
-                    <h2 class="section-title">
-                        <span class="icon">⚙️</span>
-                        Setări Procesare
-                    </h2>
+                    <div class="section-header-row">
+                        <h2 class="section-title">
+                            <span class="icon">⚙️</span>
+                            Setări Procesare
+                        </h2>
+                        <div class="mode-toggle">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="advancedModeToggle" class="setting-checkbox" onchange="toggleAdvancedMode()">
+                                <span>Mod Avansat</span>
+                            </label>
+                        </div>
+                    </div>
 
                     <!-- Engine & Model Selection -->
                     <div class="setting-group">
@@ -160,7 +168,7 @@
                         </div>
                     </div>
 
-                    <div class="setting-group" id="coherePromptGroup" style="display: none;">
+                    <div class="setting-group advanced-only" id="coherePromptGroup" style="display: none;">
                         <label class="checkbox-label">
                             <input type="checkbox" id="useCoherePrompt" class="setting-checkbox">
                             <span>Folosește Prompt Sistem (Cohere)</span>
@@ -179,7 +187,7 @@
                     </div>
 
                     <!-- Segmentation Settings -->
-                    <div class="setting-group">
+                    <div class="setting-group advanced-only" style="display: none;">
                         <label class="setting-label">Segmentare</label>
                         <div class="setting-row">
                             <div class="setting-half">
@@ -215,7 +223,7 @@
                     </div>
 
                     <!-- Processing Options -->
-                    <div class="setting-group">
+                    <div class="setting-group advanced-only" style="display: none;">
                         <div class="setting-row">
                             <div class="setting-half">
                                 <label class="checkbox-label">
@@ -241,7 +249,7 @@
                     </div>
 
                     <!-- Audio Extraction Only -->
-                    <div class="setting-group">
+                    <div class="setting-group advanced-only" style="display: none;">
                         <label class="checkbox-label">
                             <input type="checkbox" id="audioOnly" class="setting-checkbox">
                             <span>Doar extracție audio (fără transcriere)</span>
@@ -272,7 +280,7 @@
                             </select>
                         </div>
 
-                        <div class="setting-group">
+                        <div class="setting-group advanced-only" style="display: none;">
                             <label class="setting-label">Engine Traducere</label>
                             <select id="translationEngine" class="setting-select" onchange="updateModelOptions()">
                                 <option value="vllm" selected>VLLM (Qwen3-235B) - Profesional</option>
@@ -281,7 +289,7 @@
                             </select>
                         </div>
 
-                        <div class="setting-group" id="llmModelGroup" style="display: none;">
+                        <div class="setting-group advanced-only" id="llmModelGroup" style="display: none;">
                             <label class="setting-label">Model LLM</label>
                             <select id="llmModelSelect" class="setting-select">
                                 <option value="Qwen/Qwen3-235B-A22B-Instruct">Qwen3-235B (Implicit)</option>
@@ -291,19 +299,19 @@
                             </select>
                         </div>
 
-                        <div class="setting-group" id="promptGroup" style="display: none;">
+                        <div class="setting-group advanced-only" id="promptGroup" style="display: none;">
                             <label class="setting-label">Prompt Personalizat</label>
                             <textarea id="customPrompt" class="setting-textarea" 
                                       placeholder="Tradu textul din {source} în {target}..."
                                       rows="3"></textarea>
                         </div>
 
-                        <div class="setting-group">
+                        <div class="setting-group advanced-only" style="display: none;">
                             <button class="btn btn-secondary" onclick="addTranslationLanguage()">
                                 ➕ Adaugă altă limbă
                             </button>
                         </div>
-                        <div id="additionalLanguages"></div>
+                        <div class="advanced-only" id="additionalLanguages"></div>
                     </div>
                 </div>
             </div>
