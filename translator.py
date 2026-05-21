@@ -295,7 +295,7 @@ class Translator:
                 stop_tokens = ["<|endoftext|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>"]
 
             sampling_params = SamplingParams(
-                temperature=0.3,
+                temperature=0.1,  # Lower temperature for more deterministic output
                 top_p=0.95,
                 max_tokens=2048,
                 stop=stop_tokens
@@ -307,7 +307,8 @@ class Translator:
                 "Cerințe CRUCIALE:\n"
                 "1. Adaptează limbajul natural: metafore, nume, topică și expresii idiomatice în funcție de contextul conversației.\n"
                 "2. Păstrează tonul și stilul vorbitorului.\n"
-                "3. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri, "
+                "3. NU oferi explicații, note, comentarii sau text adițional în afara obiectului JSON.\n"
+                "4. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'translations', "
                 "păstrând exact numărul și ordinea segmentelor primite.\n"
                 "Exemplu format răspuns: {\"translations\": [\"text 1\", \"text 2\", ...]}"
             )
@@ -351,7 +352,7 @@ class Translator:
 
                         if len(batch_translations) == len(batch):
                             for j, t in enumerate(batch_translations):
-                                all_translations[i + j] = t
+                                all_translations[i + j] = self._clean_llm_segment(t)
                         else:
                             # Fallback if counts mismatch: try splitting by newline or something
                             logger.warning(f"Batch {i//group_size} translation count mismatch. Using heuristic fallback.")
@@ -422,16 +423,15 @@ class Translator:
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=512,
-                    temperature=0.3, # This function is for standard LLM
-                    do_sample=False, # Switch to greedy to avoid probability tensor issues
-                    # top_p=0.95 # Not needed for greedy
+                    temperature=0.1,
+                    do_sample=False,
                 )
                 
-                translation = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                # Decode only new tokens to avoid prompt repetition
+                translation = tokenizer.decode(outputs[0][inputs.input_ids.shape[-1]:], skip_special_tokens=True).strip()
                 
-                # Extract only the translation part
-                if "Translation:" in translation:
-                    translation = translation.split("Translation:")[-1].strip()
+                # Clean and extract only the translation part
+                translation = self._clean_llm_segment(translation)
                 
                 translations.append(translation)
             
@@ -577,7 +577,7 @@ class Translator:
                 stop_tokens = ["<|endoftext|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>"]
 
             sampling_params = SamplingParams(
-                temperature=0.2,
+                temperature=0.1,
                 top_p=0.9,
                 max_tokens=2048,
                 stop=stop_tokens
@@ -591,7 +591,8 @@ class Translator:
                 f"2. Asigură-te că topica frazei sună natural în limba {target_lang}.\n"
                 "3. Păstrează sensul original dar adaptează-l contextului dacă este necesar.\n"
                 "4. Dacă întâlnești secvențe repetitive sau variante multiple ale aceluiași enunț, folosește contextul pentru a decide care este varianta corectă și elimină redundanțele.\n"
-                "5. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'corrections'.\n"
+                "5. NU oferi explicații, note sau comentarii.\n"
+                "6. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'corrections'.\n"
                 "Exemplu format răspuns: {\"corrections\": [\"text corectat 1\", \"text corectat 2\", ...]}"
             )
 
@@ -629,7 +630,7 @@ class Translator:
                         batch_corrections = data.get('corrections', [])
                         if len(batch_corrections) == len(batch):
                             for j, t in enumerate(batch_corrections):
-                                all_corrections[i + j] = t
+                                all_corrections[i + j] = self._clean_llm_segment(t)
                 except Exception as e:
                     logger.error(f"Error parsing VLLM response for batch {i}: {e}")
 
@@ -642,6 +643,28 @@ class Translator:
     def correct_with_romistral(self, texts: List[str], target_lang: str, group_size: int = 10) -> List[str]:
         """Backward compatibility for RoMistral correction"""
         return self.correct_with_vllm(texts, target_lang, Config.ROMISTRAL_MODEL, group_size)
+
+    def _clean_llm_segment(self, text: str) -> str:
+        """Strip common LLM hallucinations and artifacts from a single segment"""
+        if not text:
+            return ""
+
+        # Strip prefixes like "Traducere:", "Nota:", etc.
+        patterns = [
+            r'^(Traducere|Translation|Nota|Note|Rezultat|Result|Corectie|Correction|Explicație|Explanation|Răspuns|Response|Traducerea finală|Final translation):\s*',
+            r'^Segment\s*\d+:\s*',
+        ]
+
+        cleaned = text.strip()
+        for pattern in patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+        # Strip common trailing artifacts
+        # We use re.split and take the first part to handle trailing "Note: ..."
+        # But we only split if it's followed by a colon or newline and seems like an artifact
+        cleaned = re.split(r'\s+(Nota|Note|Explicație|Explanation|Comentariu|Comment):', cleaned, flags=re.IGNORECASE)[0]
+
+        return cleaned.strip()
 
     def unload_models(self):
         """Free memory by unloading models"""
