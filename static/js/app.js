@@ -119,11 +119,13 @@ async function initLanguages() {
         const languages = await response.json();
         
         const languageSelect = document.getElementById('languageSelect');
-        const updateMixedTr = () => {
+        const updateMixedLanguageOptions = () => {
             const mixedTr = document.getElementById('mixedTurkishGroup');
+            const mixedKo = document.getElementById('mixedKoreanGroup');
             if (mixedTr) mixedTr.style.display = languageSelect.value === 'tr' ? 'block' : 'none';
+            if (mixedKo) mixedKo.style.display = languageSelect.value === 'ko' ? 'block' : 'none';
         };
-        languageSelect.addEventListener('change', updateMixedTr);
+        languageSelect.addEventListener('change', updateMixedLanguageOptions);
 
         const targetLanguageSelect = document.getElementById('targetLanguageSelect');
         
@@ -145,7 +147,7 @@ async function initLanguages() {
         const roOption = targetLanguageSelect.querySelector('option[value="ro"]');
         if (roOption) roOption.selected = true;
 
-        updateMixedTr(); // Initial check after populating options
+        updateMixedLanguageOptions(); // Initial check after populating options
         
     } catch (error) {
         console.error('Error loading languages:', error);
@@ -460,6 +462,7 @@ async function startProcessing() {
         model: document.getElementById('modelSelect').value,
         language: document.getElementById('languageSelect').value,
             mixed_turkish: document.getElementById('mixedTurkish').checked,
+            mixed_korean: document.getElementById('mixedKorean').checked,
         min_duration: parseFloat(document.getElementById('minDuration').value),
         max_duration: parseFloat(document.getElementById('maxDuration').value),
         max_chars: parseInt(document.getElementById('maxChars').value),
@@ -859,6 +862,8 @@ function setPresetValues() {
     document.getElementById('multiPass').checked = false;
     const mixedTr = document.getElementById('mixedTurkish');
     if (mixedTr) mixedTr.checked = false;
+    const mixedKo = document.getElementById('mixedKorean');
+    if (mixedKo) mixedKo.checked = false;
     document.getElementById('audioOnly').checked = false;
 
     // Dacă activezi traducerea: default pe Română cu NLLB, corectură LLM off, mărime grup 10

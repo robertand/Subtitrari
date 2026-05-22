@@ -605,6 +605,50 @@ def process_task(task):
                 "language": "tr",
                 "method": "mixed_turkish_double_pass"
             }
+        elif task.options.get('mixed_korean') and language == 'ko':
+            # Mixed Korean Mode (Whisper Large V3 + Turbo KO)
+            all_segments = []
+
+            # Pass 1: OpenAI Whisper Large V3 (60s / 5s)
+            task.message = "Mixed KO Pass 1 (Whisper Large V3, 60s window)..."
+            res1 = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name='large-v3',
+                language='ko',
+                window_size=60,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1 (Large-V3): {m}")
+            )
+            all_segments.extend(res1.get("segments", []))
+
+            if task.cancel_flag.is_set(): return
+
+            # Pass 2: Whisper Turbo Korean (30s / 5s, isolated)
+            task.message = "Mixed KO Pass 2 (Turbo Korean, 30s window, isolated)..."
+            audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+            pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_ko_mixed.wav"
+            import soundfile as sf
+            sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+            res2 = transcriber.transcribe_with_windowing(
+                str(pass2_audio_path),
+                model_name='ghost613/whisper-large-v3-turbo-korean',
+                language='ko',
+                window_size=30,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2 (Turbo-KO): {m}")
+            )
+            all_segments.extend(res2.get("segments", []))
+            Path(pass2_audio_path).unlink(missing_ok=True)
+
+            result = {
+                "segments": all_segments,
+                "text": " ".join([s.get("text", "") for s in all_segments]),
+                "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                "language": "ko",
+                "method": "mixed_korean_double_pass"
+            }
         elif task.options.get('multi_pass'):
             # Multi-Pass Whisper transcription (Legacy/High-Accuracy)
             all_segments = []
@@ -761,8 +805,8 @@ def process_task(task):
                 overlap=segment_overlap
             )
         
-        # If we did triple-pass or mixed-Turkish Whisper, use LLM to resolve overlaps and select best versions
-        if engine != "cohere" and (task.options.get('multi_pass') or task.options.get('mixed_turkish')):
+        # If we did triple-pass or mixed-language Whisper, use LLM to resolve overlaps and select best versions
+        if engine != "cohere" and (task.options.get('multi_pass') or task.options.get('mixed_turkish') or task.options.get('mixed_korean')):
             task.message = "Refining multi-pass segments with LLM..."
             # For multi-pass, we also need to clear VRAM before LLM refinement if it's heavy
             transcriber.unload_model()
