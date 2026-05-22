@@ -379,11 +379,21 @@
                                 </div>
                                 <div class="setting-half">
                                     <label class="checkbox-label">
-                                        <input type="checkbox" id="useRomistral" class="setting-checkbox">
-                                        <span>Corectură LLM (RoMistral)</span>
+                                        <input type="checkbox" id="useRomistral" class="setting-checkbox" onchange="toggleRefinerOptions()">
+                                        <span>Corectură Traducere (LLM)</span>
                                     </label>
                                 </div>
                             </div>
+                        </div>
+
+                        <div class="setting-group" id="refinerModelGroup" style="display: none; margin-top: 8px;">
+                            <label class="setting-label">Model Corectură</label>
+                            <select id="refinerModelSelect" class="setting-select">
+                                <option value="allura-forge/Llama-3.3-8B-Instruct" selected>Llama 3.3 - 8B (Instruct)</option>
+                                <option value="OpenLLM-Ro/RoMistral-7b-Instruct">RoMistral-7b (Română)</option>
+                                <option value="Qwen/Qwen3-235B-A22B-Instruct">Qwen3-235B</option>
+                                <option value="nvidia/Llama-3.3-70B-Instruct-NVFP4">Llama 3.3 - 70B (NVFP4)</option>
+                            </select>
                         </div>
 
                             <div class="setting-group">

@@ -480,6 +480,7 @@ async function startProcessing() {
             options.llm_model = document.getElementById('llmModelSelect').value;
             options.translate_group = parseInt(document.getElementById('translateGroup').value);
             options.use_romistral = document.getElementById('useRomistral').checked;
+            options.refiner_model = document.getElementById('refinerModelSelect').value;
             
             // Adaugă limbile suplimentare
             const additionalSelects = document.querySelectorAll('.translation-lang-select');
@@ -806,6 +807,12 @@ function updateTranslationSegment(lang, index, text) {
     }
 }
 
+function toggleRefinerOptions() {
+    const enabled = document.getElementById('useRomistral').checked;
+    const group = document.getElementById('refinerModelGroup');
+    if (group) group.style.display = enabled ? 'block' : 'none';
+}
+
 function toggleAdvancedMode() {
     const isAdvanced = document.getElementById('advancedModeToggle').checked;
     const advancedContainer = document.getElementById('advancedSettingsContainer');
@@ -858,12 +865,14 @@ function setPresetValues() {
 
     document.getElementById('translationEngine').value = 'nllb';
     document.getElementById('useRomistral').checked = false;
+    document.getElementById('refinerModelSelect').value = 'allura-forge/Llama-3.3-8B-Instruct';
     document.getElementById('translateGroup').value = 10;
 
     // Refresh engine-specific views
     toggleEngineOptions();
     updateModelOptions();
     toggleTranslation();
+    toggleRefinerOptions();
 }
 
 // === Video Player Controls ===

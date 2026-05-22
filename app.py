@@ -827,10 +827,9 @@ def process_task(task):
                 
                 # Apply LLM correction if requested
                 if task.options.get('use_romistral'):
-                    # Use model name from task options or default
-                    refiner_model = task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
+                    # Use explicit refiner model if provided, else fallback to llm_model or default
+                    refiner_model = task.options.get('refiner_model') or task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
                     task.message = f'Refining translation with {refiner_model}...'
-                    # Use the same model selected for translation for correction as well
                     translated_texts = translator.correct_with_vllm(
                         translated_texts,
                         target_lang,
