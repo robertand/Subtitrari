@@ -770,6 +770,12 @@ body {
     font-family: monospace;
 }
 
+.segment-speaker {
+    color: var(--accent);
+    font-weight: 600;
+    margin-left: 8px;
+}
+
 .segment-actions {
     display: flex;
     gap: 4px;

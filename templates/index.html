@@ -185,6 +185,15 @@
                                   rows="2" style="margin-top: 8px;"></textarea>
                     </div>
 
+                    <div class="setting-group">
+                        <label class="setting-label">Hugging Face Token</label>
+                        <input type="password" id="hfToken" class="setting-input"
+                               placeholder="hf_..." autocomplete="off">
+                        <p class="setting-info" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+                            Necesar pentru modele gated (ex: pyannote) și diarizare.
+                        </p>
+                    </div>
+
                     <!-- Language Selection -->
                     <div class="setting-group">
                         <label class="setting-label">Limba Sursă</label>
@@ -265,6 +274,12 @@
                                 <label class="checkbox-label">
                                     <input type="checkbox" id="preventOverlap" class="setting-checkbox">
                                     <span>Segmente secvențiale</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="useDiarization" class="setting-checkbox">
+                                    <span>Diarizare (Speakeri)</span>
                                 </label>
                             </div>
                         </div>

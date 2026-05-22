@@ -455,6 +455,8 @@ async function startProcessing() {
     const options = {
         process_start: parseFloat(document.getElementById('processStart').value) || 0,
         process_end: parseFloat(document.getElementById('processEnd').value) || 0,
+        hf_token: document.getElementById('hfToken').value,
+        use_diarization: document.getElementById('useDiarization').checked,
         model: document.getElementById('modelSelect').value,
         language: document.getElementById('languageSelect').value,
             mixed_turkish: document.getElementById('mixedTurkish').checked,
@@ -664,6 +666,8 @@ function renderSegments() {
             div.classList.add('selected');
         }
 
+        const speakerHtml = segment.speaker ? `<span class="segment-speaker"> [${segment.speaker}]</span>` : '';
+
         div.innerHTML = `
             <div class="segment-number">${index + 1}</div>
             <div class="segment-content">
@@ -672,7 +676,7 @@ function renderSegments() {
                     ${escapeHtml(displayText || '')}
                 </div>
                 <div class="segment-time">
-                    ${formatTimestamp(segment.start)} → ${formatTimestamp(segment.end)}
+                    ${formatTimestamp(segment.start)} → ${formatTimestamp(segment.end)}${speakerHtml}
                 </div>
             </div>
             <div class="segment-actions">
@@ -849,6 +853,7 @@ function setPresetValues() {
     document.getElementById('isolateVoice').checked = false;
     document.getElementById('deduplicate').checked = true;
     document.getElementById('preventOverlap').checked = true;
+    document.getElementById('useDiarization').checked = false;
 
     // Multipass off, TR Transcriere Turcă off, Doar extracție audio off
     document.getElementById('multiPass').checked = false;

@@ -717,6 +717,8 @@ def process_task(task):
                     model_name=model_name,
                     language=language,
                     batch_size=16,
+                    use_diarization=task.options.get('use_diarization'),
+                    hf_token=task.options.get('hf_token'),
                     progress_callback=lambda p, m: update_task_progress(task, p, m)
                 )
 

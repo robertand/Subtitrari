@@ -89,7 +89,7 @@ class WhisperTranscriber:
         logger.info("No GPU detected, using CPU")
         return "cpu"
     
-    def ensure_model_downloaded(self, model_id: str, cache_dir: str = "data/models") -> str:
+    def ensure_model_downloaded(self, model_id: str, cache_dir: str = "data/models", hf_token: Optional[str] = None) -> str:
         """Explicitly ensure a Hugging Face model is downloaded"""
         try:
             from huggingface_hub import snapshot_download
@@ -97,14 +97,15 @@ class WhisperTranscriber:
             # snapshot_download is smart enough to skip if already present
             path = snapshot_download(
                 repo_id=model_id,
-                cache_dir=cache_dir
+                cache_dir=cache_dir,
+                token=hf_token
             )
             return path
         except Exception as e:
             logger.error(f"Error downloading {model_id}: {e}")
             return model_id # Fallback to original ID
 
-    def load_model(self, model_name: str = 'small') -> Dict[str, Any]:
+    def load_model(self, model_name: str = 'small', hf_token: Optional[str] = None) -> Dict[str, Any]:
         """Load Whisper model with lazy loading, supporting both OpenAI names and HF IDs"""
         try:
             if model_name in self.models:
@@ -125,7 +126,7 @@ class WhisperTranscriber:
                     return {"status": "loaded", "model": model_name, "device": self.device}
 
                 # Ensure downloaded
-                model_path = self.ensure_model_downloaded(model_name)
+                model_path = self.ensure_model_downloaded(model_name, hf_token=hf_token)
 
                 # Load model
                 model = AutoModelForSpeechSeq2Seq.from_pretrained(
@@ -206,11 +207,12 @@ class WhisperTranscriber:
         model_name: str = 'small',
         language: Optional[str] = None,
         task_id: str = None,
+        hf_token: Optional[str] = None,
         progress_callback = None
     ) -> Dict[str, Any]:
         """Transcribe audio file with progress tracking"""
         try:
-            model_info = self.load_model(model_name)
+            model_info = self.load_model(model_name, hf_token=hf_token)
             
             if progress_callback:
                 progress_callback(10, "Loading audio...")
@@ -492,6 +494,8 @@ class WhisperTranscriber:
         model_name: str = 'large-v3',
         language: Optional[str] = None,
         batch_size: int = 16,
+        use_diarization: bool = False,
+        hf_token: Optional[str] = None,
         progress_callback = None
     ) -> Dict[str, Any]:
         """Transcribe audio using WhisperX for state-of-the-art alignment and accuracy"""
@@ -556,6 +560,24 @@ class WhisperTranscriber:
                     return_char_alignments=False
                 )
 
+                # 4. Diarize
+                if use_diarization:
+                    try:
+                        if progress_callback:
+                            progress_callback(80, "Performing speaker diarization...")
+
+                        logger.info("Loading Diarization Pipeline...")
+                        diarize_model = whisperx.DiarizationPipeline(use_auth_token=hf_token, device=device)
+
+                        logger.info("Running diarization...")
+                        diarize_segments = diarize_model(audio)
+
+                        logger.info("Assigning speakers to segments...")
+                        result = whisperx.assign_word_speakers(diarize_segments, result)
+                    except Exception as diarize_e:
+                        logger.error(f"Diarization failed: {diarize_e}")
+                        # Continue without diarization
+
                 if progress_callback:
                     progress_callback(100, "WhisperX transcription and alignment complete!")
 
@@ -583,7 +605,13 @@ class WhisperTranscriber:
             logger.info("Falling back to Transcribe-then-Align (Vanilla Whisper + WhisperX Align)...")
 
             # 1. Transcribe with Vanilla Whisper (handles more model formats)
-            whisper_result = self.transcribe_audio(audio_path, model_name, language, progress_callback=progress_callback)
+            whisper_result = self.transcribe_audio(
+                audio_path,
+                model_name,
+                language,
+                hf_token=hf_token,
+                progress_callback=progress_callback
+            )
             raw_text = whisper_result.get("text", "")
 
             try:
