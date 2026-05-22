@@ -67,7 +67,8 @@ class Translator:
             # Load tokenizer with explicit NllbTokenizer
             self.tokenizers[model_name] = AutoTokenizer.from_pretrained(
                 model_name,
-                src_lang=self.lang_map.get(source_lang, 'eng_Latn')
+                src_lang=self.lang_map.get(source_lang, 'eng_Latn'),
+                clean_up_tokenization_spaces=False
             )
             
             # Load model
@@ -295,7 +296,7 @@ class Translator:
                 stop_tokens = ["<|endoftext|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>"]
 
             sampling_params = SamplingParams(
-                temperature=0.1,  # Lower temperature for more deterministic output
+                temperature=0.01,  # Extremely low for max precision
                 top_p=0.95,
                 max_tokens=2048,
                 stop=stop_tokens
@@ -307,10 +308,10 @@ class Translator:
                 "Cerințe CRUCIALE:\n"
                 "1. Adaptează limbajul natural: metafore, nume, topică și expresii idiomatice în funcție de contextul conversației.\n"
                 "2. Păstrează tonul și stilul vorbitorului.\n"
-                "3. NU oferi explicații, note, comentarii sau text adițional în afara obiectului JSON.\n"
-                "4. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'translations', "
-                "păstrând exact numărul și ordinea segmentelor primite.\n"
-                "Exemplu format răspuns: {\"translations\": [\"text 1\", \"text 2\", ...]}"
+                "3. NU oferi explicații, note, comentarii, observații, paranteze sau text adițional. DOAR traducerea pură.\n"
+                "4. Returnează rezultatul EXCLUSIV ca un obiect JSON valid sub cheia 'translations'.\n"
+                "5. Păstrează exact numărul și ordinea segmentelor.\n"
+                "Exemplu format răspuns: {\"translations\": [\"Traducere 1\", \"Traducere 2\"]}"
             )
 
             all_translations = ["" for _ in range(len(texts))]
@@ -395,7 +396,10 @@ class Translator:
             if model_name not in self.models:
                 logger.info(f"Loading LLM: {model_name}")
                 
-                self.tokenizers[model_name] = AutoTokenizer.from_pretrained(model_name)
+                self.tokenizers[model_name] = AutoTokenizer.from_pretrained(
+                    model_name,
+                    clean_up_tokenization_spaces=False
+                )
                 self.models[model_name] = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
@@ -423,8 +427,9 @@ class Translator:
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=512,
-                    temperature=0.1,
-                    do_sample=False,
+                    max_length=None,  # Explicitly remove max_length to avoid conflict warning
+                    temperature=0.01,
+                    do_sample=True, # Use sampling with low temp to avoid 'temperature flags' warning with greedy
                 )
                 
                 # Decode only new tokens to avoid prompt repetition
@@ -577,7 +582,7 @@ class Translator:
                 stop_tokens = ["<|endoftext|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>"]
 
             sampling_params = SamplingParams(
-                temperature=0.1,
+                temperature=0.01,
                 top_p=0.9,
                 max_tokens=2048,
                 stop=stop_tokens
@@ -591,9 +596,9 @@ class Translator:
                 f"2. Asigură-te că topica frazei sună natural în limba {target_lang}.\n"
                 "3. Păstrează sensul original dar adaptează-l contextului dacă este necesar.\n"
                 "4. Dacă întâlnești secvențe repetitive sau variante multiple ale aceluiași enunț, folosește contextul pentru a decide care este varianta corectă și elimină redundanțele.\n"
-                "5. NU oferi explicații, note sau comentarii.\n"
-                "6. Returnează rezultatul EXCLUSIV ca un obiect JSON conținând o listă de string-uri sub cheia 'corrections'.\n"
-                "Exemplu format răspuns: {\"corrections\": [\"text corectat 1\", \"text corectat 2\", ...]}"
+                "5. NU oferi explicații, note, comentarii sau paranteze. DOAR textul corectat.\n"
+                "6. Returnează rezultatul EXCLUSIV ca un obiect JSON valid sub cheia 'corrections'.\n"
+                "Exemplu format răspuns: {\"corrections\": [\"Corecție 1\", \"Corecție 2\"]}"
             )
 
             all_corrections = [t for t in texts]
@@ -651,7 +656,7 @@ class Translator:
 
         # Strip prefixes like "Traducere:", "Nota:", etc.
         patterns = [
-            r'^(Traducere|Translation|Nota|Note|Rezultat|Result|Corectie|Correction|Explicație|Explanation|Răspuns|Response|Traducerea finală|Final translation):\s*',
+            r'^(Traducere|Translation|Nota|Note|Rezultat|Result|Corectie|Correction|Explicație|Explanation|Răspuns|Response|Traducerea finală|Final translation|Observații|Observație):\s*',
             r'^Segment\s*\d+:\s*',
         ]
 
@@ -660,9 +665,16 @@ class Translator:
             cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
 
         # Strip common trailing artifacts
-        # We use re.split and take the first part to handle trailing "Note: ..."
-        # But we only split if it's followed by a colon or newline and seems like an artifact
-        cleaned = re.split(r'\s+(Nota|Note|Explicație|Explanation|Comentariu|Comment):', cleaned, flags=re.IGNORECASE)[0]
+        # Improved splitting to handle multi-line explanations and repetitive filler
+        cleaned = re.split(r'\n+(Nota|Note|Explicație|Explanation|Comentariu|Comment|Observații|Observație):', cleaned, flags=re.IGNORECASE)[0]
+        cleaned = re.split(r'\s+(Nota|Note|Explicație|Explanation|Comentariu|Comment|Observații|Observație):', cleaned, flags=re.IGNORECASE)[0]
+
+        # If the model starts repeating "Dacă aveți nevoie de alte traduceri..."
+        cleaned = re.split(r'Dacă aveți nevoie de alte', cleaned, flags=re.IGNORECASE)[0]
+
+        # Remove bullet points if the model starts explaining words
+        if "\n-" in cleaned or "\n*" in cleaned:
+             cleaned = cleaned.split("\n-")[0].split("\n*")[0]
 
         return cleaned.strip()
 

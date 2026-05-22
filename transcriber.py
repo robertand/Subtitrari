@@ -138,14 +138,14 @@ class WhisperTranscriber:
 
                 # Load processor (with fallback to base turbo)
                 try:
-                    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+                    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True, clean_up_tokenization_spaces=False)
                 except Exception as e:
                     logger.warning(f"AutoProcessor failed for {model_name}, trying local path: {e}")
                     try:
-                        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+                        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True, clean_up_tokenization_spaces=False)
                     except Exception:
                         logger.warning("Local AutoProcessor failed, falling back to base turbo processor")
-                        processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
+                        processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo", clean_up_tokenization_spaces=False)
 
                 # Create pipeline using explicitly loaded model and processor
                 # We don't pass torch_dtype here as the model is already loaded with the correct dtype
@@ -464,13 +464,22 @@ class WhisperTranscriber:
         
         return result
     
-    def extract_audio_from_video(self, video_path: str, output_path: str) -> str:
-        """Extract audio from video using ffmpeg"""
+    def extract_audio_from_video(self, video_path: str, output_path: str, start_time: float = 0, duration: Optional[float] = None) -> str:
+        """Extract audio from video using ffmpeg, with optional region support"""
         import ffmpeg
         
         try:
-            stream = ffmpeg.input(video_path)
-            stream = ffmpeg.output(stream, output_path, acodec='pcm_s16le', ac=1, ar='16k')
+            input_args = {}
+            if start_time > 0:
+                input_args['ss'] = start_time
+
+            stream = ffmpeg.input(video_path, **input_args)
+
+            output_args = {'acodec': 'pcm_s16le', 'ac': 1, 'ar': '16k'}
+            if duration is not None:
+                output_args['t'] = duration
+
+            stream = ffmpeg.output(stream, output_path, **output_args)
             ffmpeg.run(stream, overwrite_output=True, quiet=True)
             return output_path
         except ffmpeg.Error as e:

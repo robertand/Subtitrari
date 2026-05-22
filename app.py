@@ -487,6 +487,9 @@ def process_task(task):
         file_path = Path(task.file_path)
         audio_path = task.file_path
         
+        process_start = task.options.get('process_start', 0)
+        process_end = task.options.get('process_end', 0)
+
         if file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}:
             task.progress = 5
             task.message = 'Extracting audio...'
@@ -497,7 +500,19 @@ def process_task(task):
             if task.cancel_flag.is_set():
                 return
             
-            transcriber.extract_audio_from_video(str(task.file_path), str(audio_path))
+            # Use region extraction if requested
+            if process_start > 0 or process_end > 0:
+                task.message = f'Extracting audio region ({process_start}s - {process_end or "end"}s)...'
+                duration = None
+                if process_end > process_start:
+                    duration = process_end - process_start
+                transcriber.extract_audio_from_video(
+                    str(task.file_path), str(audio_path),
+                    start_time=process_start,
+                    duration=duration
+                )
+            else:
+                transcriber.extract_audio_from_video(str(task.file_path), str(audio_path))
 
         # Voice isolation
         if task.options.get('isolate_voice'):
@@ -533,6 +548,17 @@ def process_task(task):
                 str(audio_path),
                 language=language or 'en',
                 use_forced_alignment=True,
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
+        elif (task.options.get('transcribe_window') == 50 and task.options.get('transcribe_overlap') == 25) and not task.options.get('multi_pass'):
+            # "Simple Mode" Preset Path: force windowing for the requested 50s/25s behavior
+            task.message = f"Starting Standard Transcription ({model_name}, 50s window)..."
+            result = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                window_size=50,
+                overlap=25,
                 progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
         elif task.options.get('mixed_turkish') and language == 'tr':
@@ -733,8 +759,8 @@ def process_task(task):
                 overlap=segment_overlap
             )
         
-        # If we did triple-pass Whisper, use LLM to resolve overlaps and select best versions
-        if engine != "cohere" and task.options.get('multi_pass'):
+        # If we did triple-pass or mixed-Turkish Whisper, use LLM to resolve overlaps and select best versions
+        if engine != "cohere" and (task.options.get('multi_pass') or task.options.get('mixed_turkish')):
             task.message = "Refining multi-pass segments with LLM..."
             # For multi-pass, we also need to clear VRAM before LLM refinement if it's heavy
             transcriber.unload_model()
@@ -801,12 +827,14 @@ def process_task(task):
                 
                 # Apply LLM correction if requested
                 if task.options.get('use_romistral'):
-                    task.message = f'Refining translation with {llm_model}...'
+                    # Use model name from task options or default
+                    refiner_model = task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
+                    task.message = f'Refining translation with {refiner_model}...'
                     # Use the same model selected for translation for correction as well
                     translated_texts = translator.correct_with_vllm(
                         translated_texts,
                         target_lang,
-                        model_name=llm_model,
+                        model_name=refiner_model,
                         group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
                     )
 
@@ -814,6 +842,13 @@ def process_task(task):
             
             task.progress = 95
         
+        # Apply timestamp offset if we processed a region
+        if process_start > 0:
+            task.message = f'Offsetting timestamps by {process_start}s...'
+            for seg in segments:
+                seg['start'] += process_start
+                seg['end'] += process_start
+
         # Prepare result
         task.result = {
             'full_text': result.get('text', ''),

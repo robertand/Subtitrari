@@ -453,6 +453,8 @@ async function startProcessing() {
     
     // Collect options
     const options = {
+        process_start: parseFloat(document.getElementById('processStart').value) || 0,
+        process_end: parseFloat(document.getElementById('processEnd').value) || 0,
         model: document.getElementById('modelSelect').value,
         language: document.getElementById('languageSelect').value,
             mixed_turkish: document.getElementById('mixedTurkish').checked,
