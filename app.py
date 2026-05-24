@@ -635,7 +635,7 @@ def process_task(task):
 
             res2 = transcriber.transcribe_with_windowing(
                 str(pass2_audio_path),
-                model_name='ghost613/whisper-large-v3-turbo-korean',
+                model_name='Farazzzzzzz/whisper-tiny_to_korean_accent2',
                 language='ko',
                 window_size=25,
                 overlap=5,
