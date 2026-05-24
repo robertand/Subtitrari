@@ -70,6 +70,49 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+class GenderDetector:
+    def __init__(self, device: str = "cpu"):
+        self.device = device
+        self.model = None
+        self.processor = None
+        self.model_id = "alefiury/wavlm-base-plus-gender-classifier"
+
+    def load_model(self):
+        if self.model is None:
+            from transformers import WavLMForSequenceClassification, AutoFeatureExtractor
+            logger.info(f"Loading gender detection model: {self.model_id}")
+            self.processor = AutoFeatureExtractor.from_pretrained(self.model_id)
+            self.model = WavLMForSequenceClassification.from_pretrained(self.model_id).to(self.device)
+            self.model.eval()
+
+    def detect_gender(self, audio: np.ndarray, sr: int = 16000) -> str:
+        """Detect gender from audio segment (returns 'male' or 'female')"""
+        try:
+            self.load_model()
+
+            # WavLM expects 16kHz
+            if sr != 16000:
+                audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+
+            inputs = self.processor(audio, sampling_rate=16000, return_tensors="pt", padding=True).to(self.device)
+
+            with torch.no_grad():
+                logits = self.model(**inputs).logits
+
+            prediction = torch.argmax(logits, dim=-1).item()
+            # 0: female, 1: male based on alefiury/wavlm-base-plus-gender-classifier
+            return "female" if prediction == 0 else "male"
+        except Exception as e:
+            logger.error(f"Gender detection error: {e}")
+            return "unknown"
+
+    def unload(self):
+        self.model = None
+        self.processor = None
+        gc.collect()
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+
 class WhisperTranscriber:
     def __init__(self):
         self.models = {}  # Vanilla Whisper models or Transformers Pipelines

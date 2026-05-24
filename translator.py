@@ -256,7 +256,8 @@ class Translator:
         source_lang: str,
         target_lang: str,
         model_name: str = "Qwen/Qwen3-235B-A22B-Instruct",
-        group_size: int = 10
+        group_size: int = 10,
+        metadata: List[Dict[str, Any]] = None
     ) -> List[str]:
         """Translate using VLLM with context grouping"""
         try:
@@ -308,9 +309,10 @@ class Translator:
                 "Cerințe CRUCIALE:\n"
                 "1. Adaptează limbajul natural: metafore, nume, topică și expresii idiomatice în funcție de contextul conversației.\n"
                 "2. Păstrează tonul și stilul vorbitorului.\n"
-                "3. NU oferi explicații, note, comentarii, observații, paranteze sau text adițional. DOAR traducerea pură.\n"
-                "4. Returnează rezultatul EXCLUSIV ca un obiect JSON valid sub cheia 'translations'.\n"
-                "5. Păstrează exact numărul și ordinea segmentelor.\n"
+                "3. ACORD GRAMATICAL: Folosește metadatele de gen furnizate (male/female) pentru a face acordul corect al adjectivelor și verbelor în limba țintă (ex: în Română, 'obosit' vs 'obosită').\n"
+                "4. NU oferi explicații, note, comentarii, observații, paranteze sau text adițional. DOAR traducerea pură.\n"
+                "5. Returnează rezultatul EXCLUSIV ca un obiect JSON valid sub cheia 'translations'.\n"
+                "6. Păstrează exact numărul și ordinea segmentelor.\n"
                 "Exemplu format răspuns: {\"translations\": [\"Traducere 1\", \"Traducere 2\"]}"
             )
 
@@ -319,11 +321,19 @@ class Translator:
             # Group segments for context
             for i in range(0, len(texts), group_size):
                 batch = texts[i:i + group_size]
+                batch_meta = metadata[i:i + group_size] if metadata else None
 
                 # Prepare prompt for the group
                 user_content = "Vă rog să traduceți următoarele segmente de subtitrare consecutive:\n"
                 for idx, text in enumerate(batch):
-                    user_content += f"{idx + 1}. {text}\n"
+                    meta_str = ""
+                    if batch_meta and batch_meta[idx]:
+                        m = batch_meta[idx]
+                        meta_str = f" [Vorbește un personaj: {m.get('gender', 'unknown')}"
+                        if m.get('speaker'): meta_str += f", ID: {m.get('speaker')}"
+                        meta_str += "]"
+
+                    user_content += f"{idx + 1}.{meta_str} {text}\n"
 
                 if "Llama-3" in model_name:
                     # Llama 3 Prompt Template
@@ -536,7 +546,8 @@ class Translator:
         texts: List[str],
         target_lang: str,
         model_name: str = "OpenLLM-Ro/RoMistral-7b-Instruct",
-        group_size: int = 10
+        group_size: int = 10,
+        metadata: List[Dict[str, Any]] = None
     ) -> List[str]:
         """Refine and correct translation using a VLLM model (RoMistral or Llama)"""
         try:
@@ -594,10 +605,11 @@ class Translator:
                 "Cerințe:\n"
                 f"1. Corectează greșelile gramaticale și de punctuație în limba {target_lang}.\n"
                 f"2. Asigură-te că topica frazei sună natural în limba {target_lang}.\n"
-                "3. Păstrează sensul original dar adaptează-l contextului dacă este necesar.\n"
-                "4. Dacă întâlnești secvențe repetitive sau variante multiple ale aceluiași enunț, folosește contextul pentru a decide care este varianta corectă și elimină redundanțele.\n"
-                "5. NU oferi explicații, note, comentarii sau paranteze. DOAR textul corectat.\n"
-                "6. Returnează rezultatul EXCLUSIV ca un obiect JSON valid sub cheia 'corrections'.\n"
+                "3. ACORD GRAMATICAL: Folosește metadatele de gen furnizate pentru a face acordul corect în limba română (ex: 'obosit' pentru male, 'obosita' pentru female).\n"
+                "4. Păstrează sensul original dar adaptează-l contextului dacă este necesar.\n"
+                "5. Dacă întâlnești secvențe repetitive sau variante multiple ale aceluiași enunț, folosește contextul pentru a decide care este varianta corectă și elimină redundanțele.\n"
+                "6. NU oferi explicații, note, comentarii sau paranteze. DOAR textul corectat.\n"
+                "7. Returnează rezultatul EXCLUSIV ca un obiect JSON valid sub cheia 'corrections'.\n"
                 "Exemplu format răspuns: {\"corrections\": [\"Corecție 1\", \"Corecție 2\"]}"
             )
 
@@ -605,9 +617,16 @@ class Translator:
 
             for i in range(0, len(texts), group_size):
                 batch = texts[i:i + group_size]
+                batch_meta = metadata[i:i + group_size] if metadata else None
+
                 user_content = "Corectează următoarele segmente de subtitrare:\n"
                 for idx, text in enumerate(batch):
-                    user_content += f"{idx + 1}. {text}\n"
+                    meta_str = ""
+                    if batch_meta and batch_meta[idx]:
+                        m = batch_meta[idx]
+                        meta_str = f" [Vorbește un personaj: {m.get('gender', 'unknown')}]"
+
+                    user_content += f"{idx + 1}.{meta_str} {text}\n"
 
                 # Prompt Template Selection
                 if "Llama-3" in model_name:

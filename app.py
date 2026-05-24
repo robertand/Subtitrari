@@ -18,7 +18,7 @@ import shutil
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
-from transcriber import WhisperTranscriber
+from transcriber import WhisperTranscriber, GenderDetector
 from translator import Translator
 from segmenter import SubtitleSegmenter
 from file_handler import FileHandler
@@ -43,6 +43,7 @@ CORS(app)
 # Initialize components
 Config.init_directories()
 transcriber = WhisperTranscriber()
+gender_detector = GenderDetector(device=transcriber.device)
 translator = Translator()
 segmenter = SubtitleSegmenter()
 file_handler = FileHandler(Config)
@@ -774,6 +775,43 @@ def process_task(task):
                 logger.info("Transcription step finished, unloading models...")
                 transcriber.unload_model()
         
+        # Diarization & Gender Detection
+        speaker_genders = {}
+        if task.options.get('use_diarization') and result.get('segments'):
+            task.message = 'Detecting speaker genders...'
+            audio_full, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+
+            # Group segment audio by speaker
+            speaker_audio = {}
+            for seg in result['segments']:
+                speaker = seg.get('speaker')
+                if not speaker: continue
+
+                start_sample = int(seg['start'] * sr)
+                end_sample = int(seg['end'] * sr)
+                chunk = audio_full[start_sample:end_sample]
+
+                if speaker not in speaker_audio:
+                    speaker_audio[speaker] = []
+                speaker_audio[speaker].append(chunk)
+
+            # Classify each speaker
+            for speaker, chunks in speaker_audio.items():
+                if task.cancel_flag.is_set(): return
+
+                # Combine a few chunks for better accuracy (up to 10s)
+                combined = np.concatenate(chunks[:5]) if chunks else np.array([])
+                if len(combined) > 0:
+                    gender = gender_detector.detect_gender(combined, sr)
+                    speaker_genders[speaker] = gender
+                    logger.info(f"Speaker {speaker} detected as {gender}")
+
+            gender_detector.unload()
+
+            # Apply gender to segments
+            for seg in result['segments']:
+                seg['speaker_gender'] = speaker_genders.get(seg.get('speaker'), 'unknown')
+
         # Segment
         task.progress = 60
         task.message = 'Segmenting subtitles...'
@@ -844,6 +882,7 @@ def process_task(task):
             engine = task.options.get('translation_engine', 'vllm')
             
             texts = [seg.get('text', '') for seg in segments]
+            metadata = [{'gender': seg.get('speaker_gender'), 'speaker': seg.get('speaker')} for seg in segments]
             
             llm_model = task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
             custom_prompt = task.options.get('custom_prompt')
@@ -858,7 +897,8 @@ def process_task(task):
                     translated_texts = translator.translate_with_vllm_grouped(
                         texts, source_lang, target_lang,
                         model_name=llm_model,
-                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
+                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP),
+                        metadata=metadata
                     )
                 elif engine == 'llm':
                     translated_texts = translator.translate_with_llm(
@@ -880,7 +920,8 @@ def process_task(task):
                         translated_texts,
                         target_lang,
                         model_name=refiner_model,
-                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
+                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP),
+                        metadata=metadata
                     )
 
                 translations[target_lang] = translated_texts

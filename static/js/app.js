@@ -669,7 +669,8 @@ function renderSegments() {
             div.classList.add('selected');
         }
 
-        const speakerHtml = segment.speaker ? `<span class="segment-speaker"> [${segment.speaker}]</span>` : '';
+        const genderIcon = segment.speaker_gender === 'female' ? '👩' : (segment.speaker_gender === 'male' ? '👨' : '');
+        const speakerHtml = segment.speaker ? `<span class="segment-speaker" title="${segment.speaker_gender || 'unknown'}"> [${genderIcon}${segment.speaker}]</span>` : '';
 
         div.innerHTML = `
             <div class="segment-number">${index + 1}</div>
