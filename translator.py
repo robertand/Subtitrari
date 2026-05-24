@@ -329,9 +329,10 @@ class Translator:
                     meta_str = ""
                     if batch_meta and batch_meta[idx]:
                         m = batch_meta[idx]
-                        meta_str = f" [Vorbește un personaj: {m.get('gender', 'unknown')}"
-                        if m.get('speaker'): meta_str += f", ID: {m.get('speaker')}"
-                        meta_str += "]"
+                        # Put meta as a separate label to avoid inclusion in text
+                        gender = m.get('gender', 'unknown')
+                        speaker = m.get('speaker', 'unknown')
+                        meta_str = f" [Gen: {gender}, Speaker: {speaker}]"
 
                     user_content += f"{idx + 1}.{meta_str} {text}\n"
 
@@ -624,7 +625,7 @@ class Translator:
                     meta_str = ""
                     if batch_meta and batch_meta[idx]:
                         m = batch_meta[idx]
-                        meta_str = f" [Vorbește un personaj: {m.get('gender', 'unknown')}]"
+                        meta_str = f" [Gen: {m.get('gender', 'unknown')}]"
 
                     user_content += f"{idx + 1}.{meta_str} {text}\n"
 
@@ -677,11 +678,28 @@ class Translator:
         patterns = [
             r'^(Traducere|Translation|Nota|Note|Rezultat|Result|Corectie|Correction|Explicație|Explanation|Răspuns|Response|Traducerea finală|Final translation|Observații|Observație):\s*',
             r'^Segment\s*\d+:\s*',
+            r'^Vorbește un personaj:\s*',
+            r'^\[Gen:.*?, Speaker:.*\]\s*',
+            r'^\[Gen:.*?\]\s*',
+            r'^\[Vorbește un personaj:.*?\]\s*',
+        ]
+
+        # Also handle metadata injected within the text
+        inline_patterns = [
+            r'\[Gen:.*?, Speaker:.*\]',
+            r'\[Gen:.*?\]',
+            r'\[Vorbește un personaj:.*?\]',
         ]
 
         cleaned = text.strip()
         for pattern in patterns:
             cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+        for pattern in inline_patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE).strip()
+
+        # Handle "Vorbește un personaj:" anywhere in string if it's not a prefix
+        cleaned = re.sub(r'Vorbește un personaj:', '', cleaned, flags=re.IGNORECASE).strip()
 
         # Strip common trailing artifacts
         # Improved splitting to handle multi-line explanations and repetitive filler

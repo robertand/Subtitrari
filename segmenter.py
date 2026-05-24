@@ -361,7 +361,7 @@ class SubtitleSegmenter:
         return result
 
     def ensure_sequential(self, segments: List[Dict]) -> List[Dict]:
-        """Ensure segments do not overlap: next starts exactly after previous ends"""
+        """Ensure segments do not overlap: next starts exactly after previous ends. Forces split on speaker change."""
         if not segments:
             return []
 
@@ -372,6 +372,14 @@ class SubtitleSegmenter:
         for i in range(1, len(sorted_segments)):
             curr = sorted_segments[i].copy()
             prev = result[-1]
+
+            # If speaker changes, we MUST start new segment and prevent merge
+            if curr.get('speaker') != prev.get('speaker'):
+                # Handle potential overlap by clipping previous segment
+                if prev['end'] > curr['start']:
+                     prev['end'] = curr['start']
+                result.append(curr)
+                continue
 
             if curr['start'] < prev['end']:
                 # If the overlap is large, it might be a redundant segment

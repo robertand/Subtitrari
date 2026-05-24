@@ -669,8 +669,9 @@ function renderSegments() {
             div.classList.add('selected');
         }
 
-        const genderIcon = segment.speaker_gender === 'female' ? '👩' : (segment.speaker_gender === 'male' ? '👨' : '');
-        const speakerHtml = segment.speaker ? `<span class="segment-speaker" title="${segment.speaker_gender || 'unknown'}"> [${genderIcon}${segment.speaker}]</span>` : '';
+        const gender = segment.speaker_gender || 'unknown';
+        const genderIcon = gender === 'female' ? '👩' : (gender === 'male' ? '👨' : '👤');
+        const speakerHtml = segment.speaker ? `<span class="segment-speaker" title="Gen: ${gender}"> [${genderIcon} ${segment.speaker}]</span>` : '';
 
         div.innerHTML = `
             <div class="segment-number">${index + 1}</div>

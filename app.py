@@ -43,7 +43,7 @@ CORS(app)
 # Initialize components
 Config.init_directories()
 transcriber = WhisperTranscriber()
-gender_detector = GenderDetector(device=transcriber.device)
+gender_detector = GenderDetector(device="cpu") # Force gender detection on CPU to save VRAM
 translator = Translator()
 segmenter = SubtitleSegmenter()
 file_handler = FileHandler(Config)
@@ -610,22 +610,23 @@ def process_task(task):
             # Mixed Korean Mode (Whisper Large V3 + Turbo KO)
             all_segments = []
 
-            # Pass 1: OpenAI Whisper Large V3 (60s / 5s)
-            task.message = "Mixed KO Pass 1 (Whisper Large V3, 60s window)..."
+            # Pass 1: OpenAI Whisper Large V3 (50s / 10s)
+            task.message = "Mixed KO Pass 1 (Whisper Large V3, 50s window)..."
             res1 = transcriber.transcribe_with_windowing(
                 str(audio_path),
                 model_name='large-v3',
                 language='ko',
-                window_size=60,
-                overlap=5,
+                window_size=50,
+                overlap=10,
                 progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1 (Large-V3): {m}")
             )
             all_segments.extend(res1.get("segments", []))
 
             if task.cancel_flag.is_set(): return
 
-            # Pass 2: Whisper Turbo Korean (30s / 5s, isolated)
-            task.message = "Mixed KO Pass 2 (Turbo Korean, 30s window, isolated)..."
+            # Pass 2: Whisper Turbo Korean (25s / 5s, isolated)
+            # Using smaller window for Korean Turbo to prevent long runaway transcriptions
+            task.message = "Mixed KO Pass 2 (Turbo Korean, 25s window, isolated)..."
             audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
             audio_2 = transcriber.isolate_voice(audio_2, sr_2)
             pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_ko_mixed.wav"
@@ -636,7 +637,7 @@ def process_task(task):
                 str(pass2_audio_path),
                 model_name='ghost613/whisper-large-v3-turbo-korean',
                 language='ko',
-                window_size=30,
+                window_size=25,
                 overlap=5,
                 progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2 (Turbo-KO): {m}")
             )
@@ -779,38 +780,46 @@ def process_task(task):
         speaker_genders = {}
         if task.options.get('use_diarization') and result.get('segments'):
             task.message = 'Detecting speaker genders...'
-            audio_full, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+            try:
+                audio_full, sr = librosa.load(str(audio_path), sr=16000, mono=True)
 
-            # Group segment audio by speaker
-            speaker_audio = {}
-            for seg in result['segments']:
-                speaker = seg.get('speaker')
-                if not speaker: continue
+                # Group segment audio by speaker
+                speaker_audio = {}
+                for seg in result['segments']:
+                    speaker = seg.get('speaker')
+                    if not speaker: continue
 
-                start_sample = int(seg['start'] * sr)
-                end_sample = int(seg['end'] * sr)
-                chunk = audio_full[start_sample:end_sample]
+                    # Ensure indices are within audio range
+                    start_sample = max(0, int(seg['start'] * sr))
+                    end_sample = min(len(audio_full), int(seg['end'] * sr))
 
-                if speaker not in speaker_audio:
-                    speaker_audio[speaker] = []
-                speaker_audio[speaker].append(chunk)
+                    if end_sample > start_sample:
+                        chunk = audio_full[start_sample:end_sample]
+                        if speaker not in speaker_audio:
+                            speaker_audio[speaker] = []
+                        speaker_audio[speaker].append(chunk)
 
-            # Classify each speaker
-            for speaker, chunks in speaker_audio.items():
-                if task.cancel_flag.is_set(): return
+                # Classify each speaker
+                for speaker, chunks in speaker_audio.items():
+                    if task.cancel_flag.is_set(): return
 
-                # Combine a few chunks for better accuracy (up to 10s)
-                combined = np.concatenate(chunks[:5]) if chunks else np.array([])
-                if len(combined) > 0:
-                    gender = gender_detector.detect_gender(combined, sr)
-                    speaker_genders[speaker] = gender
-                    logger.info(f"Speaker {speaker} detected as {gender}")
+                    # Combine a few chunks for better accuracy (up to 10s of speech)
+                    # We pick chunks that are likely to contain clear speech
+                    valid_chunks = [c for c in chunks if len(c) > 0.5 * sr]
+                    combined = np.concatenate(valid_chunks[:5]) if valid_chunks else (chunks[0] if chunks else np.array([]))
 
-            gender_detector.unload()
+                    if len(combined) > 0:
+                        gender = gender_detector.detect_gender(combined, sr)
+                        speaker_genders[speaker] = gender
+                        logger.info(f"Speaker {speaker} detected as {gender}")
 
-            # Apply gender to segments
-            for seg in result['segments']:
-                seg['speaker_gender'] = speaker_genders.get(seg.get('speaker'), 'unknown')
+                gender_detector.unload()
+
+                # Apply gender to segments
+                for seg in result['segments']:
+                    seg['speaker_gender'] = speaker_genders.get(seg.get('speaker'), 'unknown')
+            except Exception as e:
+                logger.error(f"Gender detection failed: {e}")
 
         # Segment
         task.progress = 60

@@ -1138,6 +1138,7 @@ class WhisperTranscriber:
                 outputs = self.current_model.generate(
                     **model_inputs, 
                     max_new_tokens=4096, # Increased to prevent truncation
+                    max_length=None,
                     repetition_penalty=1.2,  # Add repetition penalty
                     no_repeat_ngram_size=3,  # Prevent repeating trigrams
                     do_sample=False  # Use greedy decoding for consistency
