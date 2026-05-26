@@ -551,17 +551,6 @@ def process_task(task):
                 use_forced_alignment=True,
                 progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
-        elif (task.options.get('transcribe_window') == 50 and task.options.get('transcribe_overlap') == 25) and not task.options.get('multi_pass'):
-            # "Simple Mode" Preset Path: force windowing for the requested 50s/25s behavior
-            task.message = f"Starting Standard Transcription ({model_name}, 50s window)..."
-            result = transcriber.transcribe_with_windowing(
-                str(audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=50,
-                overlap=25,
-                progress_callback=lambda p, m: update_task_progress(task, p, m)
-            )
         elif task.options.get('mixed_turkish') and language == 'tr':
             # Mixed Turkish Mode (Whisper Large V3 + Turbo TR)
             all_segments = []
@@ -651,6 +640,17 @@ def process_task(task):
                 "language": "ko",
                 "method": "mixed_korean_double_pass"
             }
+        elif task.options.get('transcribe_window') and task.options.get('transcribe_window') > 0:
+            # Windowed Transcription Path (requested by user for memory and stability)
+            task.message = f"Starting Windowed Transcription ({model_name}, {task.options['transcribe_window']}s window)..."
+            result = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                window_size=task.options.get('transcribe_window', 30),
+                overlap=task.options.get('transcribe_overlap', 10),
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
         elif task.options.get('multi_pass'):
             # Multi-Pass Whisper transcription (Legacy/High-Accuracy)
             all_segments = []

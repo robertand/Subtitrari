@@ -31,8 +31,8 @@ class Config:
         'Farazzzzzzz/whisper-tiny_to_korean_accent2'
     ]
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
-    DEFAULT_TRANSCRIBE_WINDOW = 50
-    DEFAULT_TRANSCRIBE_OVERLAP = 25
+    DEFAULT_TRANSCRIBE_WINDOW = 30
+    DEFAULT_TRANSCRIBE_OVERLAP = 10
 
     # LLM Models
     DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'

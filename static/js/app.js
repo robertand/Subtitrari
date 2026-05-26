@@ -81,8 +81,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initVideoPlayer();
     checkDevice();
     initSettingsListeners();
-    // Set initial simple mode presets
-    setPresetValues();
+    // Initialize Presets
+    initPresets();
 });
 
 function initUpload() {
@@ -455,6 +455,7 @@ async function startProcessing() {
     
     // Collect options
     const options = {
+        engine: document.getElementById('engineSelect').value,
         process_start: parseFloat(document.getElementById('processStart').value) || 0,
         process_end: parseFloat(document.getElementById('processEnd').value) || 0,
         hf_token: document.getElementById('hfToken').value,
@@ -826,65 +827,209 @@ function toggleAdvancedMode() {
     const isAdvanced = document.getElementById('advancedModeToggle').checked;
     const advancedContainer = document.getElementById('advancedSettingsContainer');
     const advancedTranslation = document.getElementById('advancedTranslationContainer');
-    const simpleInfo = document.getElementById('simpleModeInfo');
 
     if (isAdvanced) {
         advancedContainer.style.display = 'block';
         advancedTranslation.style.display = 'block';
-        simpleInfo.style.display = 'none';
     } else {
         advancedContainer.style.display = 'none';
         advancedTranslation.style.display = 'none';
-        simpleInfo.style.display = 'block';
-        // Revert to presets when switching back to simple mode
-        setPresetValues();
     }
 }
 
-function setPresetValues() {
-    // OpenAI Whisper cu large V3
-    document.getElementById('engineSelect').value = 'whisper';
-    document.getElementById('modelSelect').value = 'large-v3';
+// === Presets Logic ===
+const defaultPresets = {
+    "default": {
+        name: "Standard (Optimized)",
+        engine: "whisper",
+        model: "large-v3",
+        window: 50,
+        overlap: 25,
+        use_vad: true,
+        use_margin: true,
+        isolate_voice: false,
+        deduplicate: true,
+        prevent_overlap: true,
+        use_diarization: false,
+        multi_pass: false,
+        mixed_turkish: false,
+        mixed_korean: false,
+        audio_only: false,
+        translate: false,
+        target_lang: "ro",
+        trans_engine: "nllb",
+        use_refinement: false,
+        refiner_model: "allura-forge/Llama-3.3-8B-Instruct",
+        trans_group: 10
+    },
+    "turkish_mixed": {
+        name: "🇹🇷 Turcă Mixtă (V3+Turbo)",
+        engine: "whisper",
+        language: "tr",
+        mixed_turkish: true,
+        use_vad: true,
+        deduplicate: true,
+        prevent_overlap: true
+    },
+    "korean_mixed": {
+        name: "🇰🇷 Coreeană Mixtă (V3+Turbo)",
+        engine: "whisper",
+        language: "ko",
+        mixed_korean: true,
+        use_vad: true,
+        deduplicate: true,
+        prevent_overlap: true
+    }
+};
 
-    // Window 50s, Overlap 25s
-    document.getElementById('transcribeWindow').value = 50;
-    document.getElementById('transcribeOverlap').value = 25;
+function initPresets() {
+    updatePresetDropdown();
+    // Load default if nothing selected
+    loadPreset('default');
+}
 
-    // VAD on, marja 1s on
-    document.getElementById('useVAD').checked = true;
-    document.getElementById('useMargin').checked = true;
+function updatePresetDropdown() {
+    const select = document.getElementById('presetSelect');
+    if (!select) return;
 
-    // Izolare Voce off, Elimina repetitiile on, Segmente secvențiale on
-    document.getElementById('isolateVoice').checked = false;
-    document.getElementById('deduplicate').checked = true;
-    document.getElementById('preventOverlap').checked = true;
-    document.getElementById('useDiarization').checked = false;
+    const savedValue = select.value;
+    select.innerHTML = '';
 
-    // Multipass off, TR Transcriere Turcă off, Doar extracție audio off
-    document.getElementById('multiPass').checked = false;
-    const mixedTr = document.getElementById('mixedTurkish');
-    if (mixedTr) mixedTr.checked = false;
-    const mixedKo = document.getElementById('mixedKorean');
-    if (mixedKo) mixedKo.checked = false;
-    document.getElementById('audioOnly').checked = false;
+    // Add Built-in
+    Object.entries(defaultPresets).forEach(([id, preset]) => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = preset.name;
+        select.appendChild(opt);
+    });
 
-    // Dacă activezi traducerea: default pe Română cu NLLB, corectură LLM off, mărime grup 10
-    const targetLang = document.getElementById('targetLanguageSelect');
-    if (targetLang) {
-        const roOption = targetLang.querySelector('option[value="ro"]');
-        if (roOption) roOption.selected = true;
+    // Add User Presets
+    const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
+    if (Object.keys(userPresets).length > 0) {
+        const separator = document.createElement('option');
+        separator.disabled = true;
+        separator.textContent = "─── Salvate de tine ───";
+        select.appendChild(separator);
+
+        Object.entries(userPresets).forEach(([id, preset]) => {
+            const opt = document.createElement('option');
+            opt.value = 'user_' + id;
+            opt.textContent = preset.name;
+            select.appendChild(opt);
+        });
     }
 
-    document.getElementById('translationEngine').value = 'nllb';
-    document.getElementById('useRomistral').checked = false;
-    document.getElementById('refinerModelSelect').value = 'allura-forge/Llama-3.3-8B-Instruct';
-    document.getElementById('translateGroup').value = 10;
+    if (savedValue) select.value = savedValue;
+}
 
-    // Refresh engine-specific views
+function savePreset() {
+    const nameInput = document.getElementById('newPresetName');
+    const name = nameInput.value.trim();
+    if (!name) {
+        showToast('Introdu un nume pentru preset', 'warning');
+        return;
+    }
+
+    const id = Date.now().toString();
+    const preset = {
+        name: name,
+        engine: document.getElementById('engineSelect').value,
+        model: document.getElementById('modelSelect').value,
+        window: document.getElementById('transcribeWindow').value,
+        overlap: document.getElementById('transcribeOverlap').value,
+        use_vad: document.getElementById('useVAD').checked,
+        use_margin: document.getElementById('useMargin').checked,
+        isolate_voice: document.getElementById('isolateVoice').checked,
+        deduplicate: document.getElementById('deduplicate').checked,
+        prevent_overlap: document.getElementById('preventOverlap').checked,
+        use_diarization: document.getElementById('useDiarization').checked,
+        multi_pass: document.getElementById('multiPass').checked,
+        mixed_turkish: document.getElementById('mixedTurkish')?.checked || false,
+        mixed_korean: document.getElementById('mixedKorean')?.checked || false,
+        audio_only: document.getElementById('audioOnly').checked,
+        translate: document.getElementById('enableTranslation').checked,
+        target_lang: document.getElementById('targetLanguageSelect').value,
+        trans_engine: document.getElementById('translationEngine').value,
+        use_refinement: document.getElementById('useRomistral').checked,
+        refiner_model: document.getElementById('refinerModelSelect').value,
+        trans_group: document.getElementById('translateGroup').value,
+        language: document.getElementById('languageSelect').value
+    };
+
+    const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
+    userPresets[id] = preset;
+    localStorage.setItem('user_presets', JSON.stringify(userPresets));
+
+    nameInput.value = '';
+    updatePresetDropdown();
+    showToast(`Preset "${name}" salvat!`, 'success');
+}
+
+function loadPreset(id) {
+    let preset;
+    if (id.startsWith('user_')) {
+        const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
+        preset = userPresets[id.replace('user_', '')];
+    } else {
+        preset = defaultPresets[id];
+    }
+
+    if (!preset) return;
+
+    // Apply values to UI
+    if (preset.engine !== undefined) document.getElementById('engineSelect').value = preset.engine;
+    if (preset.model !== undefined) document.getElementById('modelSelect').value = preset.model;
+    if (preset.window !== undefined) document.getElementById('transcribeWindow').value = preset.window;
+    if (preset.overlap !== undefined) document.getElementById('transcribeOverlap').value = preset.overlap;
+    if (preset.use_vad !== undefined) document.getElementById('useVAD').checked = preset.use_vad;
+    if (preset.use_margin !== undefined) document.getElementById('useMargin').checked = preset.use_margin;
+    if (preset.isolate_voice !== undefined) document.getElementById('isolateVoice').checked = preset.isolate_voice;
+    if (preset.deduplicate !== undefined) document.getElementById('deduplicate').checked = preset.deduplicate;
+    if (preset.prevent_overlap !== undefined) document.getElementById('preventOverlap').checked = preset.prevent_overlap;
+    if (preset.use_diarization !== undefined) document.getElementById('useDiarization').checked = preset.use_diarization;
+    if (preset.multi_pass !== undefined) document.getElementById('multi_pass' in preset ? 'multi_pass' : 'multiPass').checked = preset.multi_pass;
+
+    if (preset.mixed_turkish !== undefined && document.getElementById('mixedTurkish'))
+        document.getElementById('mixedTurkish').checked = preset.mixed_turkish;
+    if (preset.mixed_korean !== undefined && document.getElementById('mixedKorean'))
+        document.getElementById('mixedKorean').checked = preset.mixed_korean;
+
+    if (preset.audio_only !== undefined) document.getElementById('audioOnly').checked = preset.audio_only;
+    if (preset.translate !== undefined) document.getElementById('enableTranslation').checked = preset.translate;
+    if (preset.target_lang !== undefined) document.getElementById('targetLanguageSelect').value = preset.target_lang;
+    if (preset.trans_engine !== undefined) document.getElementById('translationEngine').value = preset.trans_engine;
+    if (preset.use_refinement !== undefined) document.getElementById('useRomistral').checked = preset.use_refinement;
+    if (preset.refiner_model !== undefined) document.getElementById('refinerModelSelect').value = preset.refiner_model;
+    if (preset.trans_group !== undefined) document.getElementById('translateGroup').value = preset.trans_group;
+    if (preset.language !== undefined) document.getElementById('languageSelect').value = preset.language;
+
+    // Refresh UI dependencies
     toggleEngineOptions();
     updateModelOptions();
     toggleTranslation();
     toggleRefinerOptions();
+
+    // Trigger language-dependent UI updates
+    const langEvent = new Event('change');
+    document.getElementById('languageSelect').dispatchEvent(langEvent);
+}
+
+function deletePreset() {
+    const select = document.getElementById('presetSelect');
+    const id = select.value;
+    if (!id.startsWith('user_')) {
+        showToast('Preseturile standard nu pot fi șterse', 'error');
+        return;
+    }
+
+    if (confirm('Sigur vrei să ștergi acest preset?')) {
+        const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
+        delete userPresets[id.replace('user_', '')];
+        localStorage.setItem('user_presets', JSON.stringify(userPresets));
+        updatePresetDropdown();
+        loadPreset('default');
+        showToast('Preset șters', 'info');
+    }
 }
 
 // === Video Player Controls ===

@@ -139,13 +139,19 @@
                         <div class="mode-selector">
                             <label class="mode-switch">
                                 <input type="checkbox" id="advancedModeToggle" onchange="toggleAdvancedMode()">
-                                <span class="mode-label">Mod Avansat</span>
+                                <span class="mode-label">Opțiuni Avansate</span>
                             </label>
                         </div>
                     </div>
 
-                    <div id="simpleModeInfo" class="info-box">
-                        <p>✨ <strong>Mod Simplu activat:</strong> Folosește setări optimizate pentru acuratețe maximă (Whisper Large V3, Window 50s, Overlap 25s).</p>
+                    <div class="setting-group" id="presetGroup">
+                        <label class="setting-label">Presetări</label>
+                        <div style="display: flex; gap: 8px;">
+                            <select id="presetSelect" class="setting-select" onchange="loadPreset(this.value)">
+                                <option value="default" selected>Standard (Optimized)</option>
+                            </select>
+                            <button class="btn btn-sm btn-secondary" onclick="deletePreset()" title="Șterge preset selectat">🗑️</button>
+                        </div>
                     </div>
 
                     <div id="advancedSettingsContainer" style="display: none;">
@@ -336,6 +342,15 @@
                                 <input type="checkbox" id="audioOnly" class="setting-checkbox">
                                 <span>Doar extracție audio (fără transcriere)</span>
                             </label>
+                        </div>
+
+                        <!-- Save Preset Section -->
+                        <div class="setting-group" style="padding-top: 15px; border-top: 1px solid var(--glass-border);">
+                            <label class="setting-label">Salvează Setările Actuale ca Preset</label>
+                            <div style="display: flex; gap: 8px;">
+                                <input type="text" id="newPresetName" class="setting-input" placeholder="Nume preset...">
+                                <button class="btn btn-sm btn-primary" onclick="savePreset()">💾 Salvează</button>
+                            </div>
                         </div>
                     </div> <!-- End advancedSettingsContainer -->
                 </div>
