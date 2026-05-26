@@ -487,6 +487,13 @@ async function startProcessing() {
             options.translate_group = parseInt(document.getElementById('translateGroup').value);
             options.use_romistral = document.getElementById('useRomistral').checked;
             options.refiner_model = document.getElementById('refinerModelSelect').value;
+            options.translation_context = document.getElementById('translationContext').value;
+
+            // LLM API settings
+            options.llm_api_provider = document.getElementById('llmApiProvider').value;
+            options.llm_api_key = document.getElementById('llmApiKey').value;
+            options.llm_api_model = document.getElementById('llmApiModel').value;
+            options.llm_api_url = document.getElementById('llmApiUrl').value;
             
             // Adaugă limbile suplimentare
             const additionalSelects = document.querySelectorAll('.translation-lang-select');
@@ -857,10 +864,13 @@ const defaultPresets = {
         audio_only: false,
         translate: false,
         target_lang: "ro",
-        trans_engine: "nllb",
+        trans_engine: "google",
         use_refinement: false,
         refiner_model: "allura-forge/Llama-3.3-8B-Instruct",
-        trans_group: 10
+        trans_group: 15,
+        llm_api_provider: "claude",
+        llm_api_model: "",
+        llm_api_url: ""
     },
     "turkish_mixed": {
         name: "🇹🇷 Turcă Mixtă (V3+Turbo)",
@@ -953,7 +963,11 @@ function savePreset() {
         use_refinement: document.getElementById('useRomistral').checked,
         refiner_model: document.getElementById('refinerModelSelect').value,
         trans_group: document.getElementById('translateGroup').value,
-        language: document.getElementById('languageSelect').value
+        language: document.getElementById('languageSelect').value,
+        translation_context: document.getElementById('translationContext').value,
+        llm_api_provider: document.getElementById('llmApiProvider').value,
+        llm_api_model: document.getElementById('llmApiModel').value,
+        llm_api_url: document.getElementById('llmApiUrl').value
     };
 
     const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
@@ -1002,6 +1016,11 @@ function loadPreset(id) {
     if (preset.refiner_model !== undefined) document.getElementById('refinerModelSelect').value = preset.refiner_model;
     if (preset.trans_group !== undefined) document.getElementById('translateGroup').value = preset.trans_group;
     if (preset.language !== undefined) document.getElementById('languageSelect').value = preset.language;
+    if (preset.translation_context !== undefined) document.getElementById('translationContext').value = preset.translation_context;
+
+    if (preset.llm_api_provider !== undefined) document.getElementById('llmApiProvider').value = preset.llm_api_provider;
+    if (preset.llm_api_model !== undefined) document.getElementById('llmApiModel').value = preset.llm_api_model;
+    if (preset.llm_api_url !== undefined) document.getElementById('llmApiUrl').value = preset.llm_api_url;
 
     // Refresh UI dependencies
     toggleEngineOptions();
@@ -1264,17 +1283,9 @@ function toggleTranslation() {
     document.getElementById('translationSettings').style.display = enabled ? 'block' : 'none';
     
     if (enabled) {
-        const engineSelect = document.getElementById('translationEngine');
-        document.getElementById('promptGroup').style.display = 
-            engineSelect.value === 'llm' ? 'block' : 'none';
+        updateModelOptions();
     }
 }
-
-// Ascultă pentru schimbarea engine-ului
-document.getElementById('translationEngine')?.addEventListener('change', function() {
-    document.getElementById('promptGroup').style.display = 
-        this.value === 'llm' ? 'block' : 'none';
-});
 
 function addTranslationLanguage() {
     const container = document.getElementById('additionalLanguages');
@@ -1882,9 +1893,32 @@ function updateModelOptions() {
     const engine = document.getElementById('translationEngine').value;
     const llmGroup = document.getElementById('llmModelGroup');
     const promptGroup = document.getElementById('promptGroup');
+    const llmApiSettings = document.getElementById('llmApiSettings');
 
     if (llmGroup) llmGroup.style.display = (engine === 'llm' || engine === 'vllm') ? 'block' : 'none';
     if (promptGroup) promptGroup.style.display = engine === 'llm' ? 'block' : 'none';
+
+    if (llmApiSettings) {
+        llmApiSettings.style.display = (engine === 'llm_api') ? 'block' : 'none';
+        if (engine === 'llm_api') updateLlmApiDefaults();
+    }
+}
+
+function updateLlmApiDefaults() {
+    const provider = document.getElementById('llmApiProvider').value;
+    const modelInput = document.getElementById('llmApiModel');
+    const urlGroup = document.getElementById('llmApiUrlGroup');
+
+    if (provider === 'claude') {
+        modelInput.placeholder = 'claude-3-5-sonnet-20240620';
+        urlGroup.style.display = 'none';
+    } else if (provider === 'openai') {
+        modelInput.placeholder = 'gpt-4o';
+        urlGroup.style.display = 'none';
+    } else {
+        modelInput.placeholder = 'model-id';
+        urlGroup.style.display = 'block';
+    }
 }
 
 function toggleSubtitlePosition() {

@@ -384,11 +384,36 @@
                             <div class="setting-group">
                                 <label class="setting-label">Engine Traducere</label>
                                 <select id="translationEngine" class="setting-select" onchange="updateModelOptions()">
-                                    <option value="vllm" selected>VLLM (Qwen3-235B) - Profesional</option>
+                                <option value="google" selected>Google Translate (Batch)</option>
+                                <option value="llm_api">LLM API (Claude / ChatGPT)</option>
+                                <option value="vllm">VLLM (Qwen3-235B) - Profesional</option>
                                     <option value="llm">LLM Local</option>
                                     <option value="nllb">NLLB-200 (rapid, bun)</option>
                                 </select>
                             </div>
+
+                        <div id="llmApiSettings" style="display: none;">
+                            <div class="setting-group">
+                                <label class="setting-label">Provider API</label>
+                                <select id="llmApiProvider" class="setting-select" onchange="updateLlmApiDefaults()">
+                                    <option value="claude">Anthropic (Claude)</option>
+                                    <option value="openai">OpenAI (ChatGPT)</option>
+                                    <option value="custom">Alt LLM (Custom Endpoint)</option>
+                                </select>
+                            </div>
+                            <div class="setting-group">
+                                <label class="setting-label">API Key</label>
+                                <input type="password" id="llmApiKey" class="setting-input" placeholder="sk-...">
+                            </div>
+                            <div class="setting-group">
+                                <label class="setting-label">Model</label>
+                                <input type="text" id="llmApiModel" class="setting-input" placeholder="ex: gpt-4o">
+                            </div>
+                            <div id="llmApiUrlGroup" class="setting-group" style="display: none;">
+                                <label class="setting-label">Custom Endpoint URL</label>
+                                <input type="text" id="llmApiUrl" class="setting-input" placeholder="https://api.openai.com/v1">
+                            </div>
+                        </div>
 
                         <div class="setting-group" id="llmModelGroup" style="display: none;">
                             <label class="setting-label">Model LLM</label>
@@ -400,6 +425,13 @@
                                 <option value="google/gemma-4-E4B-it">Gemma 4 - E4B</option>
                                 <option value="google/gemma-4-26B-A4B-it">Gemma 4 - 26B-A4B</option>
                             </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label class="setting-label">Context Conținut (Optional)</label>
+                            <textarea id="translationContext" class="setting-textarea"
+                                      placeholder="ex: Film italian, comedie dramatică, personajele: Guido, Dora..."
+                                      rows="2"></textarea>
                         </div>
 
                         <div class="setting-group" id="promptGroup" style="display: none;">

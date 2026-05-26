@@ -88,29 +88,61 @@ class Translator:
         texts: List[str],
         source_lang: str,
         target_lang: str,
-        batch_size: int = 8
+        batch_size: int = 15,
+        context: Optional[str] = None
     ) -> List[str]:
-        """Translate a batch of texts using Google Translate (via deep-translator)"""
+        """Translate a batch of texts using Google Translate with batching and context injection"""
         try:
             logger.info(f"Translating {len(texts)} segments using Google Translate: {source_lang} -> {target_lang}")
             
-            # Google Translate handles mapping internally usually, but let's be safe
-            # NLLB maps 'ro' to 'ron_Latn', but Google wants 'ro'
             s_lang = source_lang if source_lang != 'auto' else 'auto'
             t_lang = target_lang
+            google_translator = GoogleTranslator(source=s_lang, target=t_lang)
 
-            translator = GoogleTranslator(source=s_lang, target=t_lang)
+            separator = " ||| "
+            all_translations = []
 
-            # deep-translator can translate lists
-            # Note: translate_batch in deep-translator takes a list
-            translations = translator.translate_batch(texts)
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
 
-            return translations
+                # Context injection
+                if context:
+                    # Prepend context to the first segment of each batch to guide the engine
+                    # but ensure it's removed from output
+                    batch_to_send = [f"[Context: {context}] {batch[0]}"] + batch[1:]
+                else:
+                    batch_to_send = batch
+
+                batch_text = separator.join(batch_to_send)
+
+                try:
+                    translated_batch_text = google_translator.translate(batch_text)
+                    translated_segments = [s.strip() for s in translated_batch_text.split(separator)]
+
+                    # Cleanup injected context from first segment if present
+                    if context and translated_segments:
+                        translated_segments[0] = re.sub(r'^\[Context:.*?\]\s*', '', translated_segments[0], flags=re.IGNORECASE)
+
+                    if len(translated_segments) == len(batch):
+                        all_translations.extend(translated_segments)
+                    else:
+                        logger.warning(f"Google Batch mismatch at {i}: sent {len(batch)}, got {len(translated_segments)}. Falling back to individual.")
+                        individual = google_translator.translate_batch(batch)
+                        all_translations.extend(individual)
+                except Exception as e:
+                    logger.error(f"Google Batch error at {i}: {e}. Falling back to individual.")
+                    individual = google_translator.translate_batch(batch)
+                    all_translations.extend(individual)
+
+                # Rate limiting
+                time.sleep(0.5)
+
+            return all_translations
 
         except Exception as e:
-            logger.error(f"Google Translate error: {e}")
+            logger.error(f"Google Translate fatal error: {e}")
             # Fallback to NLLB if Google fails
-            return self._nllb_translate(texts, source_lang, target_lang, batch_size)
+            return self._nllb_translate(texts, source_lang, target_lang, 8)
 
     def _nllb_translate(
         self,
@@ -257,7 +289,8 @@ class Translator:
         target_lang: str,
         model_name: str = "Qwen/Qwen3-235B-A22B-Instruct",
         group_size: int = 10,
-        metadata: List[Dict[str, Any]] = None
+        metadata: List[Dict[str, Any]] = None,
+        context: Optional[str] = None
     ) -> List[str]:
         """Translate using VLLM with context grouping"""
         try:
@@ -313,8 +346,12 @@ class Translator:
                 "4. NU oferi explicații, note, comentarii, observații, paranteze sau text adițional. DOAR traducerea pură.\n"
                 "5. Returnează rezultatul EXCLUSIV ca un obiect JSON valid sub cheia 'translations'.\n"
                 "6. Păstrează exact numărul și ordinea segmentelor.\n"
-                "Exemplu format răspuns: {\"translations\": [\"Traducere 1\", \"Traducere 2\"]}"
             )
+
+            if context:
+                system_prompt += f"CONTEXT CONȚINUT: {context}\n"
+
+            system_prompt += "Exemplu format răspuns: {\"translations\": [\"Traducere 1\", \"Traducere 2\"]}"
 
             all_translations = ["" for _ in range(len(texts))]
 
@@ -548,7 +585,8 @@ class Translator:
         target_lang: str,
         model_name: str = "OpenLLM-Ro/RoMistral-7b-Instruct",
         group_size: int = 10,
-        metadata: List[Dict[str, Any]] = None
+        metadata: List[Dict[str, Any]] = None,
+        context: Optional[str] = None
     ) -> List[str]:
         """Refine and correct translation using a VLLM model (RoMistral or Llama)"""
         try:
@@ -611,8 +649,12 @@ class Translator:
                 "5. Dacă întâlnești secvențe repetitive sau variante multiple ale aceluiași enunț, folosește contextul pentru a decide care este varianta corectă și elimină redundanțele.\n"
                 "6. NU oferi explicații, note, comentarii sau paranteze. DOAR textul corectat.\n"
                 "7. Returnează rezultatul EXCLUSIV ca un obiect JSON valid sub cheia 'corrections'.\n"
-                "Exemplu format răspuns: {\"corrections\": [\"Corecție 1\", \"Corecție 2\"]}"
             )
+
+            if context:
+                system_prompt += f"CONTEXT CONȚINUT: {context}\n"
+
+            system_prompt += "Exemplu format răspuns: {\"corrections\": [\"Corecție 1\", \"Corecție 2\"]}"
 
             all_corrections = [t for t in texts]
 
@@ -669,10 +711,22 @@ class Translator:
         """Backward compatibility for RoMistral correction"""
         return self.correct_with_vllm(texts, target_lang, Config.ROMISTRAL_MODEL, group_size)
 
+    def _clean_speaker_none(self, text: str) -> str:
+        """Fix artifacts like 'Vorbește un personaj: None' or 'Speaker: None'"""
+        if not text:
+            return ""
+        # Remove any prefix that ends with ': None' or just 'None' at start
+        text = re.sub(r'^.*?:\s*None\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'^None[:\s]+', '', text, flags=re.IGNORECASE)
+        return text.strip()
+
     def _clean_llm_segment(self, text: str) -> str:
         """Strip common LLM hallucinations and artifacts from a single segment"""
         if not text:
             return ""
+
+        # Clean None artifacts first
+        text = self._clean_speaker_none(text)
 
         # Strip prefixes like "Traducere:", "Nota:", etc.
         patterns = [
@@ -714,6 +768,197 @@ class Translator:
              cleaned = cleaned.split("\n-")[0].split("\n*")[0]
 
         return cleaned.strip()
+
+    def translate_with_api(
+        self,
+        texts: List[str],
+        source_lang: str,
+        target_lang: str,
+        api_type: str,
+        api_key: str,
+        model: str,
+        context: Optional[str] = None,
+        base_url: Optional[str] = None,
+        batch_size: int = 15,
+        content_type: str = "film"
+    ) -> List[str]:
+        """Translate using LLM APIs (Claude, OpenAI, Custom)"""
+        logger.info(f"Translating {len(texts)} segments using {api_type} API ({model})")
+
+        all_translations = ["" for _ in range(len(texts))]
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            retry_count = 0
+            success = False
+
+            while retry_count < 2 and not success:
+                try:
+                    translated_batch = self._call_llm_api(
+                        batch, source_lang, target_lang, api_type, api_key, model, context, base_url, content_type,
+                        force_numbered=(retry_count > 0)
+                    )
+
+                    if len(translated_batch) == len(batch):
+                        for j, t in enumerate(translated_batch):
+                            all_translations[i + j] = t
+                        success = True
+                    else:
+                        logger.warning(f"Batch {i//batch_size} mismatch: sent {len(batch)}, got {len(translated_batch)}. Retry {retry_count+1}")
+                        retry_count += 1
+                except Exception as e:
+                    logger.error(f"API call error: {e}")
+                    retry_count += 1
+
+            if not success:
+                logger.error(f"Batch {i//batch_size} failed after retries. Falling back to individual Google Translate.")
+                fallback = self.translate_batch(batch, source_lang, target_lang, batch_size=1)
+                for j, t in enumerate(fallback):
+                    all_translations[i + j] = t
+
+            # Rate limiting
+            time.sleep(0.5)
+
+        return all_translations
+
+    def _call_llm_api(
+        self,
+        batch: List[str],
+        source_lang: str,
+        target_lang: str,
+        api_type: str,
+        api_key: str,
+        model: str,
+        context: Optional[str] = None,
+        base_url: Optional[str] = None,
+        content_type: str = "film",
+        force_numbered: bool = False
+    ) -> List[str]:
+        """Internal helper for LLM API calls"""
+        n = len(batch)
+        system_prompt = (
+            f"You are a professional subtitle translator. Translate the following subtitle segments into {target_lang}.\n"
+            "Rules:\n"
+            f"- Preserve the meaning, tone and style of the original dialogue\n"
+            f"- Keep translations natural and idiomatic in {target_lang}, not literal\n"
+            "- Each line in the input corresponds to one subtitle segment. Return ONLY the translated lines, one per line, in the same order.\n"
+            "- Do not add explanations, notes or extra text.\n"
+            "- If a segment is a sound description like [music] or [applause], translate or keep it appropriately.\n"
+            f"- The source language is {source_lang}. This is a {content_type}.\n"
+        )
+
+        if context:
+            system_prompt += f"- Context for content: {context}\n"
+
+        system_prompt += f"- Number of input lines: {n}. Return exactly {n} lines."
+
+        if force_numbered:
+            system_prompt += "\n- RETURN THE LINES NUMBERED (1: ..., 2: ...) to ensure correct mapping."
+
+        user_message = f"Translate these {n} subtitle segments:\n"
+        for idx, text in enumerate(batch):
+            user_message += f"{idx + 1}: {text}\n"
+
+        response_text = ""
+
+        if api_type == "claude":
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model=model or "claude-3-5-sonnet-20240620",
+                max_tokens=2048,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}]
+            )
+            response_text = message.content[0].text
+        else: # openai or custom
+            import openai
+            client = openai.OpenAI(api_key=api_key, base_url=base_url)
+            response = client.chat.completions.create(
+                model=model or "gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.3
+            )
+            response_text = response.choices[0].message.content
+
+        # Parsing
+        lines = response_text.strip().split('\n')
+        translated = []
+
+        if force_numbered or any(re.match(r'^\d+[:.]\s*', l) for l in lines[:3]):
+            # Extract text from numbered lines
+            for l in lines:
+                match = re.match(r'^\d+[:.]\s*(.*)', l)
+                if match:
+                    translated.append(match.group(1).strip())
+        else:
+            # Just take non-empty lines
+            translated = [l.strip() for l in lines if l.strip()]
+
+        return translated
+
+    def validate_and_retry_translations(
+        self,
+        original_texts: List[str],
+        translated_texts: List[str],
+        source_lang: str,
+        target_lang: str,
+        method_name: str
+    ) -> List[str]:
+        """Validate language of translated segments and retry if they seem untranslated"""
+        if len(original_texts) != len(translated_texts):
+             return translated_texts
+
+        final_translations = list(translated_texts)
+
+        try:
+            from langdetect import detect_langs
+        except ImportError:
+            # Fallback to simple identity check if langdetect not available
+            for i in range(len(final_translations)):
+                if final_translations[i] == original_texts[i] and len(original_texts[i]) > 3:
+                    logger.info(f"Retrying segment {i} due to identity with source")
+                    retry = self.translate_batch([original_texts[i]], source_lang, target_lang, batch_size=1)
+                    final_translations[i] = retry[0]
+            return final_translations
+
+        for i in range(len(final_translations)):
+            orig = original_texts[i]
+            trans = final_translations[i]
+
+            if not trans or len(trans) < 3:
+                continue
+
+            # Skip short segments or sounds like [music]
+            if re.match(r'^\[.*\]$', trans):
+                continue
+
+            try:
+                # Basic identity check first
+                if trans == orig:
+                    is_untranslated = True
+                else:
+                    # Langdetect check
+                    detected = detect_langs(trans)
+                    # If target_lang (e.g. 'ro') is not in top detected with reasonable prob
+                    is_untranslated = True
+                    for d in detected:
+                        if d.lang == target_lang or (target_lang == 'en' and d.lang in ['en', 'ca']): # en fallback
+                            is_untranslated = False
+                            break
+
+                if is_untranslated:
+                    logger.info(f"[{method_name}] Segment {i} seems untranslated (detected: {[d.lang for d in detected]}). Retrying...")
+                    # Max 2 retries handled by loop if we wanted, but let's do 1 explicit here
+                    retry = self.translate_batch([orig], source_lang, target_lang, batch_size=1)
+                    final_translations[i] = retry[0]
+            except Exception as e:
+                logger.debug(f"Langdetect failed for segment {i}: {e}")
+
+        return final_translations
 
     def unload_models(self):
         """Free memory by unloading models"""

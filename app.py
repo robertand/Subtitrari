@@ -872,6 +872,10 @@ def process_task(task):
             # Even if not strictly sequential, we should merge identical overlaps
             segments = segmenter.merge_identical_overlapping(segments)
 
+        # FINAL CLEANUP for speaker artifacts
+        for seg in segments:
+            seg['text'] = translator._clean_speaker_none(seg.get('text', ''))
+
         if task.cancel_flag.is_set():
             return
         
@@ -888,7 +892,8 @@ def process_task(task):
             
             target_langs = task.options.get('target_languages', ['en'])
             source_lang = result.get('language', 'en')
-            engine = task.options.get('translation_engine', 'vllm')
+            engine = task.options.get('translation_engine', 'google')
+            context = task.options.get('translation_context')
             
             texts = [seg.get('text', '') for seg in segments]
             metadata = [{'gender': seg.get('speaker_gender'), 'speaker': seg.get('speaker')} for seg in segments]
@@ -907,7 +912,8 @@ def process_task(task):
                         texts, source_lang, target_lang,
                         model_name=llm_model,
                         group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP),
-                        metadata=metadata
+                        metadata=metadata,
+                        context=context
                     )
                 elif engine == 'llm':
                     translated_texts = translator.translate_with_llm(
@@ -915,11 +921,28 @@ def process_task(task):
                         model_name=llm_model,
                         custom_prompt=custom_prompt
                     )
-                else:
+                elif engine == 'llm_api':
+                    translated_texts = translator.translate_with_api(
+                        texts, source_lang, target_lang,
+                        api_type=task.options.get('llm_api_provider'),
+                        api_key=task.options.get('llm_api_key'),
+                        model=task.options.get('llm_api_model'),
+                        context=context,
+                        base_url=task.options.get('llm_api_url'),
+                        batch_size=20 # Blocurile de 15-20 segmente
+                    )
+                else: # google
                     translated_texts = translator.translate_batch(
-                        texts, source_lang, target_lang
+                        texts, source_lang, target_lang,
+                        batch_size=15, # Blocuri de 10-15 segmente
+                        context=context
                     )
                 
+                # Validation and Retry
+                translated_texts = translator.validate_and_retry_translations(
+                    texts, translated_texts, source_lang, target_lang, engine
+                )
+
                 # Apply LLM correction if requested
                 if task.options.get('use_romistral'):
                     # Use explicit refiner model if provided, else fallback to llm_model or default
@@ -930,7 +953,8 @@ def process_task(task):
                         target_lang,
                         model_name=refiner_model,
                         group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP),
-                        metadata=metadata
+                        metadata=metadata,
+                        context=context
                     )
 
                 translations[target_lang] = translated_texts
