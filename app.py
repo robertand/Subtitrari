@@ -10,6 +10,7 @@ import os
 import sys
 import logging
 import librosa
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 import shutil
@@ -290,6 +291,133 @@ def process_status(task_id):
     
     task.last_heartbeat = time.time()
     return jsonify(task.to_dict())
+
+@app.route('/api/process/zones', methods=['POST'])
+def process_zones():
+    """Reprocess specific timeline zones"""
+    try:
+        data = request.json
+        task_id = data.get('task_id')
+        file_path = data.get('file_path')
+        zones = data.get('zones', [])
+        options = data.get('options', {})
+
+        if not task_id or not file_path or not zones:
+            return jsonify({'error': 'Missing parameters'}), 400
+
+        results = []
+        hf_token = options.get('hf_token')
+
+        for idx, zone in enumerate(zones):
+            start = zone['start']
+            end = zone['end']
+
+            logger.info(f"Selective reprocessing zone {idx}: {start}s -> {end}s")
+
+            # 1. Extract audio
+            temp_name = f"reprocess_{task_id}_{int(start)}_{int(end)}.wav"
+            audio_temp_path = Config.TEMP_DIR / temp_name
+
+            try:
+                transcriber.extract_audio_from_video(
+                    file_path, str(audio_temp_path),
+                    start_time=start,
+                    duration=(end - start)
+                )
+
+                # 2. Transcribe
+                if options.get('engine') == 'whisper':
+                    res = transcriber.transcribe_whisperx(
+                        str(audio_temp_path),
+                        model_name=options.get('model', 'large-v3'),
+                        language=options.get('language'),
+                        hf_token=hf_token,
+                        use_diarization=options.get('use_diarization', False)
+                    )
+                else:
+                    # Fallback to standard
+                    res = transcriber.transcribe_audio(
+                        str(audio_temp_path),
+                        model_name=options.get('model', 'small'),
+                        language=options.get('language'),
+                        hf_token=hf_token
+                    )
+
+                new_segments = res.get('segments', [])
+
+                # 3. Adjust timestamps (Apply offset)
+                for seg in new_segments:
+                    seg['start'] += start
+                    seg['end'] += start
+
+                # 4. Segmentation
+                new_segments = segmenter.segment_by_time(
+                    new_segments,
+                    min_duration=options.get('min_duration', 1.0),
+                    max_duration=options.get('max_duration', 5.0),
+                    max_chars=options.get('max_chars', 80)
+                )
+
+                # 5. Clean "None" artifacts
+                for seg in new_segments:
+                    seg['text'] = translator._clean_speaker_none(seg['text'])
+
+                # 6. Translate
+                new_translations = {}
+                if options.get('translate'):
+                    target_langs = options.get('target_languages', ['ro'])
+                    source_lang = res.get('language', 'en')
+                    engine = options.get('translation_engine', 'google')
+                    context = options.get('translation_context')
+
+                    texts = [s['text'] for s in new_segments]
+                    meta = [{'gender': s.get('speaker_gender'), 'speaker': s.get('speaker')} for s in new_segments]
+
+                    for target_lang in target_langs:
+                        if engine == 'vllm':
+                            t_texts = translator.translate_with_vllm_grouped(
+                                texts, source_lang, target_lang,
+                                model_name=options.get('llm_model'),
+                                metadata=meta, context=context
+                            )
+                        elif engine == 'llm_api':
+                            t_texts = translator.translate_with_api(
+                                texts, source_lang, target_lang,
+                                api_type=options.get('llm_api_provider'),
+                                api_key=options.get('llm_api_key'),
+                                model=options.get('llm_api_model'),
+                                context=context, base_url=options.get('llm_api_url')
+                            )
+                        else: # google
+                            t_texts = translator.translate_batch(
+                                texts, source_lang, target_lang, context=context
+                            )
+
+                        # Validation
+                        t_texts = translator.validate_and_retry_translations(
+                            texts, t_texts, source_lang, target_lang, engine
+                        )
+                        new_translations[target_lang] = t_texts
+
+                results.append({
+                    'zone_start': start,
+                    'zone_end': end,
+                    'segments': new_segments,
+                    'translations': new_translations
+                })
+
+            finally:
+                if audio_temp_path.exists():
+                    audio_temp_path.unlink()
+
+        return jsonify({'results': results})
+
+    except Exception as e:
+        logger.error(f"Zones process error: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        transcriber.unload_model()
+        translator.unload_models()
 
 @app.route('/api/process/cancel/<task_id>', methods=['POST'])
 def cancel_processing(task_id):
@@ -893,7 +1021,7 @@ def process_task(task):
             target_langs = task.options.get('target_languages', ['en'])
             source_lang = result.get('language', 'en')
             engine = task.options.get('translation_engine', 'google')
-            context = task.options.get('translation_context')
+            context = options.get('translation_context')
             
             texts = [seg.get('text', '') for seg in segments]
             metadata = [{'gender': seg.get('speaker_gender'), 'speaker': seg.get('speaker')} for seg in segments]

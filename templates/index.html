@@ -68,15 +68,29 @@
 
         <!-- Timeline Section -->
         <div class="glass-container timeline-section" id="timelineSection" style="display: none; width: 100%; max-width: none;">
+            <div class="timeline-toolbar">
+                <div class="timeline-actions">
+                    <button class="btn btn-sm btn-primary" onclick="reprocessZones()" id="reprocessBtn">🔄 Re-procesează selecția</button>
+                    <button class="btn btn-sm btn-secondary" onclick="clearSelections()">🧹 Șterge selecțiile</button>
+                    <span class="selection-info" id="selectionInfo">Selectează zone pe timeline (Click + Drag)</span>
+                </div>
+                <div class="manual-zone">
+                    <input type="text" id="manualZoneStart" class="setting-input btn-sm" placeholder="Start HH:MM:SS" style="width: 120px;">
+                    <input type="text" id="manualZoneEnd" class="setting-input btn-sm" placeholder="End HH:MM:SS" style="width: 120px;">
+                    <button class="btn btn-sm" onclick="addManualZone()">➕ Adaugă zonă</button>
+                </div>
+            </div>
             <div class="timeline-container" id="timelineContainer">
                 <div class="timeline-content" id="timelineContent">
                     <div class="timeline-ruler" id="timelineRuler"></div>
+                    <div class="timeline-selection-overlay" id="timelineSelectionOverlay"></div>
                     <div class="timeline-segments" id="timelineSegments"></div>
                     <div class="timeline-playhead" id="timelinePlayhead">
                         <div class="playhead-handle" id="playheadHandle"></div>
                     </div>
                 </div>
             </div>
+            <div id="selectedZonesList" class="selected-zones-list"></div>
         </div>
 
         <!-- Main Grid -->

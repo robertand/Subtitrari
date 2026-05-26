@@ -575,6 +575,80 @@ body {
     width: 100%;
 }
 
+.timeline-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    gap: 15px;
+    flex-wrap: wrap;
+}
+
+.timeline-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.selection-info {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.manual-zone {
+    display: flex;
+    gap: 8px;
+}
+
+.timeline-selection-overlay {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+    z-index: 15;
+}
+
+.selection-region {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(0, 210, 255, 0.2);
+    border: 1px solid var(--accent);
+    box-sizing: border-box;
+}
+
+.reprocessed-region {
+    position: absolute;
+    top: 0;
+    height: 3px;
+    background: var(--success);
+    z-index: 16;
+}
+
+.selected-zones-list {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+.zone-tag {
+    background: rgba(0, 210, 255, 0.1);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.zone-tag .remove {
+    cursor: pointer;
+    color: var(--danger);
+    font-weight: bold;
+}
+
 .timeline-ruler {
     height: 20px;
     border-bottom: 1px solid var(--glass-border);

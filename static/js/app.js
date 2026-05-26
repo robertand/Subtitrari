@@ -24,7 +24,11 @@ const state = {
     dragStartX: 0,
     dragStartOffset: 0,
     resizeType: null, // 'start' or 'end'
-    exportLanguage: 'original'
+    exportLanguage: 'original',
+    selectedZones: [],
+    isSelectingZone: false,
+    selectionStart: 0,
+    reprocessedZones: []
 };
 
 // === DOM Elements ===
@@ -69,6 +73,8 @@ const elements = {
     timelineSegments: document.getElementById('timelineSegments'),
     timelinePlayhead: document.getElementById('timelinePlayhead'),
     timelineRuler: document.getElementById('timelineRuler'),
+    timelineSelectionOverlay: document.getElementById('timelineSelectionOverlay'),
+    selectedZonesList: document.getElementById('selectedZonesList'),
     zoomLevel: document.getElementById('zoomLevel'),
     subtitleLangSelect: document.getElementById('subtitleLangSelect')
 };
@@ -1033,6 +1039,298 @@ function loadPreset(id) {
     document.getElementById('languageSelect').dispatchEvent(langEvent);
 }
 
+// === Selective Re-processing Logic ===
+
+function initTimelineSelection() {
+    const content = elements.timelineContent;
+    if (!content) return;
+
+    content.addEventListener('mousedown', (e) => {
+        // Only trigger selection if clicking background or ruler, or holding Shift
+        if (e.target.closest('.timeline-segment-block') && !e.shiftKey) return;
+
+        if (e.button !== 0) return; // Only left click
+
+        const rect = content.getBoundingClientRect();
+        const pps = state.pixelsPerSecond * state.zoomLevel;
+        const startTime = (e.clientX - rect.left) / pps;
+
+        state.isSelectingZone = true;
+        state.selectionStart = startTime;
+
+        // Create temporary visual selection
+        const div = document.createElement('div');
+        div.className = 'selection-region tmp-selection';
+        div.style.left = (startTime * pps) + 'px';
+        div.style.width = '0px';
+        elements.timelineSelectionOverlay.appendChild(div);
+
+        const onMouseMove = (moveE) => {
+            if (!state.isSelectingZone) return;
+            const currentX = moveE.clientX - rect.left;
+            const currentTime = Math.max(0, currentX / pps);
+
+            const start = Math.min(state.selectionStart, currentTime);
+            const end = Math.max(state.selectionStart, currentTime);
+
+            div.style.left = (start * pps) + 'px';
+            div.style.width = ((end - start) * pps) + 'px';
+        };
+
+        const onMouseUp = () => {
+            if (!state.isSelectingZone) return;
+            state.isSelectingZone = false;
+
+            const start = parseFloat(div.style.left) / pps;
+            const end = (parseFloat(div.style.left) + parseFloat(div.style.width)) / pps;
+
+            div.remove();
+
+            if (end - start > 0.5) {
+                addZone(start, end);
+            }
+
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+    });
+}
+
+function addZone(start, end) {
+    start = Math.round(start * 100) / 100;
+    end = Math.round(end * 100) / 100;
+
+    state.selectedZones.push({start, end});
+    state.selectedZones.sort((a, b) => a.start - b.start);
+
+    // Merge overlaps
+    const merged = [];
+    if (state.selectedZones.length > 0) {
+        let current = {...state.selectedZones[0]};
+        for (let i = 1; i < state.selectedZones.length; i++) {
+            let next = state.selectedZones[i];
+            if (next.start <= current.end) {
+                current.end = Math.max(current.end, next.end);
+            } else {
+                merged.push(current);
+                current = {...next};
+            }
+        }
+        merged.push(current);
+    }
+    state.selectedZones = merged;
+    renderZones();
+}
+
+function addManualZone() {
+    const startStr = document.getElementById('manualZoneStart').value;
+    const endStr = document.getElementById('manualZoneEnd').value;
+
+    const parseTime = (s) => {
+        if (!s) return NaN;
+        const parts = s.split(':').map(parseFloat);
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        return parseFloat(s);
+    };
+
+    const start = parseTime(startStr);
+    const end = parseTime(endStr);
+
+    if (isNaN(start) || isNaN(end) || end <= start) {
+        showToast('Interval invalid. Folosește HH:MM:SS', 'warning');
+        return;
+    }
+
+    addZone(start, end);
+    document.getElementById('manualZoneStart').value = '';
+    document.getElementById('manualZoneEnd').value = '';
+}
+
+function renderZones() {
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    if (!elements.timelineSelectionOverlay) return;
+
+    elements.timelineSelectionOverlay.innerHTML = '';
+
+    state.reprocessedZones.forEach(zone => {
+        const div = document.createElement('div');
+        div.className = 'reprocessed-region';
+        div.style.left = (zone.start * pps) + 'px';
+        div.style.width = ((zone.end - zone.start) * pps) + 'px';
+        elements.timelineSelectionOverlay.appendChild(div);
+    });
+
+    state.selectedZones.forEach((zone) => {
+        const div = document.createElement('div');
+        div.className = 'selection-region';
+        div.style.left = (zone.start * pps) + 'px';
+        div.style.width = ((zone.end - zone.start) * pps) + 'px';
+        elements.timelineSelectionOverlay.appendChild(div);
+    });
+
+    if (elements.selectedZonesList) {
+        elements.selectedZonesList.innerHTML = '';
+        state.selectedZones.forEach((zone, idx) => {
+            const tag = document.createElement('div');
+            tag.className = 'zone-tag';
+            tag.innerHTML = `
+                <span>${formatTimestamp(zone.start).split(',')[0]} → ${formatTimestamp(zone.end).split(',')[0]}</span>
+                <span class="remove" onclick="removeZone(${idx})">×</span>
+            `;
+            elements.selectedZonesList.appendChild(tag);
+        });
+    }
+
+    const info = document.getElementById('selectionInfo');
+    if (info) {
+        info.textContent = state.selectedZones.length > 0 ?
+            `${state.selectedZones.length} zone selectate` :
+            "Selectează zone pe timeline (Click + Drag)";
+    }
+}
+
+function removeZone(idx) {
+    state.selectedZones.splice(idx, 1);
+    renderZones();
+}
+
+function clearSelections() {
+    state.selectedZones = [];
+    renderZones();
+}
+
+async function reprocessZones() {
+    if (state.selectedZones.length === 0) {
+        showToast('Selectează cel puțin o zonă de pe timeline', 'warning');
+        return;
+    }
+
+    if (!state.taskId) return;
+
+    if (!confirm(`Re-procesezi ${state.selectedZones.length} zone? Segmentele existente din aceste intervale vor fi înlocuite.`)) return;
+
+    const btn = document.getElementById('reprocessBtn');
+    btn.disabled = true;
+    btn.textContent = '⌛ Se procesează...';
+
+    const options = {
+        engine: document.getElementById('engineSelect').value,
+        model: document.getElementById('modelSelect').value,
+        language: document.getElementById('languageSelect').value,
+        hf_token: document.getElementById('hfToken').value,
+        use_diarization: document.getElementById('useDiarization').checked,
+        min_duration: parseFloat(document.getElementById('minDuration').value),
+        max_duration: parseFloat(document.getElementById('maxDuration').value),
+        max_chars: parseInt(document.getElementById('maxChars').value),
+        use_vad: document.getElementById('useVAD').checked,
+        use_margin: document.getElementById('useMargin').checked,
+        isolate_voice: document.getElementById('isolateVoice').checked,
+        deduplicate: document.getElementById('deduplicate').checked,
+        prevent_overlap: document.getElementById('preventOverlap').checked,
+        translate: document.getElementById('enableTranslation').checked,
+        target_languages: [document.getElementById('targetLanguageSelect').value],
+        translation_engine: document.getElementById('translationEngine').value,
+        llm_model: document.getElementById('llmModelSelect').value,
+        refiner_model: document.getElementById('refinerModelSelect').value,
+        translation_context: document.getElementById('translationContext').value,
+        llm_api_provider: document.getElementById('llmApiProvider').value,
+        llm_api_key: document.getElementById('llmApiKey').value,
+        llm_api_model: document.getElementById('llmApiModel').value,
+        llm_api_url: document.getElementById('llmApiUrl').value
+    };
+
+    try {
+        const response = await fetch('/api/process/zones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                task_id: state.taskId,
+                file_path: state.filePath,
+                zones: state.selectedZones,
+                options: options
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            showToast(data.error, 'error');
+        } else {
+            let totalNew = 0;
+            const zonesResults = data.results || [];
+
+            zonesResults.forEach(res => {
+                if (res.segments && res.segments.length > 0) {
+                    mergeSubtitles(res.segments, res.zone_start, res.zone_end, res.translations);
+                    totalNew += res.segments.length;
+                    state.reprocessedZones.push({start: res.zone_start, end: res.zone_end});
+                } else if (res.message) {
+                    showToast(`Zona ${formatTimestamp(res.zone_start).split(',')[0]}: ${res.message}`, 'info');
+                }
+            });
+
+            showToast(`S-au adăugat ${totalNew} subtitrări noi în ${zonesResults.length} zone.`, 'success');
+
+            state.selectedZones = [];
+            renderZones();
+            renderSegments();
+            renderTimeline();
+        }
+    } catch (error) {
+        console.error('Reprocess error:', error);
+        showToast('Eroare la re-procesare', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🔄 Re-procesează selecția';
+    }
+}
+
+function mergeSubtitles(newSegments, zoneStart, zoneEnd, newTranslations) {
+    // Save existing translations into segments to keep them during merge
+    state.segments.forEach((seg, i) => {
+        seg._all_trans = {};
+        Object.keys(state.translations).forEach(lang => {
+            seg._all_trans[lang] = state.translations[lang][i];
+        });
+    });
+
+    // Filter out overlapping
+    state.segments = state.segments.filter(s => {
+        const overlap = Math.min(s.end, zoneEnd) - Math.max(s.start, zoneStart);
+        if (overlap > 1.0 || (overlap > 0 && overlap > (s.end - s.start) * 0.5)) {
+            return false;
+        }
+        return s.end <= zoneStart || s.start >= zoneEnd;
+    });
+
+    // Add new segments with their translations
+    newSegments.forEach((seg, i) => {
+        seg._all_trans = {};
+        Object.keys(newTranslations || {}).forEach(lang => {
+            seg._all_trans[lang] = newTranslations[lang][i];
+        });
+    });
+
+    state.segments = [...state.segments, ...newSegments];
+    state.segments.sort((a, b) => a.start - b.start);
+
+    // Sync back to state.translations
+    const langs = Object.keys(state.translations);
+    langs.forEach(lang => {
+        state.translations[lang] = state.segments.map(seg => seg._all_trans[lang] || "");
+    });
+
+    // Cleanup and ID
+    state.segments.forEach((s, i) => {
+        s.id = i;
+        delete s._all_trans;
+    });
+}
+
 function deletePreset() {
     const select = document.getElementById('presetSelect');
     const id = select.value;
@@ -1526,6 +1824,11 @@ window.addEventListener('beforeunload', () => {
 function renderTimeline() {
     if (!elements.mainVideoPlayer || isNaN(elements.mainVideoPlayer.duration)) return;
 
+    if (!window.timelineSelectionInited) {
+        initTimelineSelection();
+        window.timelineSelectionInited = true;
+    }
+
     const duration = elements.mainVideoPlayer.duration;
     const pps = state.pixelsPerSecond * state.zoomLevel;
     const width = duration * pps;
@@ -1629,8 +1932,12 @@ function renderTimeline() {
 
     // Add Global Mouse Listeners
     if (!window.timelineInited) {
-        window.addEventListener('mousemove', handleTimelineMove);
-        window.addEventListener('mouseup', handleTimelineUp);
+        window.addEventListener('mousemove', (e) => {
+            handleTimelineMove(e);
+        });
+        window.addEventListener('mouseup', () => {
+            handleTimelineUp();
+        });
 
         elements.timelineContainer.addEventListener('wheel', (e) => {
             e.preventDefault();
