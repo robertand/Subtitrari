@@ -1021,7 +1021,7 @@ def process_task(task):
             target_langs = task.options.get('target_languages', ['en'])
             source_lang = result.get('language', 'en')
             engine = task.options.get('translation_engine', 'google')
-            context = options.get('translation_context')
+            context = task.options.get('translation_context')
             
             texts = [seg.get('text', '') for seg in segments]
             metadata = [{'gender': seg.get('speaker_gender'), 'speaker': seg.get('speaker')} for seg in segments]
