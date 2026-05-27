@@ -116,6 +116,11 @@ body {
 }
 
 /* === Header === */
+header.glass-container {
+    position: relative;
+    z-index: 2001; /* Ensure it's above other sections */
+}
+
 .header-content {
     display: flex;
     justify-content: space-between;
