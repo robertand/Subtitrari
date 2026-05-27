@@ -19,10 +19,21 @@
         <!-- Header -->
         <header class="glass-container">
             <div class="header-content">
-                <h1 class="app-title">
-                    <span class="icon">🎙️</span>
-                    Subtitratorul PRO
-                </h1>
+                <div class="header-left">
+                    <h1 class="app-title">
+                        <span class="icon">🎙️</span>
+                        Subtitratorul PRO
+                    </h1>
+                    <div class="header-menu">
+                        <div class="dropdown">
+                            <button class="dropdown-toggle" id="fileMenuBtn">Fișier ▾</button>
+                            <div class="dropdown-content">
+                                <button class="dropdown-item" onclick="loadProjectClick()">📂 Deschide Proiect (.json)</button>
+                                <button class="dropdown-item" onclick="saveProject()">💾 Exportă ca Proiect (.json)</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div class="header-stats">
                     <span class="device-badge" id="deviceBadge">
                         <span class="status-dot"></span>
