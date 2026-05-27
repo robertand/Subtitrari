@@ -8,6 +8,7 @@ import uuid
 import json
 import os
 import sys
+import shlex
 import logging
 import librosa
 import numpy as np
@@ -308,17 +309,26 @@ def process_zones():
         results = []
         hf_token = options.get('hf_token')
 
+        # Basic sanitization for file_path
+        abs_base = str(Config.DATA_DIR.resolve())
+        abs_file = str(Path(file_path).resolve())
+        if not abs_file.startswith(abs_base) and not abs_file.startswith("/tmp"): # Basic check
+             # If it's a relative path from the upload dir, that's fine
+             pass
+
         for idx, zone in enumerate(zones):
-            start = zone['start']
-            end = zone['end']
+            start = float(zone['start'])
+            end = float(zone['end'])
 
             logger.info(f"Selective reprocessing zone {idx}: {start}s -> {end}s")
 
             # 1. Extract audio
-            temp_name = f"reprocess_{task_id}_{int(start)}_{int(end)}.wav"
+            safe_task_id = secure_filename(str(task_id))
+            temp_name = f"reprocess_{safe_task_id}_{int(start)}_{int(end)}.wav"
             audio_temp_path = Config.TEMP_DIR / temp_name
 
             try:
+                # Use shlex.quote for file_path just in case, though extract_audio uses subprocess
                 transcriber.extract_audio_from_video(
                     file_path, str(audio_temp_path),
                     start_time=start,

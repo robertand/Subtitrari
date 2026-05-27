@@ -28,7 +28,18 @@ const state = {
     selectedZones: [],
     isSelectingZone: false,
     selectionStart: 0,
-    reprocessedZones: []
+    reprocessedZones: [],
+    subStyles: {
+        fontFamily: 'Arial',
+        fontSize: 24,
+        color: '#ffffff',
+        bgColor: '#000000',
+        bgOpacity: 0.8,
+        effect: 'shadow',
+        outlineColor: '#000000',
+        offsetY: 50,
+        offsetX: 0
+    }
 };
 
 // === DOM Elements ===
@@ -1007,7 +1018,7 @@ function loadPreset(id) {
     if (preset.deduplicate !== undefined) document.getElementById('deduplicate').checked = preset.deduplicate;
     if (preset.prevent_overlap !== undefined) document.getElementById('preventOverlap').checked = preset.prevent_overlap;
     if (preset.use_diarization !== undefined) document.getElementById('useDiarization').checked = preset.use_diarization;
-    if (preset.multi_pass !== undefined) document.getElementById('multi_pass' in preset ? 'multi_pass' : 'multiPass').checked = preset.multi_pass;
+    if (preset.multi_pass !== undefined) document.getElementById('multiPass').checked = preset.multi_pass;
 
     if (preset.mixed_turkish !== undefined && document.getElementById('mixedTurkish'))
         document.getElementById('mixedTurkish').checked = preset.mixed_turkish;
@@ -1041,62 +1052,53 @@ function loadPreset(id) {
 
 // === Selective Re-processing Logic ===
 
-function initTimelineSelection() {
+function startZoneSelection(e) {
     const content = elements.timelineContent;
-    if (!content) return;
+    const rect = content.getBoundingClientRect();
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const startTime = (e.clientX - rect.left) / pps;
 
-    content.addEventListener('mousedown', (e) => {
-        // Only trigger selection if clicking background or ruler, or holding Shift
-        if (e.target.closest('.timeline-segment-block') && !e.shiftKey) return;
+    state.isSelectingZone = true;
+    state.selectionStart = startTime;
 
-        if (e.button !== 0) return; // Only left click
+    // Create temporary visual selection
+    const div = document.createElement('div');
+    div.className = 'selection-region tmp-selection';
+    div.style.left = (startTime * pps) + 'px';
+    div.style.width = '0px';
+    elements.timelineSelectionOverlay.appendChild(div);
 
-        const rect = content.getBoundingClientRect();
-        const pps = state.pixelsPerSecond * state.zoomLevel;
-        const startTime = (e.clientX - rect.left) / pps;
+    const onMouseMove = (moveE) => {
+        if (!state.isSelectingZone) return;
+        const currentX = moveE.clientX - rect.left;
+        const currentTime = Math.max(0, currentX / pps);
 
-        state.isSelectingZone = true;
-        state.selectionStart = startTime;
+        const start = Math.min(state.selectionStart, currentTime);
+        const end = Math.max(state.selectionStart, currentTime);
 
-        // Create temporary visual selection
-        const div = document.createElement('div');
-        div.className = 'selection-region tmp-selection';
-        div.style.left = (startTime * pps) + 'px';
-        div.style.width = '0px';
-        elements.timelineSelectionOverlay.appendChild(div);
+        div.style.left = (start * pps) + 'px';
+        div.style.width = ((end - start) * pps) + 'px';
+    };
 
-        const onMouseMove = (moveE) => {
-            if (!state.isSelectingZone) return;
-            const currentX = moveE.clientX - rect.left;
-            const currentTime = Math.max(0, currentX / pps);
+    const onMouseUp = () => {
+        if (!state.isSelectingZone) return;
+        state.isSelectingZone = false;
 
-            const start = Math.min(state.selectionStart, currentTime);
-            const end = Math.max(state.selectionStart, currentTime);
+        const start = parseFloat(div.style.left) / pps;
+        const end = (parseFloat(div.style.left) + parseFloat(div.style.width)) / pps;
 
-            div.style.left = (start * pps) + 'px';
-            div.style.width = ((end - start) * pps) + 'px';
-        };
+        div.remove();
 
-        const onMouseUp = () => {
-            if (!state.isSelectingZone) return;
-            state.isSelectingZone = false;
+        if (end - start > 0.5) {
+            addZone(start, end);
+        }
 
-            const start = parseFloat(div.style.left) / pps;
-            const end = (parseFloat(div.style.left) + parseFloat(div.style.width)) / pps;
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+    };
 
-            div.remove();
-
-            if (end - start > 0.5) {
-                addZone(start, end);
-            }
-
-            window.removeEventListener('mousemove', onMouseMove);
-            window.removeEventListener('mouseup', onMouseUp);
-        };
-
-        window.addEventListener('mousemove', onMouseMove);
-        window.addEventListener('mouseup', onMouseUp);
-    });
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
 }
 
 function addZone(start, end) {
@@ -1824,10 +1826,6 @@ window.addEventListener('beforeunload', () => {
 function renderTimeline() {
     if (!elements.mainVideoPlayer || isNaN(elements.mainVideoPlayer.duration)) return;
 
-    if (!window.timelineSelectionInited) {
-        initTimelineSelection();
-        window.timelineSelectionInited = true;
-    }
 
     const duration = elements.mainVideoPlayer.duration;
     const pps = state.pixelsPerSecond * state.zoomLevel;
@@ -1963,15 +1961,22 @@ function renderTimeline() {
     // Adjust container height based on tracks
     elements.timelineContainer.style.height = Math.max(120, tracks.length * 35 + 20) + 'px';
 
-    // Add interaction for playhead dragging and seeking
+    // Combined interaction for playhead and selection
     elements.timelineContent.onmousedown = (e) => {
-        // If clicking on a segment or its handles, don't trigger playhead drag here
-        if (e.target.classList.contains('timeline-segment-block') ||
+        if (e.button !== 0) return; // Only left click
+
+        // If clicking on a segment or its handles, handle elsewhere
+        if (e.target.closest('.timeline-segment-block') ||
             e.target.classList.contains('timeline-delete-btn') ||
             e.target.classList.contains('timeline-resize-handle')) return;
 
-        state.isDraggingPlayhead = true;
-        handleTimelineSeek(e);
+        const selectionMode = document.getElementById('selectionModeToggle')?.checked;
+        if (selectionMode || e.shiftKey) {
+            startZoneSelection(e);
+        } else {
+            state.isDraggingPlayhead = true;
+            handleTimelineSeek(e);
+        }
         e.preventDefault();
     };
 }
@@ -2230,12 +2235,148 @@ function updateLlmApiDefaults() {
 
 function toggleSubtitlePosition() {
     const isTop = document.getElementById('subtitleTopToggle').checked;
-    const overlay = document.getElementById('subtitleOverlay');
-    if (overlay) {
-        if (isTop) {
-            overlay.classList.add('top');
-        } else {
-            overlay.classList.remove('top');
-        }
+    state.subStyles.isTop = isTop;
+    updateSubStyles();
+}
+
+function toggleStylingPanel() {
+    const panel = document.getElementById('stylingPanel');
+    if (panel) {
+        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
     }
+}
+
+function updateSubStyles() {
+    const overlay = elements.subtitleOverlay;
+    if (!overlay) return;
+
+    // Read from UI
+    state.subStyles = {
+        fontFamily: document.getElementById('subFontFamily').value,
+        fontSize: parseInt(document.getElementById('subFontSize').value),
+        color: document.getElementById('subColor').value,
+        bgColor: document.getElementById('subBgColor').value,
+        bgOpacity: parseFloat(document.getElementById('subBgOpacity').value),
+        effect: document.getElementById('subEffect').value,
+        outlineColor: document.getElementById('subOutlineColor').value,
+        offsetY: parseInt(document.getElementById('subOffsetY').value),
+        offsetX: parseInt(document.getElementById('subOffsetX').value),
+        isTop: document.getElementById('subtitleTopToggle')?.checked
+    };
+
+    // Update UI elements visibility
+    const outlineGroup = document.getElementById('subOutlineColorGroup');
+    if (outlineGroup) outlineGroup.style.display = state.subStyles.effect === 'outline' ? 'block' : 'none';
+
+    // Apply to Overlay
+    overlay.style.fontFamily = state.subStyles.fontFamily;
+    overlay.style.fontSize = state.subStyles.fontSize + 'px';
+    overlay.style.color = state.subStyles.color;
+
+    // Background with opacity
+    const r = parseInt(state.subStyles.bgColor.slice(1, 3), 16);
+    const g = parseInt(state.subStyles.bgColor.slice(3, 5), 16);
+    const b = parseInt(state.subStyles.bgColor.slice(5, 7), 16);
+    overlay.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${state.subStyles.bgOpacity})`;
+
+    // Effects
+    if (state.subStyles.effect === 'shadow') {
+        overlay.style.textShadow = '2px 2px 4px rgba(0,0,0,0.8)';
+    } else if (state.subStyles.effect === 'outline') {
+        const c = state.subStyles.outlineColor;
+        overlay.style.textShadow = `-1px -1px 0 ${c}, 1px -1px 0 ${c}, -1px 1px 0 ${c}, 1px 1px 0 ${c}`;
+    } else {
+        overlay.style.textShadow = 'none';
+    }
+
+    // Position
+    if (state.subStyles.isTop) {
+        overlay.style.top = state.subStyles.offsetY + 'px';
+        overlay.style.bottom = 'auto';
+    } else {
+        overlay.style.bottom = state.subStyles.offsetY + 'px';
+        overlay.style.top = 'auto';
+    }
+
+    overlay.style.transform = `translateX(calc(-50% + ${state.subStyles.offsetX}px))`;
+}
+
+function saveProject() {
+    if (state.segments.length === 0) {
+        showToast('Nimic de salvat', 'warning');
+        return;
+    }
+
+    const projectData = {
+        version: "1.0",
+        timestamp: new Date().toISOString(),
+        taskId: state.taskId,
+        filePath: state.filePath,
+        segments: state.segments,
+        translations: state.translations,
+        subStyles: state.subStyles,
+        rawText: state.rawText
+    };
+
+    const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
+    downloadFile(blob, `project_${state.taskId || 'new'}.json`);
+    showToast('Proiect exportat!', 'success');
+}
+
+function loadProjectClick() {
+    document.getElementById('projectInput').click();
+}
+
+async function importProject(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        try {
+            const projectData = JSON.parse(e.target.result);
+
+            // Basic validation
+            if (!projectData.segments) {
+                throw new Error("Format JSON invalid: lipsesc segmentele");
+            }
+
+            // Restore State
+            state.segments = projectData.segments;
+            state.translations = projectData.translations || {};
+            state.taskId = projectData.taskId;
+            state.filePath = projectData.filePath;
+            state.rawText = projectData.rawText || "";
+
+            if (projectData.subStyles) {
+                state.subStyles = projectData.subStyles;
+                // Restore UI for styles
+                document.getElementById('subFontFamily').value = state.subStyles.fontFamily;
+                document.getElementById('subFontSize').value = state.subStyles.fontSize;
+                document.getElementById('subColor').value = state.subStyles.color;
+                document.getElementById('subBgColor').value = state.subStyles.bgColor;
+                document.getElementById('subBgOpacity').value = state.subStyles.bgOpacity;
+                document.getElementById('subEffect').value = state.subStyles.effect;
+                document.getElementById('subOutlineColor').value = state.subStyles.outlineColor;
+                document.getElementById('subOffsetY').value = state.subStyles.offsetY;
+                document.getElementById('subOffsetX').value = state.subStyles.offsetX;
+                document.getElementById('subtitleTopToggle').checked = state.subStyles.isTop || false;
+                updateSubStyles();
+            }
+
+            // Show results view
+            showResults({
+                segments: state.segments,
+                translations: state.translations,
+                raw_text: state.rawText
+            });
+
+            showToast('Proiect încărcat cu succes!', 'success');
+        } catch (error) {
+            console.error('Import error:', error);
+            showToast('Eroare la import: ' + error.message, 'error');
+        }
+        input.value = ''; // Reset for next selection
+    };
+    reader.readAsText(file);
 }

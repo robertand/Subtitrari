@@ -57,6 +57,7 @@
                         <span>Subtitrare Sus</span>
                     </label>
                 </div>
+                <button class="btn btn-sm btn-secondary" onclick="toggleStylingPanel()" style="margin-left: 10px;">🎨 Stil</button>
                 <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
                 <div class="zoom-controls">
                     <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(0.8)">➖</button>
@@ -70,6 +71,10 @@
         <div class="glass-container timeline-section" id="timelineSection" style="display: none; width: 100%; max-width: none;">
             <div class="timeline-toolbar">
                 <div class="timeline-actions">
+                    <label class="mode-switch" style="margin-right: 15px; background: rgba(0, 210, 255, 0.1); padding: 5px 12px; border-radius: 20px; border: 1px solid var(--accent);">
+                        <input type="checkbox" id="selectionModeToggle">
+                        <span class="mode-label" style="color: var(--accent);">Mod Selecție</span>
+                    </label>
                     <button class="btn btn-sm btn-primary" onclick="reprocessZones()" id="reprocessBtn">🔄 Re-procesează selecția</button>
                     <button class="btn btn-sm btn-secondary" onclick="clearSelections()">🧹 Șterge selecțiile</button>
                     <span class="selection-info" id="selectionInfo">Selectează zone pe timeline (Click + Drag)</span>
@@ -91,6 +96,67 @@
                 </div>
             </div>
             <div id="selectedZonesList" class="selected-zones-list"></div>
+        </div>
+
+        <!-- Subtitle Styling Panel -->
+        <div class="glass-container styling-panel" id="stylingPanel" style="display: none;">
+            <div class="section-header-row">
+                <h2 class="section-title">🎨 Personalizare Subtitrare</h2>
+                <button class="btn btn-sm btn-secondary" onclick="toggleStylingPanel()">Close</button>
+            </div>
+            <div class="setting-row">
+                <div class="setting-half">
+                    <label class="setting-label">Font Family</label>
+                    <select id="subFontFamily" class="setting-select" onchange="updateSubStyles()">
+                        <option value="Arial" selected>Arial</option>
+                        <option value="'Segoe UI'">Segoe UI</option>
+                        <option value="Tahoma">Tahoma</option>
+                        <option value="Verdana">Verdana</option>
+                        <option value="Courier New">Courier New</option>
+                    </select>
+                </div>
+                <div class="setting-half">
+                    <label class="setting-label">Mărime (px)</label>
+                    <input type="number" id="subFontSize" class="setting-input" value="24" min="12" max="60" oninput="updateSubStyles()">
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="setting-half">
+                    <label class="setting-label">Culoare Text</label>
+                    <input type="color" id="subColor" class="setting-input" value="#ffffff" oninput="updateSubStyles()">
+                </div>
+                <div class="setting-half">
+                    <label class="setting-label">Culoare Fundal</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="color" id="subBgColor" class="setting-input" value="#000000" oninput="updateSubStyles()">
+                        <input type="range" id="subBgOpacity" min="0" max="1" step="0.1" value="0.8" oninput="updateSubStyles()" title="Opacitate">
+                    </div>
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="setting-half">
+                    <label class="setting-label">Efecte</label>
+                    <select id="subEffect" class="setting-select" onchange="updateSubStyles()">
+                        <option value="none">Fără (Simplu)</option>
+                        <option value="shadow" selected>Drop Shadow</option>
+                        <option value="outline">Outline (Contur)</option>
+                    </select>
+                </div>
+                <div class="setting-half" id="subOutlineColorGroup" style="display: none;">
+                    <label class="setting-label">Culoare Contur</label>
+                    <input type="color" id="subOutlineColor" class="setting-input" value="#000000" oninput="updateSubStyles()">
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="setting-half">
+                    <label class="setting-label">Poziție Y (Offset px)</label>
+                    <input type="number" id="subOffsetY" class="setting-input" value="50" oninput="updateSubStyles()">
+                </div>
+                <div class="setting-half">
+                    <label class="setting-label">Poziție X (Offset px)</label>
+                    <input type="number" id="subOffsetX" class="setting-input" value="0" oninput="updateSubStyles()">
+                </div>
+            </div>
         </div>
 
         <!-- Main Grid -->
@@ -522,8 +588,11 @@
                         <div class="toolbar-actions">
                             <button class="btn btn-sm" onclick="addSegment()">➕ Adaugă segment</button>
                             <button class="btn btn-sm" onclick="copyFullText()">📋 Copiază text</button>
+                            <button class="btn btn-sm" onclick="saveProject()">📂 Salvează Proiect</button>
+                            <button class="btn btn-sm" onclick="loadProjectClick()">📂 Încarcă Proiect</button>
                             <button class="btn btn-sm" onclick="exportSRT()">💾 Export SRT</button>
                             <button class="btn btn-sm" onclick="showDOCXDialog()">📄 Export DOCX</button>
+                            <input type="file" id="projectInput" accept=".json" style="display: none;" onchange="importProject(this)">
                         </div>
                     </div>
 
