@@ -252,11 +252,25 @@
                             <select id="engineSelect" class="setting-select" onchange="toggleEngineOptions()">
                                 <option value="whisper" selected>OpenAI Whisper</option>
                                 <option value="cohere">Cohere Transcribe (03-2026)</option>
+                                <option value="nemo">NVIDIA NeMo Parakeet v3</option>
                             </select>
                         </div>
 
+                        <div class="setting-group" id="nemoInfoGroup" style="display: none;">
+                            <div class="info-box" style="background: rgba(118, 185, 0, 0.1); border-color: #76b900;">
+                                <p style="font-size: 0.85rem; color: #76b900; font-weight: 600;">
+                                    NVIDIA NeMo Parakeet TDT v3 ★ (25 limbi, ~2.3GB)
+                                </p>
+                                <p style="font-size: 0.75rem; margin-top: 4px;">
+                                    Model NVIDIA cu word-level timestamps native.
+                                    La prima utilizare se descarcă automat ~2.3GB din HuggingFace.
+                                    Recomandat GPU NVIDIA (minim 4GB VRAM). CPU este suportat dar lent.
+                                </p>
+                            </div>
+                        </div>
+
                         <div class="setting-group" id="whisperModelGroup">
-                            <label class="setting-label">Model Whisper</label>
+                            <label class="setting-label">Model</label>
                             <select id="modelSelect" class="setting-select">
                                 <option value="tiny">Tiny (rapid, memorie redusă)</option>
                                 <option value="base">Base</option>

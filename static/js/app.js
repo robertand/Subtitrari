@@ -495,6 +495,14 @@ async function startProcessing() {
         audio_only: audioOnly
     };
     
+    // NeMo Language Check
+    if (options.engine === 'nemo' && options.language !== 'auto') {
+        const nemoSupported = ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"];
+        if (!nemoSupported.includes(options.language)) {
+            showToast(`Atenție: NeMo Parakeet v3 nu suportă limba selectată (${options.language}). Se va folosi auto-detect.`, 'warning');
+        }
+    }
+
     if (!audioOnly) {
         options.translate = document.getElementById('enableTranslation').checked;
         if (options.translate) {
@@ -2196,9 +2204,14 @@ function toggleEngineOptions() {
     const engine = document.getElementById('engineSelect').value;
     const whisperGroup = document.getElementById('whisperModelGroup');
     const cohereGroup = document.getElementById('coherePromptGroup');
+    const nemoGroup = document.getElementById('nemoInfoGroup');
 
-    if (whisperGroup) whisperGroup.style.display = engine === 'whisper' ? 'block' : 'none';
-    if (cohereGroup) cohereGroup.style.display = engine === 'cohere' ? 'block' : 'none';
+    if (whisperGroup) whisperGroup.style.display = (engine === 'whisper') ? 'block' : 'none';
+    if (cohereGroup) cohereGroup.style.display = (engine === 'cohere') ? 'block' : 'none';
+    if (nemoGroup) nemoGroup.style.display = (engine === 'nemo') ? 'block' : 'none';
+
+    // Show model selection only for Whisper (NeMo has one fixed model here, Cohere also handles it internally)
+    if (whisperGroup) whisperGroup.style.display = (engine === 'whisper') ? 'block' : 'none';
 }
 
 function updateModelOptions() {

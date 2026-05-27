@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from transcriber import WhisperTranscriber, GenderDetector
+from nemo_transcriber import get_nemo_transcriber, NEMO_SUPPORTED_LANGUAGES, check_and_install_nemo
 from translator import Translator
 from segmenter import SubtitleSegmenter
 from file_handler import FileHandler
@@ -344,6 +345,15 @@ def process_zones():
                         hf_token=hf_token,
                         use_diarization=options.get('use_diarization', False)
                     )
+                elif options.get('engine') == 'nemo':
+                    nemo_t = get_nemo_transcriber()
+                    if not nemo_t.is_available():
+                        check_and_install_nemo()
+                    segments = nemo_t.transcribe(
+                        str(audio_temp_path),
+                        language=options.get('language')
+                    )
+                    res = {"segments": segments}
                 else:
                     # Fallback to standard
                     res = transcriber.transcribe_audio(
@@ -677,7 +687,29 @@ def process_task(task):
         if language == 'auto':
             language = None
         
-        if engine == 'cohere':
+        if engine == 'nemo':
+            task.message = 'Initializing NVIDIA NeMo Parakeet...'
+            nemo_t = get_nemo_transcriber()
+            if not nemo_t.is_available():
+                task.message = 'Installing NeMo Toolkit...'
+                check_and_install_nemo()
+
+            # NeMo doesn't use the standard transcriber singleton, but its own
+            segments = nemo_t.transcribe(
+                str(audio_path),
+                language=language,
+                progress_callback=lambda m: update_task_progress(task, task.progress, m)
+            )
+            result = {
+                "segments": segments,
+                "text": " ".join([s.get("text", "") for s in segments]),
+                "raw_text": " ".join([s.get("text", "") for s in segments]),
+                "language": language or "auto",
+                "method": "nemo_parakeet"
+            }
+            # Unload after use
+            nemo_t.unload_model()
+        elif engine == 'cohere':
             task.message = 'Initializing Cohere Transcribe...'
             if transcriber.current_model and transcriber.current_model != transcriber.models.get(Config.COHERE_MODEL):
                 transcriber.unload_model()

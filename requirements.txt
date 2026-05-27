@@ -20,6 +20,7 @@ whisperx @ git+https://github.com/m-bain/whisperX.git
 noisereduce>=3.0.0
 flask-cors>=4.0.0
 deep-translator>=1.11.4
+nemo_toolkit[asr]>=2.0.0
 vllm>=0.6.0
 langdetect>=1.0.9
 anthropic>=0.18.1
