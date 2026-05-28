@@ -494,7 +494,7 @@ async function startProcessing() {
         multi_pass: document.getElementById('multiPass').checked,
         audio_only: audioOnly,
         use_ocr: document.getElementById('useOCR').checked,
-        ocr_manual_region: document.querySelector('input[name="ocrRegionMode"]:checked')?.value === 'manual',
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
         ocr_top: document.getElementById('ocrTop').value,
         ocr_bottom: document.getElementById('ocrBottom').value,
         ocr_conf: document.getElementById('ocrConf').value,
@@ -1000,7 +1000,7 @@ function savePreset() {
         llm_api_model: document.getElementById('llmApiModel').value,
         llm_api_url: document.getElementById('llmApiUrl').value,
         use_ocr: document.getElementById('useOCR').checked,
-        ocr_manual_region: document.querySelector('input[name="ocrRegionMode"]:checked')?.value === 'manual',
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
         ocr_top: document.getElementById('ocrTop').value,
         ocr_bottom: document.getElementById('ocrBottom').value,
         ocr_conf: document.getElementById('ocrConf').value,
@@ -1065,7 +1065,10 @@ function loadPreset(id) {
         document.getElementById('ocrConfVal').textContent = preset.ocr_conf + '%';
     }
     if (preset.ocr_merge !== undefined) document.getElementById('ocrMerge').checked = preset.ocr_merge;
-    if (preset.ocr_manual_region !== undefined) {
+    if (preset.ocr_region_mode !== undefined) {
+        const radio = document.querySelector(`input[name="ocrRegionMode"][value="${preset.ocr_region_mode}"]`);
+        if (radio) radio.checked = true;
+    } else if (preset.ocr_manual_region !== undefined) {
         const val = preset.ocr_manual_region ? 'manual' : 'auto';
         const radio = document.querySelector(`input[name="ocrRegionMode"][value="${val}"]`);
         if (radio) radio.checked = true;
@@ -1288,7 +1291,7 @@ async function reprocessZones() {
         llm_api_model: document.getElementById('llmApiModel').value,
         llm_api_url: document.getElementById('llmApiUrl').value,
         use_ocr: document.getElementById('useOCR').checked,
-        ocr_manual_region: document.querySelector('input[name="ocrRegionMode"]:checked')?.value === 'manual',
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
         ocr_top: document.getElementById('ocrTop').value,
         ocr_bottom: document.getElementById('ocrBottom').value,
         ocr_conf: document.getElementById('ocrConf').value,

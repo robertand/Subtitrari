@@ -12,6 +12,7 @@ import shlex
 import logging
 import librosa
 import numpy as np
+import torch
 from pathlib import Path
 from datetime import datetime
 import shutil
@@ -401,11 +402,14 @@ def process_zones():
 
                         ocr_lang = options.get('language') or 'en'
                         region = None
-                        if options.get('ocr_manual_region'):
+                        mode = options.get('ocr_region_mode', 'auto')
+                        if mode == 'manual':
                             region = (
                                 float(options.get('ocr_top', 0.75)),
                                 float(options.get('ocr_bottom', 0.98))
                             )
+                        elif mode == 'full':
+                            region = (0.0, 1.0)
 
                         ocr_segments = ocr_extractor.extract_subtitles(
                             file_path,
@@ -1106,13 +1110,16 @@ def process_task(task):
                 # Use current language or auto
                 ocr_lang = language or 'en'
 
-                # Manual region
+                # Region selection
                 region = None
-                if task.options.get('ocr_manual_region'):
+                mode = task.options.get('ocr_region_mode', 'auto')
+                if mode == 'manual':
                     region = (
                         float(task.options.get('ocr_top', 0.75)),
                         float(task.options.get('ocr_bottom', 0.98))
                     )
+                elif mode == 'full':
+                    region = (0.0, 1.0)
 
                 ocr_segments = ocr_extractor.extract_subtitles(
                     str(task.file_path),

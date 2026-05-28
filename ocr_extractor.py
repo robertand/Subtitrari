@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Zona implicită de căutare a subtitrărilor: treimea de jos a imaginii
 # (0.0 = sus, 1.0 = jos)
-DEFAULT_SUBTITLE_REGION_TOP = 0.75     # de la 75% în jos
+DEFAULT_SUBTITLE_REGION_TOP = 0.70     # de la 70% în jos
 DEFAULT_SUBTITLE_REGION_BOTTOM = 0.98  # până la 98%
 
 # Parametri OCR
@@ -203,7 +203,10 @@ class HardcodedSubtitleExtractor:
         bottom_px = int(height * bottom_ratio)
 
         if progress_callback:
-            progress_callback(f"[OCR] Procesare video ({total_frames} frame-uri)...")
+            msg = f"[OCR] Procesare video ({total_frames} frame-uri)"
+            if top_ratio == 0 and bottom_ratio == 1:
+                msg += " - TOATĂ IMAGINEA"
+            progress_callback(f"{msg}...")
 
         # Colectează text per frame
         frame_texts = {}  # frame_idx → text
@@ -216,8 +219,11 @@ class HardcodedSubtitleExtractor:
                 break
 
             if frame_idx % (frames_to_skip + 1) == 0:
-                # Crop zona de subtitrare
-                crop = frame[top_px:bottom_px, :]
+                # Crop zona de subtitrare (sau full frame dacă 0-1)
+                if top_ratio == 0 and bottom_ratio == 1:
+                    crop = frame
+                else:
+                    crop = frame[top_px:bottom_px, :]
 
                 # Preprocess pentru OCR mai bun
                 crop = self._preprocess_for_ocr(crop)
@@ -234,10 +240,15 @@ class HardcodedSubtitleExtractor:
                         confidence = line[1][1]    # confidence (0-1)
 
                         if confidence * 100 >= conf_threshold and text_content.strip():
-                            text_lines.append(text_content.strip())
+                            # Curățare text (elimină caractere ciudate)
+                            cleaned = text_content.strip()
+                            if len(cleaned) > 1: # Ignorăm caractere singuratice/zgomot
+                                text_lines.append(cleaned)
 
                 if text_lines:
-                    frame_texts[frame_idx] = " ".join(text_lines)
+                    # Sortăm liniile după Y apoi X pentru a păstra ordinea naturală a citirii
+                    # PaddleOCR returnează deja o ordine decentă, dar join-ul simplu e ok
+                    frame_texts[frame_idx] = " | ".join(text_lines)
 
                 processed += 1
                 if progress_callback and processed % 100 == 0:
@@ -363,19 +374,27 @@ def merge_ocr_and_asr_segments(asr_segments, ocr_segments):
             # Suprapunere temporală
             if (ocr_seg["start"] < asr_seg["end"] and
                 ocr_seg["end"] > asr_seg["start"]):
+
+                # Normalizăm textul pentru comparație (eliminăm separatorul | adăugat la OCR)
+                ocr_text_clean = ocr_seg["text"].replace(" | ", " ").lower()
+                asr_text_clean = asr_seg["text"].lower()
+
                 # Verifică similaritate text
                 sim = SequenceMatcher(
                     None,
-                    ocr_seg["text"].lower(),
-                    asr_seg["text"].lower()
+                    ocr_text_clean,
+                    asr_text_clean
                 ).ratio()
-                if sim > 0.7:
-                    # Text similar → ASR câștigă (mai precis)
+
+                if sim > 0.6: # Scădem pragul pentru a evita duplicatele parțiale
+                    # Text similar → ASR câștigă (mai precis pe dialog)
                     overlap_found = True
                     break
 
         if not overlap_found:
-            # Text OCR nou (titlu, text din scenă) → adaugă
+            # Text OCR nou (titlu, text din scenă, pancartă) → adaugă
+            # Marcăm textul OCR pentru a fi identificabil în UI
+            ocr_seg["text"] = f"[OCR] {ocr_seg['text']}"
             all_segments.append(ocr_seg)
 
     # Sortează cronologic
