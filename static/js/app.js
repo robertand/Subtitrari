@@ -1247,6 +1247,8 @@ async function reprocessZones() {
         isolate_voice: document.getElementById('isolateVoice').checked,
         deduplicate: document.getElementById('deduplicate').checked,
         prevent_overlap: document.getElementById('preventOverlap').checked,
+        transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
+        transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
         translate: document.getElementById('enableTranslation').checked,
         target_languages: targetLangs,
         translation_engine: document.getElementById('translationEngine').value,
@@ -2216,8 +2218,41 @@ function toggleEngineOptions() {
     if (cohereGroup) cohereGroup.style.display = (engine === 'cohere') ? 'block' : 'none';
     if (nemoGroup) nemoGroup.style.display = (engine === 'nemo') ? 'block' : 'none';
 
-    // Show model selection only for Whisper (NeMo has one fixed model here, Cohere also handles it internally)
-    if (whisperGroup) whisperGroup.style.display = (engine === 'whisper') ? 'block' : 'none';
+    // Show model selection for Whisper and NeMo
+    if (whisperGroup) whisperGroup.style.display = (engine === 'whisper' || engine === 'nemo') ? 'block' : 'none';
+
+    // Update model dropdown content for NeMo if selected
+    if (engine === 'nemo') {
+        updateNemoModels();
+    } else {
+        restoreWhisperModels();
+    }
+}
+
+function updateNemoModels() {
+    const modelSelect = document.getElementById('modelSelect');
+    const label = document.querySelector('label[for="modelSelect"]') || document.querySelector('#whisperModelGroup label');
+    if (label) label.textContent = 'Model NeMo';
+
+    // Save current whisper models if not already saved
+    if (!window._whisperModelsHtml) {
+        window._whisperModelsHtml = modelSelect.innerHTML;
+    }
+
+    modelSelect.innerHTML = `
+        <option value="parakeet-v3" selected>Parakeet TDT v3 (Fast & Accurate)</option>
+        <option value="canary">Canary-1b (Multilingual/Translation)</option>
+    `;
+}
+
+function restoreWhisperModels() {
+    const modelSelect = document.getElementById('modelSelect');
+    const label = document.querySelector('label[for="modelSelect"]') || document.querySelector('#whisperModelGroup label');
+    if (label) label.textContent = 'Model Whisper';
+
+    if (window._whisperModelsHtml) {
+        modelSelect.innerHTML = window._whisperModelsHtml;
+    }
 }
 
 function updateModelOptions() {

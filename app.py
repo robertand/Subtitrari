@@ -355,7 +355,10 @@ def process_zones():
                     lang_code = options.get('language')
                     segments = nemo_t.transcribe(
                         str(audio_temp_path),
-                        language=lang_code
+                        model_name=options.get('model', 'parakeet-v3'),
+                        language=lang_code,
+                        window_size=options.get('transcribe_window', 30),
+                        overlap=options.get('transcribe_overlap', 10)
                     )
                     # Note: Parakeet v3 doesn't explicitly return the detected language code easily
                     # without re-parsing, but for now we use the requested language or assume auto
@@ -694,7 +697,7 @@ def process_task(task):
             language = None
         
         if engine == 'nemo':
-            task.message = 'Initializing NVIDIA NeMo Parakeet...'
+            task.message = f'Initializing NVIDIA NeMo {model_name}...'
             nemo_t = get_nemo_transcriber()
             if not nemo_t.is_available():
                 task.message = 'Installing NeMo Toolkit...'
@@ -703,7 +706,10 @@ def process_task(task):
             # NeMo doesn't use the standard transcriber singleton, but its own
             segments = nemo_t.transcribe(
                 str(audio_path),
+                model_name=model_name,
                 language=language,
+                window_size=task.options.get('transcribe_window', 30),
+                overlap=task.options.get('transcribe_overlap', 10),
                 progress_callback=lambda m: update_task_progress(task, task.progress, m)
             )
             result = {

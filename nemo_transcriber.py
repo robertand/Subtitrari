@@ -13,10 +13,13 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Model ID pe HuggingFace — descărcare automată prin NeMo
-NEMO_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
+# Modele suportate
+NEMO_MODELS = {
+    "parakeet-v3": "nvidia/parakeet-tdt-0.6b-v3",
+    "canary": "nvidia/canary-1b"
+}
 
-# Limbi suportate de Parakeet v3
+# Limbi suportate de Parakeet v3 (implicit)
 NEMO_SUPPORTED_LANGUAGES = [
     "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de",
     "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk",
@@ -63,13 +66,14 @@ def check_and_install_nemo():
 
 class NeMoTranscriber:
     """
-    Wrapper pentru NVIDIA NeMo Parakeet-TDT-0.6B-v3.
+    Wrapper pentru NVIDIA NeMo Parakeet și Canary.
     Gestionează descărcarea modelului, conversia audio și extragerea timestamps.
     """
 
     def __init__(self):
         self._model = None
         self._model_loaded = False
+        self._current_model_name = None
 
     def is_available(self) -> bool:
         """Verifică dacă NeMo e instalat."""
@@ -79,14 +83,18 @@ class NeMoTranscriber:
         except ImportError:
             return False
 
-    def load_model(self, progress_callback=None) -> bool:
+    def load_model(self, model_name: str = "parakeet-v3", progress_callback=None) -> bool:
         """
-        Încarcă modelul NeMo Parakeet. La prima rulare îl descarcă automat
-        din HuggingFace (~2.3GB). Descărcările ulterioare folosesc cache-ul local.
-        Cache implicit: ~/.cache/huggingface/
+        Încarcă modelul NeMo. La prima rulare îl descarcă automat
+        din HuggingFace.
         """
-        if self._model_loaded and self._model is not None:
+        model_id = NEMO_MODELS.get(model_name, model_name)
+
+        if self._model_loaded and self._model is not None and self._current_model_name == model_name:
             return True
+
+        if self._model is not None:
+            self.unload_model()
 
         if not self.is_available():
             raise ImportError(
@@ -97,14 +105,22 @@ class NeMoTranscriber:
             import nemo.collections.asr as nemo_asr
 
             if progress_callback:
-                progress_callback("Se descarcă/încarcă modelul NeMo Parakeet (~2.3GB la prima rulare)...")
+                progress_callback(f"Se descarcă/încarcă modelul NeMo {model_name} (~2-4GB)...")
 
-            logger.info(f"[NeMo] Încărcare model: {NEMO_MODEL_ID}")
+            logger.info(f"[NeMo] Încărcare model: {model_id}")
 
-            # from_pretrained descarcă automat din HuggingFace dacă nu e în cache
-            self._model = nemo_asr.models.ASRModel.from_pretrained(
-                model_name=NEMO_MODEL_ID
-            )
+            if model_name == "canary":
+                # Canary requires EncDecMultiTaskModel
+                self._model = nemo_asr.models.EncDecMultiTaskModel.from_pretrained(
+                    model_name=model_id
+                )
+            else:
+                # from_pretrained descarcă automat din HuggingFace dacă nu e în cache
+                self._model = nemo_asr.models.ASRModel.from_pretrained(
+                    model_name=model_id
+                )
+
+            self._current_model_name = model_name
 
             # Mută pe GPU dacă e disponibil
             import torch
@@ -165,14 +181,15 @@ class NeMoTranscriber:
                 pass
         return 0.0
 
-    def split_audio_chunks(self, wav_path: str, chunk_seconds: int = NEMO_CHUNK_SIZE_SECONDS) -> List[Dict]:
+    def split_audio_chunks(self, wav_path: str, chunk_seconds: int, overlap_seconds: int = 0) -> List[Dict]:
         """
-        Împarte audio-ul lung în chunks pentru procesare.
-        Returnează lista de {path, offset_seconds}.
+        Împarte audio-ul lung în chunks pentru procesare, cu overlap.
+        Returnează lista de {path, offset_seconds, step_duration}.
         """
         duration = self.get_audio_duration(wav_path)
         chunks = []
         start = 0.0
+        step = max(1.0, chunk_seconds - overlap_seconds)
 
         while start < duration:
             end = min(start + chunk_seconds, duration)
@@ -192,23 +209,31 @@ class NeMoTranscriber:
             chunks.append({
                 "path": chunk_path,
                 "offset": start,
-                "duration": end - start
+                "duration": end - start,
+                "step_duration": step
             })
-            start = end
+
+            if end >= duration:
+                break
+            start += step
 
         return chunks
 
     def transcribe(
         self,
         audio_path: str,
+        model_name: str = "parakeet-v3",
         language: Optional[str] = None,
+        window_size: int = 30,
+        overlap: int = 10,
         progress_callback=None
     ) -> List[Dict]:
         """
         Transcrie fișierul audio și returnează segmente cu timestamps.
+        Folosește windowing pentru a evita OOM.
         """
-        if not self._model_loaded:
-            self.load_model(progress_callback)
+        if not self._model_loaded or self._current_model_name != model_name:
+            self.load_model(model_name, progress_callback)
 
         # Pregătire audio
         if progress_callback:
@@ -218,20 +243,12 @@ class NeMoTranscriber:
         duration = self.get_audio_duration(wav_path)
 
         try:
-            # Audio scurt: procesare directă full attention
-            if duration <= NEMO_MAX_FULL_ATTENTION_SECONDS:
-                if progress_callback:
-                    progress_callback(f"[NeMo] Transcriere ({duration/60:.1f} minute)...")
-                segments = self._transcribe_single(wav_path, language)
-
-            # Audio lung: procesare pe chunks
-            else:
-                if progress_callback:
-                    progress_callback(
-                        f"[NeMo] Audio lung ({duration/60:.1f} minute), "
-                        f"procesare în {int(duration/NEMO_CHUNK_SIZE_SECONDS)+1} chunks..."
-                    )
-                segments = self._transcribe_chunked(wav_path, language, progress_callback)
+            # Procesare pe chunks (windowing) conform setărilor utilizatorului
+            if progress_callback:
+                progress_callback(
+                    f"[NeMo] Transcriere ({duration/60:.1f} minute) în ferestre de {window_size}s..."
+                )
+            segments = self._transcribe_chunked(wav_path, language, window_size, overlap, progress_callback)
 
             return segments
 
@@ -241,19 +258,26 @@ class NeMoTranscriber:
                 os.unlink(wav_path)
 
     def _transcribe_single(self, wav_path: str, language: Optional[str]) -> List[Dict]:
-        """Transcriere directă pentru audio scurt (<24 min)."""
+        """Transcriere directă pentru audio scurt."""
 
-        # Setează limba dacă e specificată (altfel auto-detect)
-        if language and language in NEMO_SUPPORTED_LANGUAGES:
-            try:
-                self._model.set_language(language)
-            except AttributeError:
-                pass  # Unele versiuni NeMo nu au set_language — auto-detect implicit
+        transcribe_kwargs = {"timestamps": True, "verbose": False}
 
-        # Transcriere cu timestamps activate
+        if self._current_model_name == "canary":
+            transcribe_kwargs["task"] = "asr"
+            transcribe_kwargs["source_lang"] = language if language and language != "auto" else "en"
+            transcribe_kwargs["target_lang"] = language if language and language != "auto" else "en"
+        else:
+            if language and language in NEMO_SUPPORTED_LANGUAGES:
+                try:
+                    if hasattr(self._model, 'set_language'):
+                        self._model.set_language(language)
+                except Exception:
+                    pass
+
+        # Transcriere
         hypotheses = self._model.transcribe(
             [wav_path],
-            timestamps=True
+            **transcribe_kwargs
         )
 
         return self._parse_hypothesis(hypotheses[0])
@@ -262,11 +286,13 @@ class NeMoTranscriber:
         self,
         wav_path: str,
         language: Optional[str],
+        window_size: int,
+        overlap: int,
         progress_callback=None
     ) -> List[Dict]:
-        """Transcriere pe chunks pentru audio lung (>24 min)."""
+        """Transcriere pe chunks (windowing) pentru a salva memorie."""
 
-        chunks = self.split_audio_chunks(wav_path)
+        chunks = self.split_audio_chunks(wav_path, chunk_seconds=window_size, overlap_seconds=overlap)
         all_segments = []
 
         for i, chunk in enumerate(chunks):
@@ -277,28 +303,45 @@ class NeMoTranscriber:
                 )
 
             try:
-                if language and language in NEMO_SUPPORTED_LANGUAGES:
-                    try:
-                        self._model.set_language(language)
-                    except AttributeError:
-                        pass
+                transcribe_kwargs = {"timestamps": True}
+
+                if self._current_model_name == "canary":
+                    # Canary specific arguments
+                    transcribe_kwargs["task"] = "asr"
+                    transcribe_kwargs["source_lang"] = language if language and language != "auto" else "en"
+                    transcribe_kwargs["target_lang"] = language if language and language != "auto" else "en"
+                else:
+                    # Setează limba dacă e specificată (altfel auto-detect pentru Parakeet)
+                    if language and language in NEMO_SUPPORTED_LANGUAGES:
+                        try:
+                            if hasattr(self._model, 'set_language'):
+                                self._model.set_language(language)
+                        except Exception:
+                            pass
 
                 hypotheses = self._model.transcribe(
                     [chunk["path"]],
-                    timestamps=True
+                    verbose=False,
+                    **transcribe_kwargs
                 )
 
                 chunk_segments = self._parse_hypothesis(hypotheses[0])
 
-                # Ajustează timestamps cu offset-ul chunk-ului
-                for seg in chunk_segments:
-                    seg["start"] += chunk["offset"]
-                    seg["end"] += chunk["offset"]
-                    for word in seg.get("words", []):
-                        word["start"] += chunk["offset"]
-                        word["end"] += chunk["offset"]
+                # Ajustează timestamps cu offset-ul chunk-ului și aplică logică de overlap
+                is_last_chunk = (i == len(chunks) - 1)
+                step_duration = chunk["step_duration"]
 
-                all_segments.extend(chunk_segments)
+                for seg in chunk_segments:
+                    # Menținem segmentele care încep în interiorul "pasului" curent,
+                    # sau toate segmentele dacă este ultimul chunk.
+                    if is_last_chunk or seg["start"] < step_duration:
+                        seg["start"] += chunk["offset"]
+                        seg["end"] += chunk["offset"]
+                        if "words" in seg:
+                            for word in seg["words"]:
+                                word["start"] += chunk["offset"]
+                                word["end"] += chunk["offset"]
+                        all_segments.append(seg)
 
             finally:
                 # Curăță chunk temporar

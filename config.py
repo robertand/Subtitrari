@@ -29,7 +29,7 @@ class Config:
         'tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3', 'large-v3-turbo', 'turbo',
         'selimc/whisper-large-v3-turbo-turkish',
         'Farazzzzzzz/whisper-tiny_to_korean_accent2',
-        'nvidia/parakeet-tdt-0.6b-v3'
+        'parakeet-v3', 'canary'
     ]
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
     DEFAULT_TRANSCRIBE_WINDOW = 30
