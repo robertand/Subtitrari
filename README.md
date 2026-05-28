@@ -1,3 +1,119 @@
+Installation Instructions for Subtitrari
+1. Common Prerequisites (All Operating Systems)
+
+Install Python 3.10 or 3.11 (recommended)
+Install FFmpeg (required for audio/video processing)
+Git (optional, for cloning)
+
+
+Windows
+Step 1: Install FFmpeg
+
+Download from: https://www.gyan.dev/ffmpeg/builds/
+Choose ffmpeg-release-essentials.zip
+Extract it and add the bin folder to your System PATH
+
+Step 2: Install Python
+
+Download Python 3.11 from https://python.org
+During installation, check "Add python.exe to PATH"
+
+Step 3: Install the Application
+Bash# Clone the repository
+git clone https://github.com/robertand/Subtitrari.git
+cd Subtitrari
+
+# Create virtual environment
+python -m venv venv
+venv\Scripts\activate
+
+# Upgrade pip
+pip install --upgrade pip
+
+# Install requirements
+pip install -r requirements.txt
+
+# Run the application
+python app.py
+Access the app at: http://localhost:5000
+
+Linux
+Ubuntu / Debian
+Bash# Install system dependencies
+sudo apt update
+sudo apt install python3.11 python3.11-venv python3-pip ffmpeg git -y
+
+# Clone the repository
+git clone https://github.com/robertand/Subtitrari.git
+cd Subtitrari
+
+# Create virtual environment
+python3.11 -m venv venv
+source venv/bin/activate
+
+# Upgrade pip
+pip install --upgrade pip
+
+# Install requirements
+pip install -r requirements.txt
+
+# Run the application
+python app.py
+Fedora / Arch
+Bash# Fedora
+sudo dnf install python3.11 python3-pip ffmpeg git
+
+# Arch
+sudo pacman -S python python-pip ffmpeg git
+Then follow the same steps as above (virtual environment and pip install).
+
+macOS
+Bash# Install Homebrew (if not installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install dependencies
+brew install python@3.11 ffmpeg git
+
+# Clone the repository
+git clone https://github.com/robertand/Subtitrari.git
+cd Subtitrari
+
+# Create virtual environment
+python3.11 -m venv venv
+source venv/bin/activate
+
+# Upgrade pip
+pip install --upgrade pip
+
+# Install requirements
+pip install -r requirements.txt
+
+# Run the application
+python app.py
+
+Running the Application
+After installation, always run these commands to start the app:
+Bash# 1. Go to project folder
+cd Subtitrari
+
+# 2. Activate virtual environment
+# Windows:
+venv\Scripts\activate
+
+# Linux / macOS:
+source venv/bin/activate
+
+# 3. Start the server
+python app.py
+Then open your browser and go to http://localhost:5000
+
+Notes
+
+First run may take a long time (downloading ML models)
+The app requires at least 5-8GB of free disk space
+For GPU acceleration (much faster), make sure you have CUDA installed (NVIDIA) or appropriate PyTorch version
+You can create a desktop shortcut or use PM2 / systemd for production use
+
 Subtitratorul PRO - User Manual
 Table of Contents
 
