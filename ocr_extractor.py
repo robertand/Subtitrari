@@ -1,7 +1,7 @@
 """
 ocr_extractor.py
-Extragere subtitrări hardcodate din video folosind PaddleOCR.
-Returnează segmente cu timestamps compatibile cu formatul aplicației.
+Extragere subtitrări hardcodate și text de pe ecran din video folosind PaddleOCR.
+Model: PP-OCRv5 (v3.x)
 """
 
 import cv2
@@ -10,8 +10,16 @@ import os
 import subprocess
 import tempfile
 import logging
+from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from difflib import SequenceMatcher
+
+# torch e necesar pentru verificare GPU în unele medii
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -25,29 +33,198 @@ DEFAULT_CONF_THRESHOLD = 70   # confidence minim (0-100)
 DEFAULT_SIM_THRESHOLD = 80    # similaritate pentru deduplicare linii identice
 FRAMES_TO_SKIP = 2            # procesează 1 din N frame-uri (mai rapid)
 
+# PaddleOCR v3.x (PP-OCRv5) — coduri limbă valide
+# Limbile latine europene se pasează direct cu codul ISO
+# Documentație: https://paddlepaddle.github.io/PaddleOCR/main/en/version3.x/algorithm/PP-OCRv5/PP-OCRv5_multi_languages.html
+PADDLE_LANG_MAP = {
+    # Limbi latine — cod ISO direct, PP-OCRv5 le suportă nativ
+    "ro": "ro",   # Română
+    "it": "it",   # Italiană
+    "fr": "fr",   # Franceză
+    "de": "de",   # Germană
+    "es": "es",   # Spaniolă
+    "pt": "pt",   # Portugheză
+    "nl": "nl",   # Olandeză
+    "pl": "pl",   # Poloneză
+    "cs": "cs",   # Cehă
+    "sk": "sk",   # Slovacă
+    "hr": "hr",   # Croată
+    "sl": "sl",   # Slovenă
+    "da": "da",   # Daneză
+    "sv": "sv",   # Suedeză
+    "fi": "fi",   # Finlandeză
+    "et": "et",   # Estoniană
+    "lv": "lv",   # Letonă
+    "lt": "lt",   # Lituaniană
+    "hu": "hu",   # Maghiară
+    "mt": "mt",   # Malteză
+    "sq": "sq",   # Albaneză
+    "en": "en",   # Engleză
 
-def check_and_install_paddleocr():
+    # Chirilice
+    "ru": "ru",   # Rusă
+    "uk": "uk",   # Ucraineană
+    "bg": "bg",   # Bulgară
+    "sr": "sr",   # Sârbă
+    "mk": "mk",   # Macedoneană
+
+    # Alte scripturi
+    "el": "el",   # Greacă
+    "zh": "ch",   # Chineză simplificată (cod special PaddleOCR)
+    "ja": "japan", # Japoneză (cod special PaddleOCR)
+    "ko": "korean", # Coreeană (cod special PaddleOCR)
+    "ar": "ar",   # Arabă
+}
+
+# Fallback: dacă limba nu e în mapare, folosește "en"
+PADDLE_LANG_FALLBACK = "en"
+
+
+def check_and_install_paddleocr(use_gpu: bool = False) -> bool:
+    """
+    Verifică instalarea PaddleOCR și paddlepaddle (CPU sau GPU).
+
+    IMPORTANT: GPU necesită paddlepaddle-gpu, NU paddlepaddle (CPU).
+    """
+    import subprocess
+    import sys
+
+    # Verifică dacă PaddleOCR e instalat
     try:
         from paddleocr import PaddleOCR
-        return True
+        paddle_available = True
     except ImportError:
-        import subprocess, sys
-        logger.info("[OCR] Instalare PaddleOCR și PaddlePaddle...")
-        subprocess.run([sys.executable, "-m", "pip", "install",
-                       "paddlepaddle", "paddleocr>=2.7.0", "opencv-python"],
-                      check=True)
+        paddle_available = False
+
+    if not paddle_available:
+        logger.info("[OCR] Instalare paddleocr...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "paddleocr", "--quiet"],
+            check=True
+        )
+
+    if not use_gpu:
+        # CPU — instalează paddlepaddle normal dacă nu e
+        try:
+            import paddle
+        except ImportError:
+            logger.info("[OCR] Instalare paddlepaddle (CPU)...")
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "paddlepaddle", "--quiet"],
+                check=True
+            )
         return True
+
+    # GPU — verifică dacă paddlepaddle-gpu e instalat corect
+    gpu_ok = False
+    try:
+        import paddle
+        if paddle.device.is_compiled_with_cuda():
+            gpu_ok = True
+            logger.info(f"[OCR] paddlepaddle-gpu detectat. CUDA disponibil: {paddle.device.is_compiled_with_cuda()}")
+        else:
+            logger.warning("[OCR] paddlepaddle instalat dar fără suport CUDA (versiunea CPU).")
+    except (ImportError, Exception):
+        pass
+
+    if not gpu_ok:
+        # Detectează versiunea CUDA disponibilă și instalează versiunea potrivită
+        cuda_version = _detect_cuda_version()
+
+        logger.warning(
+            f"[OCR] paddlepaddle-gpu nu e instalat sau nu are CUDA. "
+            f"CUDA detectat: {cuda_version}. "
+            f"Instalare automată..."
+        )
+
+        if cuda_version and cuda_version.startswith("12"):
+            # CUDA 12.x
+            pip_url = "https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html"
+            pkg = "paddlepaddle-gpu==2.6.2.post120"
+        elif cuda_version and cuda_version.startswith("11"):
+            # CUDA 11.x
+            pip_url = "https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html"
+            pkg = "paddlepaddle-gpu==2.6.2.post118"
+        else:
+            logger.warning(
+                f"[OCR] Nu se poate determina versiunea CUDA ({cuda_version}). "
+                f"Fallback la paddlepaddle CPU. "
+            )
+            return False
+
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", pkg,
+                 "-f", pip_url, "--quiet"],
+                check=True
+            )
+            logger.info(f"[OCR] {pkg} instalat cu succes.")
+            gpu_ok = True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"[OCR] Instalare automată paddlepaddle-gpu eșuată: {e}")
+            gpu_ok = False
+
+    return gpu_ok
+
+
+def _detect_cuda_version() -> str:
+    """Detectează versiunea CUDA instalată pe sistem."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["nvcc", "--version"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            for line in result.stdout.split("\n"):
+                if "release" in line.lower():
+                    parts = line.split("release")
+                    if len(parts) > 1:
+                        version = parts[1].strip().split(",")[0].strip()
+                        return version
+    except FileNotFoundError:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return "12"  # Assume modern CUDA
+    except FileNotFoundError:
+        pass
+
+    return ""
+
+
+def _is_gpu_actually_available() -> bool:
+    """Verifică dacă GPU e disponibil fie prin torch, fie prin paddle."""
+    if TORCH_AVAILABLE:
+        try:
+            if torch.cuda.is_available():
+                return True
+        except Exception:
+            pass
+
+    try:
+        import paddle
+        return paddle.device.is_compiled_with_cuda()
+    except Exception:
+        pass
+
+    return False
 
 
 class HardcodedSubtitleExtractor:
     """
-    Extrage subtitrări hardcodate (burn-in) din video folosind PaddleOCR.
-    Detectează automat zona de subtitrare sau folosește zona specificată de utilizator.
+    Extrage subtitrări hardcodate (burn-in) și text de pe ecran din video folosind PaddleOCR.
     """
 
     def __init__(self):
         self._ocr = None
         self._ocr_loaded = False
+        self._current_lang = None
 
     def is_available(self) -> bool:
         try:
@@ -58,61 +235,77 @@ class HardcodedSubtitleExtractor:
 
     def load_ocr(self, lang: str = "en", use_gpu: bool = False):
         """
-        Încarcă modelul PaddleOCR.
-        La prima rulare descarcă modelele automat (~50-200MB).
-
-        Args:
-            lang: codul limbii PaddleOCR (ex: 'en', 'ch', 'latin', 'cyrillic')
-                  NOTĂ: pentru limbi europene (română, italiană etc.) folosește 'latin'
-            use_gpu: True pentru GPU NVIDIA
+        Încarcă PaddleOCR cu codul de limbă corect pentru v3.x (PP-OCRv5).
         """
-        if self._ocr_loaded:
+        if self._ocr_loaded and self._current_lang == lang:
             return
 
         from paddleocr import PaddleOCR
 
-        # Mapare limbă aplicație → limbă PaddleOCR
-        # PaddleOCR grupează limbile în familii de script
-        PADDLE_LANG_MAP = {
-            "ro": "latin", "it": "latin", "fr": "latin", "de": "latin",
-            "es": "latin", "pt": "latin", "nl": "latin", "pl": "latin",
-            "cs": "latin", "sk": "latin", "hr": "latin", "sl": "latin",
-            "da": "latin", "sv": "latin", "fi": "latin", "et": "latin",
-            "lv": "latin", "lt": "latin", "hu": "latin", "mt": "latin",
-            "en": "en",
-            "ru": "cyrillic", "uk": "cyrillic", "bg": "cyrillic",
-            "el": "greek",
-            "zh": "ch", "ja": "japan", "ko": "korean", "ar": "arabic",
-        }
+        # Mapare la codul corect PaddleOCR
+        paddle_lang = PADDLE_LANG_MAP.get(lang, PADDLE_LANG_FALLBACK)
 
-        paddle_lang = PADDLE_LANG_MAP.get(lang, "latin")
-
-        logger.info(f"[OCR] Încărcare PaddleOCR (limbă: {paddle_lang}, GPU: {use_gpu})...")
-
-        self._ocr = PaddleOCR(
-            use_angle_cls=True,   # detectează text rotit
-            lang=paddle_lang,
-            use_gpu=use_gpu,
-            show_log=False,
+        logger.info(
+            f"[OCR] Încărcare PaddleOCR PP-OCRv5 "
+            f"(limbă input: '{lang}' → cod PaddleOCR: '{paddle_lang}', GPU: {use_gpu})..."
         )
-        self._ocr_loaded = True
-        logger.info("[OCR] PaddleOCR încărcat.")
+
+        try:
+            self._ocr = PaddleOCR(
+                use_angle_cls=True,
+                lang=paddle_lang,
+                use_gpu=use_gpu,
+                show_log=False,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            )
+            self._ocr_loaded = True
+            self._current_lang = lang
+            logger.info(f"[OCR] PaddleOCR încărcat cu succes (lang='{paddle_lang}').")
+
+        except Exception as e:
+            error_msg = str(e)
+
+            if "No models are available" in error_msg:
+                logger.warning(
+                    f"[OCR] Limba '{paddle_lang}' nu are model disponibil. Fallback la 'en'."
+                )
+                self._ocr = PaddleOCR(
+                    use_angle_cls=True,
+                    lang="en",
+                    use_gpu=use_gpu,
+                    show_log=False,
+                )
+                self._ocr_loaded = True
+                self._current_lang = lang # Mark as loaded for requested lang
+                logger.info("[OCR] PaddleOCR încărcat cu fallback 'en'.")
+
+            elif "GPU" in error_msg or "cuda" in error_msg.lower():
+                logger.warning(
+                    f"[OCR] GPU nu e disponibil ({error_msg}). Fallback la CPU."
+                )
+                self._ocr = PaddleOCR(
+                    use_angle_cls=True,
+                    lang=paddle_lang if paddle_lang != PADDLE_LANG_FALLBACK else "en",
+                    use_gpu=False,
+                    show_log=False,
+                )
+                self._ocr_loaded = True
+                self._current_lang = lang
+                logger.info("[OCR] PaddleOCR încărcat pe CPU (fallback).")
+            else:
+                raise
 
     def detect_subtitle_region(self, video_path: str) -> Tuple[float, float]:
-        """
-        Detectează automat zona din frame unde apar subtitrările,
-        analizând primele N frame-uri pentru a găsi unde apare text consistent.
-        Returnează (top_ratio, bottom_ratio) ca fracțiuni din înălțimea imaginii.
-        """
+        """Detectează automat zona din frame unde apar subtitrările."""
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return DEFAULT_SUBTITLE_REGION_TOP, DEFAULT_SUBTITLE_REGION_BOTTOM
 
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # Analizează 30 de frame-uri distribuite uniform
         sample_frames = min(30, total_frames)
         step = max(1, total_frames // sample_frames)
 
@@ -124,7 +317,6 @@ class HardcodedSubtitleExtractor:
             if not ret:
                 continue
 
-            # Căutare rapidă text cu PaddleOCR în treimea de jos
             bottom_third = frame[int(height * 0.6):, :]
             results = self._ocr.ocr(bottom_third, cls=True)
 
@@ -133,7 +325,6 @@ class HardcodedSubtitleExtractor:
                     if line and len(line) >= 2:
                         bbox = line[0]
                         y_center = (bbox[0][1] + bbox[2][1]) / 2
-                        # Reconvertire la coordonate relative la frame complet
                         y_relative = (int(height * 0.6) + y_center) / height
                         text_y_positions.append(y_relative)
 
@@ -142,14 +333,12 @@ class HardcodedSubtitleExtractor:
         if not text_y_positions:
             return DEFAULT_SUBTITLE_REGION_TOP, DEFAULT_SUBTITLE_REGION_BOTTOM
 
-        # Găsește centrul clusterului principal de text
         y_positions = sorted(text_y_positions)
         median_y = y_positions[len(y_positions) // 2]
 
         top = max(0.0, median_y - 0.15)
         bottom = min(1.0, median_y + 0.08)
 
-        logger.info(f"[OCR] Zonă detectată automat: {top:.2f} - {bottom:.2f}")
         return top, bottom
 
     def extract_subtitles(
@@ -164,23 +353,12 @@ class HardcodedSubtitleExtractor:
         progress_callback=None
     ) -> List[Dict]:
         """
-        Extrage subtitrările hardcodate din video.
-
-        Args:
-            video_path: cale fișier video
-            lang: codul limbii subtitrărilor
-            use_gpu: True pentru GPU NVIDIA
-            subtitle_region: (top_ratio, bottom_ratio) sau None pentru auto-detect
-            conf_threshold: prag minim confidence OCR (0-100)
-            sim_threshold: prag similaritate pentru deduplicare (0-100)
-            frames_to_skip: procesează 1 din N frame-uri
-            progress_callback: funcție callback(mesaj: str)
-
-        Returns:
-            Lista segmente: [{"start": float, "end": float, "text": str, "source": "ocr"}]
+        Extrage subtitrările hardcodate și orice text de pe ecran.
         """
-        if not self._ocr_loaded:
-            self.load_ocr(lang=lang, use_gpu=use_gpu)
+        if not self._ocr_loaded or self._current_lang != lang:
+            # Check if GPU requested is actually available
+            actual_gpu = use_gpu and _is_gpu_actually_available()
+            self.load_ocr(lang=lang, use_gpu=actual_gpu)
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -189,9 +367,7 @@ class HardcodedSubtitleExtractor:
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
-        # Detectare automată zonă dacă nu e specificată
         if subtitle_region is None:
             if progress_callback:
                 progress_callback("[OCR] Detectare automată zonă subtitrare...")
@@ -208,8 +384,7 @@ class HardcodedSubtitleExtractor:
                 msg += " - TOATĂ IMAGINEA"
             progress_callback(f"{msg}...")
 
-        # Colectează text per frame
-        frame_texts = {}  # frame_idx → text
+        frame_texts = {}
         frame_idx = 0
         processed = 0
 
@@ -219,16 +394,12 @@ class HardcodedSubtitleExtractor:
                 break
 
             if frame_idx % (frames_to_skip + 1) == 0:
-                # Crop zona de subtitrare (sau full frame dacă 0-1)
                 if top_ratio == 0 and bottom_ratio == 1:
                     crop = frame
                 else:
                     crop = frame[top_px:bottom_px, :]
 
-                # Preprocess pentru OCR mai bun
                 crop = self._preprocess_for_ocr(crop)
-
-                # OCR
                 results = self._ocr.ocr(crop, cls=True)
                 text_lines = []
 
@@ -236,18 +407,15 @@ class HardcodedSubtitleExtractor:
                     for line in results[0]:
                         if not line or len(line) < 2:
                             continue
-                        text_content = line[1][0]  # textul
-                        confidence = line[1][1]    # confidence (0-1)
+                        text_content = line[1][0]
+                        confidence = line[1][1]
 
                         if confidence * 100 >= conf_threshold and text_content.strip():
-                            # Curățare text (elimină caractere ciudate)
                             cleaned = text_content.strip()
-                            if len(cleaned) > 1: # Ignorăm caractere singuratice/zgomot
+                            if len(cleaned) > 1:
                                 text_lines.append(cleaned)
 
                 if text_lines:
-                    # Sortăm liniile după Y apoi X pentru a păstra ordinea naturală a citirii
-                    # PaddleOCR returnează deja o ordine decentă, dar join-ul simplu e ok
                     frame_texts[frame_idx] = " | ".join(text_lines)
 
                 processed += 1
@@ -264,24 +432,16 @@ class HardcodedSubtitleExtractor:
                 progress_callback("[OCR] Nu s-a găsit text în video.")
             return []
 
-        # Grupează frame-urile consecutive cu text similar în segmente
         segments = self._group_frames_to_segments(frame_texts, fps, sim_threshold)
 
         if progress_callback:
-            progress_callback(f"[OCR] Extrase {len(segments)} subtitrări hardcodate.")
+            progress_callback(f"[OCR] Extrase {len(segments)} elemente text.")
 
         return segments
 
     def _preprocess_for_ocr(self, img: np.ndarray) -> np.ndarray:
-        """
-        Preprocess imagine pentru OCR mai precis.
-        Mărește contrastul, elimină zgomotul.
-        """
-        # Mărește imaginea pentru OCR mai precis
         scale = 2.0
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-
-        # Versiune cu text alb evidențiat (opțional, PaddleOCR se descurcă bine și fără)
         return img
 
     def _group_frames_to_segments(
@@ -290,10 +450,6 @@ class HardcodedSubtitleExtractor:
         fps: float,
         sim_threshold: int
     ) -> List[Dict]:
-        """
-        Grupează frame-urile consecutive cu text similar în segmente de subtitrare.
-        Elimină duplicatele și frame-urile cu text aproape identic (subtitrare statică).
-        """
         if not frame_texts:
             return []
 
@@ -309,34 +465,28 @@ class HardcodedSubtitleExtractor:
             text = frame_texts[frame]
 
             if current_text is None:
-                # Primul text
                 current_text = text
                 current_start_frame = frame
                 current_end_frame = frame
             else:
-                # Verifică similaritate cu textul curent
                 similarity = SequenceMatcher(None, current_text, text).ratio() * 100
 
                 if similarity >= sim_threshold:
-                    # Același subtitle — extinde segmentul
                     current_end_frame = frame
                 else:
-                    # Text nou — salvează segmentul anterior
                     if current_text.strip() and current_text != last_added_text:
-                        seg = {
+                        segments.append({
                             "start": current_start_frame / fps,
                             "end": (current_end_frame + 1) / fps,
                             "text": current_text,
-                            "source": "ocr"  # marcaj că vine din OCR, nu ASR
-                        }
-                        segments.append(seg)
+                            "source": "ocr"
+                        })
                         last_added_text = current_text
 
                     current_text = text
                     current_start_frame = frame
                     current_end_frame = frame
 
-        # Ultimul segment
         if current_text and current_text.strip() and current_text != last_added_text:
             segments.append({
                 "start": current_start_frame / fps,
@@ -358,49 +508,28 @@ def get_ocr_extractor() -> HardcodedSubtitleExtractor:
     return _ocr_extractor_instance
 
 def merge_ocr_and_asr_segments(asr_segments, ocr_segments):
-    """
-    Îmbină segmentele OCR cu cele ASR (Whisper/NeMo).
-    - Dacă OCR și ASR au segmente care se suprapun temporal cu text similar → păstrează ASR
-    - Dacă OCR are text în zone fără ASR → adaugă segmentele OCR
-    - Dacă OCR are text complet diferit față de ASR în același interval → adaugă ambele
-      (OCR poate fi un titlu de capitol sau text din scenă, diferit de dialog)
-    """
     all_segments = asr_segments.copy()
 
     for ocr_seg in ocr_segments:
-        # Verifică dacă există un segment ASR care se suprapune
         overlap_found = False
         for asr_seg in asr_segments:
-            # Suprapunere temporală
             if (ocr_seg["start"] < asr_seg["end"] and
                 ocr_seg["end"] > asr_seg["start"]):
 
-                # Normalizăm textul pentru comparație (eliminăm separatorul | adăugat la OCR)
                 ocr_text_clean = ocr_seg["text"].replace(" | ", " ").lower()
                 asr_text_clean = asr_seg["text"].lower()
 
-                # Verifică similaritate text
-                sim = SequenceMatcher(
-                    None,
-                    ocr_text_clean,
-                    asr_text_clean
-                ).ratio()
+                sim = SequenceMatcher(None, ocr_text_clean, asr_text_clean).ratio()
 
-                if sim > 0.6: # Scădem pragul pentru a evita duplicatele parțiale
-                    # Text similar → ASR câștigă (mai precis pe dialog)
+                if sim > 0.6:
                     overlap_found = True
                     break
 
         if not overlap_found:
-            # Text OCR nou (titlu, text din scenă, pancartă) → adaugă
-            # Marcăm textul OCR pentru a fi identificabil în UI
             ocr_seg["text"] = f"[OCR] {ocr_seg['text']}"
             all_segments.append(ocr_seg)
 
-    # Sortează cronologic
     all_segments.sort(key=lambda x: x["start"])
-
-    # Re-numerotează
     for i, seg in enumerate(all_segments):
         seg["id"] = i
 

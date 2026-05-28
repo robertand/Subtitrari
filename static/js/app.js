@@ -2483,3 +2483,28 @@ async function importProject(input) {
     };
     reader.readAsText(file);
 }
+
+async function verifyGpuOcr() {
+    const statusEl = document.getElementById('ocrGpuStatus');
+    statusEl.textContent = '⏳ Se verifică/instalează...';
+    statusEl.style.color = 'var(--text-muted)';
+
+    try {
+        const response = await fetch('/api/ocr/verify-gpu', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.cuda_available) {
+            statusEl.textContent = '✅ GPU (CUDA) este disponibil!';
+            statusEl.style.color = 'var(--success)';
+            showToast('Suport GPU activat pentru OCR', 'success');
+        } else {
+            statusEl.textContent = '⚠️ Doar CPU disponibil.';
+            statusEl.style.color = 'var(--warning)';
+            showToast('OCR va rula pe CPU', 'info');
+        }
+    } catch (error) {
+        statusEl.textContent = '❌ Eroare la verificare.';
+        statusEl.style.color = 'var(--danger)';
+        showToast('Eroare verificare GPU', 'error');
+    }
+}

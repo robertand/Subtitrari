@@ -25,6 +25,18 @@ vllm>=0.6.0
 langdetect>=1.0.9
 anthropic>=0.18.1
 openai>=1.12.0
-paddlepaddle
+# PaddleOCR — alege UNA din variantele de mai jos:
+# CPU (fără GPU):
+# paddlepaddle
+# paddleocr>=2.7.0
+#
+# GPU CUDA 11.8:
+# pip install paddlepaddle-gpu==2.6.2.post118 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html
+# pip install paddleocr>=2.7.0
+#
+# GPU CUDA 12.x:
+# pip install paddlepaddle-gpu==2.6.2.post120 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html
+# pip install paddleocr>=2.7.0
+
 paddleocr>=2.7.0
 opencv-python

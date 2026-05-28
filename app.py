@@ -241,6 +241,24 @@ def serve_file(filename):
         return send_file(file_path)
     return jsonify({'error': 'File not found'}), 404
 
+@app.route('/api/ocr/verify-gpu', methods=['POST'])
+def verify_ocr_gpu():
+    """Verify and install paddlepaddle-gpu if requested"""
+    try:
+        from ocr_extractor import check_and_install_paddleocr
+        success = check_and_install_paddleocr(use_gpu=True)
+
+        import paddle
+        cuda_available = paddle.device.is_compiled_with_cuda()
+
+        return jsonify({
+            'success': success,
+            'cuda_available': cuda_available,
+            'message': 'GPU (CUDA) is available' if cuda_available else 'Only CPU is available'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/upload/progress/<session_id>')
 def upload_progress(session_id):
     """Get upload progress"""
