@@ -492,7 +492,13 @@ async function startProcessing() {
         transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
         transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
         multi_pass: document.getElementById('multiPass').checked,
-        audio_only: audioOnly
+        audio_only: audioOnly,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_manual_region: document.querySelector('input[name="ocrRegionMode"]:checked')?.value === 'manual',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_merge: document.getElementById('ocrMerge').checked
     };
     
     // NeMo Language Check
@@ -992,7 +998,13 @@ function savePreset() {
         translation_context: document.getElementById('translationContext').value,
         llm_api_provider: document.getElementById('llmApiProvider').value,
         llm_api_model: document.getElementById('llmApiModel').value,
-        llm_api_url: document.getElementById('llmApiUrl').value
+        llm_api_url: document.getElementById('llmApiUrl').value,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_manual_region: document.querySelector('input[name="ocrRegionMode"]:checked')?.value === 'manual',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_merge: document.getElementById('ocrMerge').checked
     };
 
     const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
@@ -1047,11 +1059,27 @@ function loadPreset(id) {
     if (preset.llm_api_model !== undefined) document.getElementById('llmApiModel').value = preset.llm_api_model;
     if (preset.llm_api_url !== undefined) document.getElementById('llmApiUrl').value = preset.llm_api_url;
 
+    if (preset.use_ocr !== undefined) document.getElementById('useOCR').checked = preset.use_ocr;
+    if (preset.ocr_conf !== undefined) {
+        document.getElementById('ocrConf').value = preset.ocr_conf;
+        document.getElementById('ocrConfVal').textContent = preset.ocr_conf + '%';
+    }
+    if (preset.ocr_merge !== undefined) document.getElementById('ocrMerge').checked = preset.ocr_merge;
+    if (preset.ocr_manual_region !== undefined) {
+        const val = preset.ocr_manual_region ? 'manual' : 'auto';
+        const radio = document.querySelector(`input[name="ocrRegionMode"][value="${val}"]`);
+        if (radio) radio.checked = true;
+    }
+    if (preset.ocr_top !== undefined) document.getElementById('ocrTop').value = preset.ocr_top;
+    if (preset.ocr_bottom !== undefined) document.getElementById('ocrBottom').value = preset.ocr_bottom;
+
     // Refresh UI dependencies
     toggleEngineOptions();
     updateModelOptions();
     toggleTranslation();
     toggleRefinerOptions();
+    toggleOCRSettings();
+    toggleOCRManualRegion();
 
     // Trigger language-dependent UI updates
     const langEvent = new Event('change');
@@ -1258,7 +1286,13 @@ async function reprocessZones() {
         llm_api_provider: document.getElementById('llmApiProvider').value,
         llm_api_key: document.getElementById('llmApiKey').value,
         llm_api_model: document.getElementById('llmApiModel').value,
-        llm_api_url: document.getElementById('llmApiUrl').value
+        llm_api_url: document.getElementById('llmApiUrl').value,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_manual_region: document.querySelector('input[name="ocrRegionMode"]:checked')?.value === 'manual',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_merge: document.getElementById('ocrMerge').checked
     };
 
     try {
@@ -2253,6 +2287,18 @@ function restoreWhisperModels() {
     if (window._whisperModelsHtml) {
         modelSelect.innerHTML = window._whisperModelsHtml;
     }
+}
+
+function toggleOCRSettings() {
+    const useOCR = document.getElementById('useOCR').checked;
+    const ocrSettings = document.getElementById('ocrSettings');
+    if (ocrSettings) ocrSettings.style.display = useOCR ? 'block' : 'none';
+}
+
+function toggleOCRManualRegion() {
+    const mode = document.querySelector('input[name="ocrRegionMode"]:checked').value;
+    const manualRegion = document.getElementById('ocrManualRegion');
+    if (manualRegion) manualRegion.style.display = mode === 'manual' ? 'block' : 'none';
 }
 
 function updateModelOptions() {

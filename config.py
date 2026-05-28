@@ -98,6 +98,10 @@ class Config:
         'hr': 'Croată'
     }
     
+    # OCR
+    DEFAULT_OCR_CONF = 70
+    DEFAULT_OCR_SIM = 80
+
     # Audio extraction
     AUDIO_FORMAT = 'wav'
     AUDIO_SAMPLE_RATE = 16000

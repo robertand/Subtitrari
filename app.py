@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import Config
 from transcriber import WhisperTranscriber, GenderDetector
 from nemo_transcriber import get_nemo_transcriber, NEMO_SUPPORTED_LANGUAGES, check_and_install_nemo
+from ocr_extractor import get_ocr_extractor, merge_ocr_and_asr_segments, check_and_install_paddleocr
 from translator import Translator
 from segmenter import SubtitleSegmenter
 from file_handler import FileHandler
@@ -390,6 +391,46 @@ def process_zones():
                 # 5. Clean "None" artifacts
                 for seg in new_segments:
                     seg['text'] = translator._clean_speaker_none(seg['text'])
+
+                # OCR extraction for zone
+                if options.get('use_ocr'):
+                    try:
+                        ocr_extractor = get_ocr_extractor()
+                        if not ocr_extractor.is_available():
+                            check_and_install_paddleocr()
+
+                        ocr_lang = options.get('language') or 'en'
+                        region = None
+                        if options.get('ocr_manual_region'):
+                            region = (
+                                float(options.get('ocr_top', 0.75)),
+                                float(options.get('ocr_bottom', 0.98))
+                            )
+
+                        ocr_segments = ocr_extractor.extract_subtitles(
+                            file_path,
+                            lang=ocr_lang,
+                            use_gpu=torch.cuda.is_available(),
+                            subtitle_region=region,
+                            conf_threshold=int(options.get('ocr_conf', 70))
+                            # For zones, we might not want to process the WHOLE video again,
+                            # but PaddleOCR doesn't easily support frame ranges in extract_subtitles
+                            # without modification. However, for a small zone it's okay.
+                            # Actually, we should probably limit frame range if we want it fast.
+                        )
+
+                        # Adjust OCR segments by start offset of zone
+                        # (The extractor processes the whole video, so we need to filter segments
+                        # that fall within our zone)
+                        ocr_segments = [
+                            s for s in ocr_segments
+                            if s['start'] >= start and s['end'] <= end
+                        ]
+
+                        if ocr_segments and options.get('ocr_merge', True):
+                            new_segments = merge_ocr_and_asr_segments(new_segments, ocr_segments)
+                    except Exception as e:
+                        logger.error(f"Zone OCR failed: {e}")
 
                 # 6. Translate
                 new_translations = {}
@@ -1053,6 +1094,41 @@ def process_task(task):
         else:
             # Even if not strictly sequential, we should merge identical overlaps
             segments = segmenter.merge_identical_overlapping(segments)
+
+        # Hardcoded Subtitles OCR
+        if task.options.get('use_ocr') and file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}:
+            task.message = 'Extracting hardcoded subtitles (OCR)...'
+            try:
+                ocr_extractor = get_ocr_extractor()
+                if not ocr_extractor.is_available():
+                    check_and_install_paddleocr()
+
+                # Use current language or auto
+                ocr_lang = language or 'en'
+
+                # Manual region
+                region = None
+                if task.options.get('ocr_manual_region'):
+                    region = (
+                        float(task.options.get('ocr_top', 0.75)),
+                        float(task.options.get('ocr_bottom', 0.98))
+                    )
+
+                ocr_segments = ocr_extractor.extract_subtitles(
+                    str(task.file_path),
+                    lang=ocr_lang,
+                    use_gpu=torch.cuda.is_available(),
+                    subtitle_region=region,
+                    conf_threshold=int(task.options.get('ocr_conf', 70)),
+                    progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                )
+
+                if ocr_segments:
+                    if task.options.get('ocr_merge', True):
+                        task.message = 'Merging OCR with ASR results...'
+                        segments = merge_ocr_and_asr_segments(segments, ocr_segments)
+            except Exception as e:
+                logger.error(f"OCR extraction failed: {e}")
 
         # FINAL CLEANUP for speaker artifacts
         for seg in segments:
