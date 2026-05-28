@@ -1221,6 +1221,12 @@ async function reprocessZones() {
 
     if (!state.taskId) return;
 
+    // Collect all target languages
+    const targetLangs = [document.getElementById('targetLanguageSelect').value];
+    document.querySelectorAll('.translation-lang-select').forEach(select => {
+        targetLangs.push(select.value);
+    });
+
     if (!confirm(`Re-procesezi ${state.selectedZones.length} zone? Segmentele existente din aceste intervale vor fi înlocuite.`)) return;
 
     const btn = document.getElementById('reprocessBtn');
@@ -1242,7 +1248,7 @@ async function reprocessZones() {
         deduplicate: document.getElementById('deduplicate').checked,
         prevent_overlap: document.getElementById('preventOverlap').checked,
         translate: document.getElementById('enableTranslation').checked,
-        target_languages: [document.getElementById('targetLanguageSelect').value],
+        target_languages: targetLangs,
         translation_engine: document.getElementById('translationEngine').value,
         llm_model: document.getElementById('llmModelSelect').value,
         refiner_model: document.getElementById('refinerModelSelect').value,

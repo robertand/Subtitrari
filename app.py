@@ -313,9 +313,10 @@ def process_zones():
         # Basic sanitization for file_path
         abs_base = str(Config.DATA_DIR.resolve())
         abs_file = str(Path(file_path).resolve())
-        if not abs_file.startswith(abs_base) and not abs_file.startswith("/tmp"): # Basic check
-             # If it's a relative path from the upload dir, that's fine
-             pass
+        if not abs_file.startswith(abs_base) and not abs_file.startswith("/tmp"):
+             # If it's a relative path from the upload dir, it's fine, otherwise block for security
+             if not any(str(abs_file).startswith(str(Config.BASE_DIR / d)) for d in ['data', 'uploads']):
+                 return jsonify({'error': 'Invalid file path'}), 403
 
         for idx, zone in enumerate(zones):
             start = float(zone['start'])
@@ -349,11 +350,16 @@ def process_zones():
                     nemo_t = get_nemo_transcriber()
                     if not nemo_t.is_available():
                         check_and_install_nemo()
+
+                    # Language detection happens inside transcribe if not specified
+                    lang_code = options.get('language')
                     segments = nemo_t.transcribe(
                         str(audio_temp_path),
-                        language=options.get('language')
+                        language=lang_code
                     )
-                    res = {"segments": segments}
+                    # Note: Parakeet v3 doesn't explicitly return the detected language code easily
+                    # without re-parsing, but for now we use the requested language or assume auto
+                    res = {"segments": segments, "language": lang_code or "auto"}
                 else:
                     # Fallback to standard
                     res = transcriber.transcribe_audio(
