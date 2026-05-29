@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Subtitratorul PRO - Transcriere și Traducere Audio/Video</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 </head>
 <body>
     <!-- Background Animation -->
@@ -24,6 +25,10 @@
                         <span class="icon">🎙️</span>
                         Subtitratorul PRO
                     </h1>
+                    <div class="user-info" id="userInfo" style="display: none; margin-left: 20px; font-weight: 600;">
+                        Welcome, <span id="displayUsername"></span>
+                        <span id="sessionIdDisplay" style="color: #FF1744; margin-left: 5px;"></span>
+                    </div>
                     <div class="header-menu">
                         <div class="dropdown">
                             <button class="dropdown-toggle" id="fileMenuBtn">Fișier ▾</button>
@@ -696,6 +701,40 @@
             <div class="modal-actions">
                 <button class="btn btn-primary" onclick="exportDOCX()">Exportă DOCX</button>
                 <button class="btn btn-secondary" onclick="closeDOCXDialog()">Anulează</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="modal" id="loginModal" style="display: flex;">
+        <div class="modal-content glass-container">
+            <h2>Autentificare</h2>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label>Username</label>
+                    <input type="text" id="loginUsername" class="setting-input" placeholder="Introdu un nume...">
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="login()">Intră</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Interface -->
+    <div class="chat-wrapper" id="chatWrapper">
+        <div class="chat-bubble" id="chatBubble" onclick="toggleChat()">
+            <span class="icon">💬</span>
+        </div>
+        <div class="chat-window glass-container" id="chatWindow" style="display: none;">
+            <div class="chat-header">
+                <h3>Chat Sesiuni</h3>
+                <button class="btn-close" onclick="toggleChat()">×</button>
+            </div>
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input-area">
+                <input type="text" id="chatInput" placeholder="Scrie un mesaj..." onkeydown="if(event.key==='Enter') sendChatMessage()">
+                <button class="btn btn-sm btn-primary" onclick="sendChatMessage()">Trimite</button>
             </div>
         </div>
     </div>

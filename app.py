@@ -1,5 +1,8 @@
+import eventlet
+eventlet.monkey_patch()
 from flask import Flask, request, jsonify, render_template, send_file, session, make_response
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room
 from werkzeug.utils import secure_filename
 import threading
 import queue
@@ -42,6 +45,11 @@ app = Flask(__name__)
 app.config.from_object(Config)
 app.secret_key = Config.SECRET_KEY
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# User and session tracking
+# Structure: { username: { session_id: { 'sid': socket_sid, 'joined_at': timestamp } } }
+user_sessions = {}
 
 # Initialize components
 Config.init_directories()
@@ -1254,6 +1262,98 @@ def internal_error(error):
 def too_large_error(error):
     return jsonify({'error': 'File too large'}), 413
 
+# ============ Socket.IO Events ============
+
+@socketio.on('login')
+def handle_login(data):
+    username = data.get('username')
+    if not username:
+        return
+
+    session_id = str(uuid.uuid4())[:8]
+    sid = request.sid
+
+    if username not in user_sessions:
+        user_sessions[username] = {}
+
+    # Check if this is a concurrent session
+    is_concurrent = len(user_sessions[username]) > 0
+
+    # Store session info
+    user_sessions[username][session_id] = {
+        'sid': sid,
+        'joined_at': time.time()
+    }
+
+    # Send session info to the user
+    emit('session_info', {
+        'username': username,
+        'session_id': session_id,
+        'is_concurrent': is_concurrent
+    })
+
+    # Notify all sessions of this user that a new session has joined
+    for sess_id, info in user_sessions[username].items():
+        socketio.emit('concurrent_session_notification', {
+            'message': f"O nouă sesiune pentru utilizatorul '{username}' a fost deschisă.",
+            'total_sessions': len(user_sessions[username])
+        }, room=info['sid'])
+
+    # Broadcast to everyone if there are multiple sessions?
+    # "si daca sunt mai multe sesiuni toata lumea sa primeasca acest mesaj.."
+    if len(user_sessions[username]) > 1:
+        socketio.emit('global_notification', {
+            'message': f"Utilizatorul '{username}' are mai multe sesiuni active."
+        })
+
+    logger.info(f"User {username} logged in with session {session_id}")
+
+@socketio.on('send_message')
+def handle_message(data):
+    username = data.get('username')
+    session_id = data.get('session_id')
+    message = data.get('message')
+
+    if not all([username, session_id, message]):
+        return
+
+    # Broadcast the message to everyone
+    # "Chat-ul sa primeasca username cu ID-ul sesiunii si sesiunile sa apara ca useri separati in chat sa poata conversa intre ei"
+    socketio.emit('new_message', {
+        'username': username,
+        'session_id': session_id,
+        'message': message,
+        'timestamp': datetime.now().strftime('%H:%M:%S')
+    })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    sid = request.sid
+    found_username = None
+    found_session_id = None
+
+    for username, sessions in user_sessions.items():
+        for session_id, info in sessions.items():
+            if info['sid'] == sid:
+                found_username = username
+                found_session_id = session_id
+                break
+        if found_username:
+            break
+
+    if found_username and found_session_id:
+        del user_sessions[found_username][found_session_id]
+        if not user_sessions[found_username]:
+            del user_sessions[found_username]
+
+        # Notify remaining sessions
+        if found_username in user_sessions:
+            for sess_id, info in user_sessions[found_username].items():
+                socketio.emit('concurrent_session_notification', {
+                    'message': f"Sesiunea {found_session_id} s-a deconectat.",
+                    'total_sessions': len(user_sessions[found_username])
+                }, room=info['sid'])
+
 # ============ Main ============
 
 if __name__ == '__main__':
@@ -1261,9 +1361,9 @@ if __name__ == '__main__':
     logger.info(f"Device: {transcriber.device}")
     logger.info(f"Server: http://{Config.HOST}:{Config.PORT}")
     
-    app.run(
+    socketio.run(
+        app,
         host=Config.HOST,
         port=Config.PORT,
-        debug=Config.DEBUG,
-        threaded=True
+        debug=Config.DEBUG
     )
