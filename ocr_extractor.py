@@ -83,88 +83,83 @@ PADDLE_LANG_FALLBACK = "en"
 def check_and_install_paddleocr(use_gpu: bool = False) -> bool:
     """
     Verifică instalarea PaddleOCR și paddlepaddle (CPU sau GPU).
-
-    IMPORTANT: GPU necesită paddlepaddle-gpu, NU paddlepaddle (CPU).
     """
     import subprocess
     import sys
 
-    # Verifică dacă PaddleOCR e instalat
+    # 1. Verifică PaddleOCR
     try:
         from paddleocr import PaddleOCR
-        paddle_available = True
     except ImportError:
-        paddle_available = False
-
-    if not paddle_available:
         logger.info("[OCR] Instalare paddleocr...")
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "paddleocr", "--quiet"],
-            check=True
-        )
+        subprocess.run([sys.executable, "-m", "pip", "install", "paddleocr>=2.7.0", "--quiet"], check=True)
 
-    if not use_gpu:
-        # CPU — instalează paddlepaddle normal dacă nu e
-        try:
-            import paddle
-        except ImportError:
-            logger.info("[OCR] Instalare paddlepaddle (CPU)...")
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "paddlepaddle", "--quiet"],
-                check=True
-            )
-        return True
-
-    # GPU — verifică dacă paddlepaddle-gpu e instalat corect
-    gpu_ok = False
+    # 2. Verifică Paddle Backend (GPU sau CPU)
     try:
         import paddle
-        if paddle.device.is_compiled_with_cuda():
-            gpu_ok = True
-            logger.info(f"[OCR] paddlepaddle-gpu detectat. CUDA disponibil: {paddle.device.is_compiled_with_cuda()}")
-        else:
-            logger.warning("[OCR] paddlepaddle instalat dar fără suport CUDA (versiunea CPU).")
+        backend_gpu = paddle.device.is_compiled_with_cuda()
     except (ImportError, Exception):
-        pass
+        backend_gpu = False
 
-    if not gpu_ok:
-        # Detectează versiunea CUDA disponibilă și instalează versiunea potrivită
+    if use_gpu:
+        if backend_gpu:
+            logger.info("[OCR] Paddle GPU backend este deja funcțional.")
+            return True
+
+        # Dacă am cerut GPU dar avem CPU sau nimic, instalăm/reinstalăm varianta GPU
         cuda_version = _detect_cuda_version()
+        logger.info(f"[OCR] Instalare Paddle GPU (Sistem detectat: CUDA {cuda_version})...")
 
-        logger.warning(
-            f"[OCR] paddlepaddle-gpu nu e instalat sau nu are CUDA. "
-            f"CUDA detectat: {cuda_version}. "
-            f"Instalare automată..."
-        )
-
-        if cuda_version and cuda_version.startswith("12"):
-            # CUDA 12.x
-            pip_url = "https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html"
-            pkg = "paddlepaddle-gpu==2.6.2.post120"
+        # Mapping pentru versiuni CUDA
+        # Pentru CUDA 12.x și 13.x, varianta 2.6.2 (simplă) este cea mai recentă stabilă.
+        index_url = "https://www.paddlepaddle.org.cn/packages/stable/cu120/"
+        if cuda_version and (cuda_version.startswith("12") or cuda_version.startswith("13")):
+            pkg = "paddlepaddle-gpu==2.6.2"
+            index_url = "https://www.paddlepaddle.org.cn/packages/stable/cu120/"
         elif cuda_version and cuda_version.startswith("11"):
-            # CUDA 11.x
-            pip_url = "https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html"
-            pkg = "paddlepaddle-gpu==2.6.2.post118"
+            pkg = "paddlepaddle-gpu==2.6.2"
+            index_url = "https://www.paddlepaddle.org.cn/packages/stable/cu118/"
         else:
-            logger.warning(
-                f"[OCR] Nu se poate determina versiunea CUDA ({cuda_version}). "
-                f"Fallback la paddlepaddle CPU. "
-            )
-            return False
+            # Fallback pentru GPU modern
+            pkg = "paddlepaddle-gpu==2.6.2"
 
         try:
+            # IMPORTANT: În Conda, dezinstalarea trebuie făcută cu atenție.
+            # Încercăm să curățăm orice variantă CPU sau GPU veche pentru a forța varianta corectă.
+            subprocess.run([sys.executable, "-m", "pip", "uninstall", "paddlepaddle", "paddlepaddle-gpu", "-y", "--quiet"], check=False)
+
+            logger.info(f"[OCR] Executare: pip install {pkg} -i {index_url}...")
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", pkg,
-                 "-f", pip_url, "--quiet"],
+                [sys.executable, "-m", "pip", "install", pkg, "-i", index_url, "--quiet"],
                 check=True
             )
-            logger.info(f"[OCR] {pkg} instalat cu succes.")
-            gpu_ok = True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"[OCR] Instalare automată paddlepaddle-gpu eșuată: {e}")
-            gpu_ok = False
 
-    return gpu_ok
+            # Verificare finală cu reîncărcare modul
+            import importlib
+            import paddle
+            importlib.reload(paddle)
+
+            gpu_final = paddle.device.is_compiled_with_cuda()
+            if gpu_final:
+                logger.info("[OCR] Paddle GPU backend instalat și activat cu succes.")
+            else:
+                logger.warning("[OCR] Paddle instalat dar is_compiled_with_cuda() este False. Verificați driverele CUDA/cuDNN.")
+
+            return gpu_final
+
+        except Exception as e:
+            logger.error(f"[OCR] Eșec instalare GPU backend: {e}")
+            # Fallback la CPU pentru a nu bloca aplicația
+            subprocess.run([sys.executable, "-m", "pip", "install", "paddlepaddle>=2.6.1", "--quiet"], check=True)
+            return False
+    else:
+        # Doar CPU
+        try:
+            import paddle
+            return True
+        except ImportError:
+            subprocess.run([sys.executable, "-m", "pip", "install", "paddlepaddle>=2.6.1", "--quiet"], check=True)
+            return True
 
 
 def _detect_cuda_version() -> str:
