@@ -1,6 +1,9 @@
 // === Global State ===
 const state = {
+    username: null,
     sessionId: null,
+    socketId: null,
+    socket: null,
     taskId: null,
     filePath: null,
     isUploading: false,
@@ -90,8 +93,96 @@ const elements = {
     subtitleLangSelect: document.getElementById('subtitleLangSelect')
 };
 
+// === Socket.IO Initialization ===
+function initSocket() {
+    state.socket = io();
+
+    state.socket.on('connect', () => {
+        console.log('Connected to Socket.IO, id:', state.socket.id);
+        state.socketId = state.socket.id;
+    });
+
+    state.socket.on('session_info', (data) => {
+        state.username = data.username;
+        state.sessionId = data.session_id;
+
+        document.getElementById('displayUsername').textContent = data.username;
+        document.getElementById('sessionIdDisplay').textContent = `[ID: ${data.session_id}]`;
+        document.getElementById('userInfo').style.display = 'block';
+        document.getElementById('loginModal').style.display = 'none';
+
+        if (data.is_concurrent) {
+            document.getElementById('chatBubble').classList.add('concurrent-active');
+        }
+    });
+
+    state.socket.on('concurrent_session_notification', (data) => {
+        showToast(data.message, 'info');
+        if (data.total_sessions > 1) {
+            document.getElementById('chatBubble').classList.add('concurrent-active');
+        } else {
+            document.getElementById('chatBubble').classList.remove('concurrent-active');
+        }
+    });
+
+    state.socket.on('global_notification', (data) => {
+        showToast(data.message, 'warning');
+    });
+
+    state.socket.on('new_message', (data) => {
+        addChatMessage(data);
+    });
+}
+
+function login() {
+    const username = document.getElementById('loginUsername').value.trim();
+    if (!username) {
+        showToast('Introdu un username', 'warning');
+        return;
+    }
+
+    state.socket.emit('login', { username: username });
+}
+
+function toggleChat() {
+    const chatWindow = document.getElementById('chatWindow');
+    chatWindow.style.display = chatWindow.style.display === 'none' ? 'flex' : 'none';
+}
+
+function sendChatMessage() {
+    const input = document.getElementById('chatInput');
+    const message = input.value.trim();
+    if (!message) return;
+
+    state.socket.emit('send_message', {
+        username: state.username,
+        session_id: state.sessionId,
+        message: message
+    });
+
+    input.value = '';
+}
+
+function addChatMessage(data) {
+    const messagesContainer = document.getElementById('chatMessages');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'chat-message';
+
+    msgDiv.innerHTML = `
+        <div class="chat-message-info">
+            <span class="chat-message-username">${escapeHtml(data.username)} <span class="chat-message-session">[${data.session_id}]</span></span>
+            <span class="chat-message-time">${data.timestamp}</span>
+        </div>
+        <div class="chat-message-text">${escapeHtml(data.message)}</div>
+    `;
+
+    messagesContainer.appendChild(msgDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
 // === Initialization ===
 document.addEventListener('DOMContentLoaded', () => {
+    initSocket();
     initUpload();
     initLanguages();
     initModels();
