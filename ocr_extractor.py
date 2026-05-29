@@ -228,7 +228,7 @@ class HardcodedSubtitleExtractor:
         except ImportError:
             return False
 
-    def load_ocr(self, lang: str = "en", use_gpu: bool = False):
+    def load_ocr(self, lang: str = "en"):
         """
         Încarcă PaddleOCR cu codul de limbă corect pentru v3.x (PP-OCRv5).
         """
@@ -240,16 +240,16 @@ class HardcodedSubtitleExtractor:
         # Mapare la codul corect PaddleOCR
         paddle_lang = PADDLE_LANG_MAP.get(lang, PADDLE_LANG_FALLBACK)
 
+        # Detecția GPU este acum automată în versiunile noi PaddleOCR (PP-OCRv5)
         logger.info(
             f"[OCR] Încărcare PaddleOCR PP-OCRv5 "
-            f"(limbă input: '{lang}' → cod PaddleOCR: '{paddle_lang}', GPU: {use_gpu})..."
+            f"(limbă input: '{lang}' → cod PaddleOCR: '{paddle_lang}')..."
         )
 
         try:
             self._ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang=paddle_lang,
-                use_gpu=use_gpu,
                 show_log=False,
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
@@ -269,21 +269,19 @@ class HardcodedSubtitleExtractor:
                 self._ocr = PaddleOCR(
                     use_angle_cls=True,
                     lang="en",
-                    use_gpu=use_gpu,
                     show_log=False,
                 )
                 self._ocr_loaded = True
                 self._current_lang = lang # Mark as loaded for requested lang
                 logger.info("[OCR] PaddleOCR încărcat cu fallback 'en'.")
 
-            elif "GPU" in error_msg or "cuda" in error_msg.lower():
+            elif "GPU" in error_msg or "cuda" in error_msg.lower() or "use_gpu" in error_msg:
                 logger.warning(
-                    f"[OCR] GPU nu e disponibil ({error_msg}). Fallback la CPU."
+                    f"[OCR] Problemă GPU ({error_msg}). Fallback la detecție automată/CPU."
                 )
                 self._ocr = PaddleOCR(
                     use_angle_cls=True,
                     lang=paddle_lang if paddle_lang != PADDLE_LANG_FALLBACK else "en",
-                    use_gpu=False,
                     show_log=False,
                 )
                 self._ocr_loaded = True
@@ -340,7 +338,7 @@ class HardcodedSubtitleExtractor:
         self,
         video_path: str,
         lang: str = "en",
-        use_gpu: bool = False,
+        use_gpu: bool = False, # Menținut pentru compatibilitate API
         subtitle_region: Optional[Tuple[float, float]] = None,
         conf_threshold: int = DEFAULT_CONF_THRESHOLD,
         sim_threshold: int = DEFAULT_SIM_THRESHOLD,
@@ -351,9 +349,7 @@ class HardcodedSubtitleExtractor:
         Extrage subtitrările hardcodate și orice text de pe ecran.
         """
         if not self._ocr_loaded or self._current_lang != lang:
-            # Check if GPU requested is actually available
-            actual_gpu = use_gpu and _is_gpu_actually_available()
-            self.load_ocr(lang=lang, use_gpu=actual_gpu)
+            self.load_ocr(lang=lang)
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():

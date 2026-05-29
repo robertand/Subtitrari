@@ -432,7 +432,6 @@ def process_zones():
                         ocr_segments = ocr_extractor.extract_subtitles(
                             file_path,
                             lang=ocr_lang,
-                            use_gpu=torch.cuda.is_available(),
                             subtitle_region=region,
                             conf_threshold=int(options.get('ocr_conf', 70))
                             # For zones, we might not want to process the WHOLE video again,
@@ -1142,7 +1141,6 @@ def process_task(task):
                 ocr_segments = ocr_extractor.extract_subtitles(
                     str(task.file_path),
                     lang=ocr_lang,
-                    use_gpu=torch.cuda.is_available(),
                     subtitle_region=region,
                     conf_threshold=int(task.options.get('ocr_conf', 70)),
                     progress_callback=lambda m: update_task_progress(task, task.progress, m)
