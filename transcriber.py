@@ -3,35 +3,55 @@ import types
 from unittest.mock import MagicMock
 
 # Mock torchcodec to prevent environment crashes on load
-_torchcodec_mock = types.ModuleType('torchcodec')
-_torchcodec_mock.__spec__ = MagicMock()
-_torchcodec_mock.__spec__.name = 'torchcodec'
-_torchcodec_mock.__spec__.loader = MagicMock()
-_torchcodec_mock.__spec__.origin = 'mock'
-_torchcodec_mock.__spec__.submodule_search_locations = []
-_torchcodec_mock.__version__ = '0.0.0'
-_torchcodec_mock.__path__ = []
-_torchcodec_mock.__file__ = 'mock'
-_torchcodec_mock.decoders = MagicMock()
-_torchcodec_mock.decoders.VideoDecoder = MagicMock
-_torchcodec_mock.decoders.AudioDecoder = MagicMock
-_torchcodec_mock.decoders.Decoder = MagicMock
-_torchcodec_mock.encoders = MagicMock()
-_torchcodec_mock.encoders.VideoEncoder = MagicMock
-_torchcodec_mock.encoders.AudioEncoder = MagicMock
-_torchcodec_mock.load = MagicMock(return_value={})
-_torchcodec_mock.dump = MagicMock()
-_torchcodec_mock.is_available = MagicMock(return_value=False)
-_torchcodec_mock.get_version = MagicMock(return_value="0.0.0")
-_torchcodec_mock.VideoDecoder = MagicMock
-_torchcodec_mock.AudioDecoder = MagicMock
-_torchcodec_mock.VideoEncoder = MagicMock
-_torchcodec_mock.AudioEncoder = MagicMock
-_torchcodec_mock.Decoder = MagicMock
-_torchcodec_mock.Encoder = MagicMock
-_torchcodec_mock.StreamReader = MagicMock
-_torchcodec_mock.StreamWriter = MagicMock
-sys.modules['torchcodec'] = _torchcodec_mock
+def create_torchcodec_mock():
+    mock = types.ModuleType('torchcodec')
+    mock.__spec__ = MagicMock()
+    mock.__spec__.name = 'torchcodec'
+    mock.__spec__.loader = MagicMock()
+    mock.__spec__.origin = 'mock'
+    mock.__spec__.submodule_search_locations = []
+    mock.__version__ = '0.0.0'
+    mock.__path__ = []
+    mock.__file__ = 'mock'
+
+    # Create proper classes that can be used with isinstance()
+    class AudioSamples:
+        pass
+
+    # Create decoders module with AudioDecoder class
+    mock.decoders = types.ModuleType('torchcodec.decoders')
+
+    class AudioDecoder:
+        """Mock AudioDecoder class that's a proper type"""
+        pass
+
+    # Add AudioDecoder to decoders module
+    mock.decoders.AudioDecoder = AudioDecoder
+
+    # Create encoders module
+    mock.encoders = types.ModuleType('torchcodec.encoders')
+
+    # Add other mock attributes
+    mock.AudioSamples = AudioSamples
+    mock.load = MagicMock(return_value={})
+    mock.is_available = MagicMock(return_value=False)
+
+    # Add VideoDecoder and other common classes that might be checked
+    class VideoDecoder:
+        pass
+
+    mock.decoders.VideoDecoder = VideoDecoder
+
+    # Ensure the decoders module is also accessible directly
+    # This handles cases where code does 'from torchcodec.decoders import AudioDecoder'
+    sys.modules['torchcodec.decoders'] = mock.decoders
+    sys.modules['torchcodec.encoders'] = mock.encoders
+
+    return mock
+
+# Apply mock before other imports
+if 'torchcodec' not in sys.modules:
+    sys.modules['torchcodec'] = create_torchcodec_mock()
 
 import whisper
 import whisperx
@@ -50,13 +70,59 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+class GenderDetector:
+    def __init__(self, device: str = "cpu"):
+        self.device = device
+        self.model = None
+        self.processor = None
+        self.model_id = "alefiury/wavlm-base-plus-gender-classifier"
+
+    def load_model(self):
+        if self.model is None:
+            from transformers import WavLMForSequenceClassification, AutoFeatureExtractor
+            logger.info(f"Loading gender detection model: {self.model_id}")
+            self.processor = AutoFeatureExtractor.from_pretrained(self.model_id)
+            self.model = WavLMForSequenceClassification.from_pretrained(self.model_id).to(self.device)
+            self.model.eval()
+
+    def detect_gender(self, audio: np.ndarray, sr: int = 16000) -> str:
+        """Detect gender from audio segment (returns 'male' or 'female')"""
+        try:
+            self.load_model()
+
+            # WavLM expects 16kHz
+            if sr != 16000:
+                audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+
+            inputs = self.processor(audio, sampling_rate=16000, return_tensors="pt", padding=True).to(self.device)
+
+            with torch.no_grad():
+                logits = self.model(**inputs).logits
+
+            prediction = torch.argmax(logits, dim=-1).item()
+            # 0: female, 1: male based on alefiury/wavlm-base-plus-gender-classifier
+            return "female" if prediction == 0 else "male"
+        except Exception as e:
+            logger.error(f"Gender detection error: {e}")
+            return "unknown"
+
+    def unload(self):
+        self.model = None
+        self.processor = None
+        gc.collect()
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+
 class WhisperTranscriber:
     def __init__(self):
-        self.models = {}
+        self.models = {}  # Vanilla Whisper models or Transformers Pipelines
+        self.models_processors = {} # Processors for custom HF models (not used for pipelines)
+        self.whisperx_models = {}  # WhisperX models
+        self.alignment_models = {}  # WhisperX alignment models
         self.current_model = None
         self.device = self._detect_device()
         self.cohere_processor = None
-        self.alignment_model = None
+        self.alignment_model = None # For Cohere fallback alignment
         self.alignment_metadata = None
         
     def _detect_device(self) -> str:
@@ -66,8 +132,24 @@ class WhisperTranscriber:
         logger.info("No GPU detected, using CPU")
         return "cpu"
     
-    def load_model(self, model_name: str = 'small') -> Dict[str, Any]:
-        """Load Whisper model with lazy loading"""
+    def ensure_model_downloaded(self, model_id: str, cache_dir: str = "data/models", hf_token: Optional[str] = None) -> str:
+        """Explicitly ensure a Hugging Face model is downloaded"""
+        try:
+            from huggingface_hub import snapshot_download
+            logger.info(f"Checking/Downloading model: {model_id}")
+            # snapshot_download is smart enough to skip if already present
+            path = snapshot_download(
+                repo_id=model_id,
+                cache_dir=cache_dir,
+                token=hf_token
+            )
+            return path
+        except Exception as e:
+            logger.error(f"Error downloading {model_id}: {e}")
+            return model_id # Fallback to original ID
+
+    def load_model(self, model_name: str = 'small', hf_token: Optional[str] = None) -> Dict[str, Any]:
+        """Load Whisper model with lazy loading, supporting both OpenAI names and HF IDs"""
         try:
             if model_name in self.models:
                 self.current_model = self.models[model_name]
@@ -76,11 +158,67 @@ class WhisperTranscriber:
             logger.info(f"Loading model: {model_name} on {self.device}")
             start_time = time.time()
             
-            self.current_model = whisper.load_model(
-                model_name,
-                device=self.device,
-                download_root='data/models'
-            )
+            # Handle Hugging Face models (containing '/')
+            if '/' in model_name:
+                logger.info(f"Loading custom Hugging Face model: {model_name}")
+                from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+
+                # Check if already loaded
+                if model_name in self.models:
+                    self.current_model = self.models[model_name]
+                    return {"status": "loaded", "model": model_name, "device": self.device}
+
+                # Ensure downloaded
+                model_path = self.ensure_model_downloaded(model_name, hf_token=hf_token)
+
+                # Load model
+                model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                    model_path,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    low_cpu_mem_usage=True,
+                    use_safetensors=True,
+                    trust_remote_code=True
+                ).to(self.device)
+
+                # Load processor (with fallback to base turbo)
+                try:
+                    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True, clean_up_tokenization_spaces=False)
+                except Exception as e:
+                    logger.warning(f"AutoProcessor failed for {model_name}, trying local path: {e}")
+                    try:
+                        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True, clean_up_tokenization_spaces=False)
+                    except Exception:
+                        logger.warning("Local AutoProcessor failed, falling back to base turbo processor")
+                        processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo", clean_up_tokenization_spaces=False)
+
+                # Create pipeline using explicitly loaded model and processor
+                # We don't pass torch_dtype here as the model is already loaded with the correct dtype
+                pipe = pipeline(
+                    "automatic-speech-recognition",
+                    model=model,
+                    tokenizer=processor.tokenizer,
+                    feature_extractor=processor.feature_extractor,
+                    chunk_length_s=30,
+                    device=0 if self.device == "cuda" else -1,
+                )
+
+                self.current_model = pipe
+                self.models[model_name] = pipe
+            else:
+                # Map names for OpenAI Whisper compatibility
+                whisper_model_name = model_name
+                if model_name == 'large-v3-turbo':
+                    whisper_model_name = 'turbo'
+
+                try:
+                    self.current_model = whisper.load_model(
+                        whisper_model_name,
+                        device=self.device,
+                        download_root='data/models'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to load Whisper {whisper_model_name}: {e}")
+                    raise
             
             load_time = time.time() - start_time
             self.models[model_name] = self.current_model
@@ -112,11 +250,12 @@ class WhisperTranscriber:
         model_name: str = 'small',
         language: Optional[str] = None,
         task_id: str = None,
+        hf_token: Optional[str] = None,
         progress_callback = None
     ) -> Dict[str, Any]:
         """Transcribe audio file with progress tracking"""
         try:
-            model_info = self.load_model(model_name)
+            model_info = self.load_model(model_name, hf_token=hf_token)
             
             if progress_callback:
                 progress_callback(10, "Loading audio...")
@@ -126,21 +265,116 @@ class WhisperTranscriber:
             
             if progress_callback:
                 progress_callback(20, "Transcribing...")
-            
-            options = {
-                "task": "transcribe",
-                "verbose": False,
-                "fp16": self.device == "cuda"
-            }
-            
-            if language and language != 'auto':
-                options["language"] = language
-            
-            result = self.current_model.transcribe(audio, **options)
+
+            # Handle Transformers Pipeline objects
+            if hasattr(self.current_model, "__call__") and hasattr(self.current_model, "task") and self.current_model.task == "automatic-speech-recognition":
+                logger.info("Using transformers pipeline for transcription")
+
+                # Build generate_kwargs properly
+                generate_kwargs = {}
+                if language and language != 'auto':
+                    generate_kwargs["language"] = language
+                    generate_kwargs["task"] = "transcribe"
+
+                # Don't pass max_new_tokens through generate_kwargs - let the pipeline handle it
+                # The pipeline will use its own chunking mechanism
+
+                try:
+                    # First try: pipeline call with chunking and timestamps
+                    pipe_res = self.current_model(
+                        audio,
+                        chunk_length_s=30,
+                        stride_length_s=5,
+                        return_timestamps=True,
+                        generate_kwargs=generate_kwargs if generate_kwargs else None
+                    )
+                except Exception as e1:
+                    logger.warning(f"First pipeline attempt failed: {e1}")
+                    try:
+                        # Second try: without return_timestamps but with chunking
+                        pipe_res = self.current_model(
+                            audio,
+                            chunk_length_s=30,
+                            stride_length_s=5,
+                            generate_kwargs=generate_kwargs if generate_kwargs else None
+                        )
+                    except Exception as e2:
+                        logger.warning(f"Second pipeline attempt failed: {e2}")
+                        # Third try: minimal call
+                        pipe_res = self.current_model(audio)
+
+                # Parse the result
+                segments = []
+                if isinstance(pipe_res, dict):
+                    # Handle chunked output
+                    if "chunks" in pipe_res:
+                        current_time = 0.0
+                        for chunk in pipe_res["chunks"]:
+                            text = chunk.get("text", "").strip()
+                            if not text:
+                                continue
+
+                            ts = chunk.get("timestamp")
+                            if ts and len(ts) == 2:
+                                start = float(ts[0]) if ts[0] is not None else current_time
+                                end = float(ts[1]) if ts[1] is not None else start + 2.0
+                            else:
+                                start = current_time
+                                end = start + 2.0
+
+                            segments.append({
+                                "start": start,
+                                "end": end,
+                                "text": text
+                            })
+                            current_time = end
+                    elif "text" in pipe_res:
+                        # Single segment output
+                        segments.append({
+                            "start": 0.0,
+                            "end": len(audio) / sr,
+                            "text": pipe_res["text"].strip()
+                        })
+
+                    result = {
+                        "text": pipe_res.get("text", ""),
+                        "segments": segments,
+                        "language": language or "unknown"
+                    }
+                elif isinstance(pipe_res, str):
+                    # Pipeline returned just text
+                    result = {
+                        "text": pipe_res,
+                        "segments": [{"start": 0.0, "end": len(audio) / sr, "text": pipe_res}],
+                        "language": language or "unknown"
+                    }
+                else:
+                    # Unknown format, try to convert
+                    logger.warning(f"Unexpected pipeline output type: {type(pipe_res)}")
+                    result = {
+                        "text": str(pipe_res),
+                        "segments": [{"start": 0.0, "end": len(audio) / sr, "text": str(pipe_res)}],
+                        "language": language or "unknown"
+                    }
+            else:
+                # Standard Whisper model
+                options = {
+                    "task": "transcribe",
+                    "verbose": False,
+                    "fp16": self.device == "cuda"
+                }
+
+                if language and language != 'auto':
+                    options["language"] = language
+
+                result = self.current_model.transcribe(audio, **options)
             
             if progress_callback:
                 progress_callback(90, "Post-processing...")
             
+            # Capture raw text BEFORE hallucination cleaning
+            result["raw_text"] = result.get("text", "")
+
             result = self._clean_hallucinations(result)
             
             if progress_callback:
@@ -150,6 +384,8 @@ class WhisperTranscriber:
             
         except Exception as e:
             logger.error(f"Transcription error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
     
     def transcribe_with_windowing(
@@ -158,7 +394,7 @@ class WhisperTranscriber:
         model_name: str = 'small',
         language: Optional[str] = None,
         window_size: int = 30,
-        overlap: int = 5,
+        overlap: int = 10,
         progress_callback = None
     ) -> Dict[str, Any]:
         """Process large audio files in windows to save memory"""
@@ -273,13 +509,22 @@ class WhisperTranscriber:
         
         return result
     
-    def extract_audio_from_video(self, video_path: str, output_path: str) -> str:
-        """Extract audio from video using ffmpeg"""
+    def extract_audio_from_video(self, video_path: str, output_path: str, start_time: float = 0, duration: Optional[float] = None) -> str:
+        """Extract audio from video using ffmpeg, with optional region support"""
         import ffmpeg
         
         try:
-            stream = ffmpeg.input(video_path)
-            stream = ffmpeg.output(stream, output_path, acodec='pcm_s16le', ac=1, ar='16k')
+            input_args = {}
+            if start_time > 0:
+                input_args['ss'] = start_time
+
+            stream = ffmpeg.input(video_path, **input_args)
+
+            output_args = {'acodec': 'pcm_s16le', 'ac': 1, 'ar': '16k'}
+            if duration is not None:
+                output_args['t'] = duration
+
+            stream = ffmpeg.output(stream, output_path, **output_args)
             ffmpeg.run(stream, overwrite_output=True, quiet=True)
             return output_path
         except ffmpeg.Error as e:
@@ -289,43 +534,167 @@ class WhisperTranscriber:
     def transcribe_whisperx(
         self,
         audio_path: str,
-        model_name: str = 'small',
+        model_name: str = 'large-v3',
         language: Optional[str] = None,
+        batch_size: int = 16,
+        use_diarization: bool = False,
+        hf_token: Optional[str] = None,
         progress_callback = None
     ) -> Dict[str, Any]:
-        """Transcribe audio using WhisperX for better alignment and alternative version"""
+        """Transcribe audio using WhisperX for state-of-the-art alignment and accuracy"""
         try:
             device = self.device
             compute_type = "float16" if device == "cuda" else "int8"
 
-            if progress_callback:
-                progress_callback(10, "Loading WhisperX model...")
+            # Map names for WhisperX / Faster-Whisper compatibility
+            wx_model_name = model_name
+            if model_name == 'large-v3-turbo':
+                wx_model_name = 'turbo'
 
-            model = whisperx.load_model(model_name, device, compute_type=compute_type, download_root='data/models')
+            # 1. Load/Get WhisperX Model
+            if wx_model_name not in self.whisperx_models:
+                if progress_callback:
+                    progress_callback(5, f"Loading WhisperX model {wx_model_name}...")
 
+                logger.info(f"Loading WhisperX model: {wx_model_name} on {device}")
+                try:
+                    self.whisperx_models[wx_model_name] = whisperx.load_model(
+                        wx_model_name,
+                        device,
+                        compute_type=compute_type,
+                        download_root='data/models'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to load WhisperX {wx_model_name}: {e}")
+                    raise
+
+            model = self.whisperx_models[wx_model_name]
+
+            # 2. Transcribe
             if progress_callback:
-                progress_callback(30, "Transcribing with WhisperX...")
+                progress_callback(15, "Transcribing with WhisperX...")
 
             audio = whisperx.load_audio(audio_path)
-            result = model.transcribe(audio, batch_size=16, language=language)
+            # WhisperX transcribe takes audio array, model, and other params
+            result = model.transcribe(audio, batch_size=batch_size, language=language)
 
-            if progress_callback:
-                progress_callback(60, "Aligning WhisperX results...")
+            raw_text = " ".join([seg["text"] for seg in result["segments"]])
+            lang_code = result["language"]
 
-            model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
-            result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
+            # 3. Align
+            try:
+                if progress_callback:
+                    progress_callback(60, f"Aligning results ({lang_code})...")
 
-            if progress_callback:
-                progress_callback(100, "WhisperX complete!")
+                # Load/Get Alignment Model
+                if lang_code not in self.alignment_models:
+                    logger.info(f"Loading WhisperX alignment model for {lang_code}")
+                    model_a, metadata = whisperx.load_align_model(language_code=lang_code, device=device)
+                    self.alignment_models[lang_code] = (model_a, metadata)
 
-            return {
-                "segments": result["segments"],
-                "language": result["language"],
-                "text": " ".join([seg["text"] for seg in result["segments"]])
-            }
+                model_a, metadata = self.alignment_models[lang_code]
+
+                result = whisperx.align(
+                    result["segments"],
+                    model_a,
+                    metadata,
+                    audio,
+                    device,
+                    return_char_alignments=False
+                )
+
+                # 4. Diarize
+                if use_diarization:
+                    try:
+                        if progress_callback:
+                            progress_callback(80, "Performing speaker diarization...")
+
+                        logger.info("Loading Diarization Pipeline...")
+                        diarize_model = whisperx.DiarizationPipeline(use_auth_token=hf_token, device=device)
+
+                        logger.info("Running diarization...")
+                        diarize_segments = diarize_model(audio)
+
+                        logger.info("Assigning speakers to segments...")
+                        result = whisperx.assign_word_speakers(diarize_segments, result)
+                    except Exception as diarize_e:
+                        logger.error(f"Diarization failed: {diarize_e}")
+                        # Continue without diarization
+
+                if progress_callback:
+                    progress_callback(100, "WhisperX transcription and alignment complete!")
+
+                return {
+                    "segments": result["segments"],
+                    "language": result["language"],
+                    "text": " ".join([seg["text"] for seg in result["segments"]]),
+                    "raw_text": raw_text,
+                    "method": "whisperx"
+                }
+            except Exception as align_e:
+                logger.error(f"WhisperX alignment failed: {align_e}")
+                # Return unaligned segments instead of falling back to vanilla whisper
+                return {
+                    "segments": result["segments"],
+                    "language": lang_code,
+                    "text": raw_text,
+                    "raw_text": raw_text,
+                    "method": "whisperx_unaligned",
+                    "alignment_error": str(align_e)
+                }
+
         except Exception as e:
             logger.error(f"WhisperX transcription error: {e}")
-            raise
+            logger.info("Falling back to Transcribe-then-Align (Vanilla Whisper + WhisperX Align)...")
+
+            # 1. Transcribe with Vanilla Whisper (handles more model formats)
+            whisper_result = self.transcribe_audio(
+                audio_path,
+                model_name,
+                language,
+                hf_token=hf_token,
+                progress_callback=progress_callback
+            )
+            raw_text = whisper_result.get("text", "")
+
+            try:
+                # 2. Align with WhisperX
+                # Clear VRAM before loading alignment model if needed
+                # BUT ONLY IF we are on GPU, as CPU alignment is memory-efficient
+                if self.device == "cuda":
+                    logger.info("Clearing VRAM for alignment phase...")
+                    self.unload_model()
+
+                logger.info("Attempting WhisperX alignment on fallback results...")
+                audio = whisperx.load_audio(audio_path)
+                lang_code = whisper_result.get("language", language or "en")
+
+                if lang_code not in self.alignment_models:
+                    model_a, metadata = whisperx.load_align_model(language_code=lang_code, device=self.device)
+                    self.alignment_models[lang_code] = (model_a, metadata)
+
+                model_a, metadata = self.alignment_models[lang_code]
+
+                aligned_result = whisperx.align(
+                    whisper_result["segments"],
+                    model_a,
+                    metadata,
+                    audio,
+                    self.device,
+                    return_char_alignments=False
+                )
+
+                return {
+                    "segments": aligned_result["segments"],
+                    "language": lang_code,
+                    "text": whisper_result["text"],
+                    "raw_text": raw_text,
+                    "method": "whisper_plus_whisperx_align"
+                }
+            except Exception as align_e:
+                logger.error(f"Alignment fallback also failed: {align_e}")
+                whisper_result["raw_text"] = raw_text
+                return whisper_result
 
     def load_cohere_model(self):
         """Load Cohere Transcribe model and processor"""
@@ -768,7 +1137,8 @@ class WhisperTranscriber:
             with torch.no_grad():
                 outputs = self.current_model.generate(
                     **model_inputs, 
-                    max_new_tokens=256,
+                    max_new_tokens=4096, # Increased to prevent truncation
+                    max_length=None,
                     repetition_penalty=1.2,  # Add repetition penalty
                     no_repeat_ngram_size=3,  # Prevent repeating trigrams
                     do_sample=False  # Use greedy decoding for consistency
@@ -837,6 +1207,7 @@ class WhisperTranscriber:
                 "segments": final_segments,
                 "language": language,
                 "text": cohere_text,
+                "raw_text": cohere_text,
                 "aligned": is_aligned,
                 "alignment_method": alignment_method,
                 "pipeline": "cohere_asr + wav2vec2_alignment" if use_forced_alignment else "cohere_asr_only"
@@ -865,6 +1236,9 @@ class WhisperTranscriber:
             self.current_model = None
             self.cohere_processor = None
             self.models.clear()
+            self.models_processors.clear()
+            self.whisperx_models.clear()
+            self.alignment_models.clear()
             self.unload_alignment_model()
 
             gc.collect()

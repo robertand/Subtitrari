@@ -23,17 +23,24 @@ class Config:
     
     # Processing
     DEFAULT_ENGINE = 'whisper'
-    AVAILABLE_ENGINES = ['whisper', 'cohere']
-    DEFAULT_MODEL = 'small'
-    AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3']
+    AVAILABLE_ENGINES = ['whisper', 'cohere', 'nemo']
+    DEFAULT_MODEL = 'large-v3'
+    AVAILABLE_MODELS = [
+        'tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3', 'large-v3-turbo', 'turbo',
+        'selimc/whisper-large-v3-turbo-turkish',
+        'Farazzzzzzz/whisper-tiny_to_korean_accent2',
+        'parakeet-v3', 'canary'
+    ]
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
-    DEFAULT_TRANSCRIBE_WINDOW = 60
+    DEFAULT_TRANSCRIBE_WINDOW = 30
     DEFAULT_TRANSCRIBE_OVERLAP = 10
 
     # LLM Models
     DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'
     AVAILABLE_LLM_MODELS = [
         'Qwen/Qwen3-235B-A22B-Instruct',
+        'allura-forge/Llama-3.3-8B-Instruct',
+        'nvidia/Llama-3.3-70B-Instruct-NVFP4',
         'google/gemma-3-12b-it',
         'google/gemma-4-E4B-it',
         'google/gemma-4-26B-A4B-it',
@@ -41,7 +48,7 @@ class Config:
     ]
     ROMISTRAL_MODEL = 'OpenLLM-Ro/RoMistral-7b-Instruct'
     DEFAULT_TRANSLATE_GROUP = 10
-    VLLM_GPU_MEMORY_UTILIZATION = 0.6  # 60% for even better safety with huge models like Qwen3-235B
+    VLLM_GPU_MEMORY_UTILIZATION = 0.9  # Increased to 90% to allow loading large 70B models
     VLLM_ENFORCE_EAGER = True  # Use eager mode to save VRAM from CUDA graphs
 
     DEFAULT_LANGUAGE = 'auto'
@@ -91,6 +98,10 @@ class Config:
         'hr': 'Croată'
     }
     
+    # OCR
+    DEFAULT_OCR_CONF = 70
+    DEFAULT_OCR_SIM = 80
+
     # Audio extraction
     AUDIO_FORMAT = 'wav'
     AUDIO_SAMPLE_RATE = 16000

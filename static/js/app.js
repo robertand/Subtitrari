@@ -24,7 +24,22 @@ const state = {
     dragStartX: 0,
     dragStartOffset: 0,
     resizeType: null, // 'start' or 'end'
-    exportLanguage: 'original'
+    exportLanguage: 'original',
+    selectedZones: [],
+    isSelectingZone: false,
+    selectionStart: 0,
+    reprocessedZones: [],
+    subStyles: {
+        fontFamily: 'Arial',
+        fontSize: 24,
+        color: '#ffffff',
+        bgColor: '#000000',
+        bgOpacity: 0.8,
+        effect: 'shadow',
+        outlineColor: '#000000',
+        offsetY: 50,
+        offsetX: 0
+    }
 };
 
 // === DOM Elements ===
@@ -55,6 +70,8 @@ const elements = {
     segmentsList: document.getElementById('segmentsList'),
     fullTextView: document.getElementById('fullTextView'),
     fullTextEditor: document.getElementById('fullTextEditor'),
+    rawTextView: document.getElementById('rawTextView'),
+    rawTextEditor: document.getElementById('rawTextEditor'),
     translationResults: document.getElementById('translationResults'),
     translationsContainer: document.getElementById('translationsContainer'),
     translationTab: document.getElementById('translationTab'),
@@ -67,6 +84,8 @@ const elements = {
     timelineSegments: document.getElementById('timelineSegments'),
     timelinePlayhead: document.getElementById('timelinePlayhead'),
     timelineRuler: document.getElementById('timelineRuler'),
+    timelineSelectionOverlay: document.getElementById('timelineSelectionOverlay'),
+    selectedZonesList: document.getElementById('selectedZonesList'),
     zoomLevel: document.getElementById('zoomLevel'),
     subtitleLangSelect: document.getElementById('subtitleLangSelect')
 };
@@ -78,6 +97,9 @@ document.addEventListener('DOMContentLoaded', () => {
     initModels();
     initVideoPlayer();
     checkDevice();
+    initSettingsListeners();
+    // Initialize Presets
+    initPresets();
 });
 
 function initUpload() {
@@ -114,6 +136,14 @@ async function initLanguages() {
         const languages = await response.json();
         
         const languageSelect = document.getElementById('languageSelect');
+        const updateMixedLanguageOptions = () => {
+            const mixedTr = document.getElementById('mixedTurkishGroup');
+            const mixedKo = document.getElementById('mixedKoreanGroup');
+            if (mixedTr) mixedTr.style.display = languageSelect.value === 'tr' ? 'block' : 'none';
+            if (mixedKo) mixedKo.style.display = languageSelect.value === 'ko' ? 'block' : 'none';
+        };
+        languageSelect.addEventListener('change', updateMixedLanguageOptions);
+
         const targetLanguageSelect = document.getElementById('targetLanguageSelect');
         
         // Păstrează opțiunea auto
@@ -133,6 +163,8 @@ async function initLanguages() {
         // Selectează Română implicit pentru limba țintă
         const roOption = targetLanguageSelect.querySelector('option[value="ro"]');
         if (roOption) roOption.selected = true;
+
+        updateMixedLanguageOptions(); // Initial check after populating options
         
     } catch (error) {
         console.error('Error loading languages:', error);
@@ -401,20 +433,54 @@ function resetUpload() {
     elements.uploadPercentage.textContent = '0%';
 }
 
+function initSettingsListeners() {
+    // Listen for any changes in settings or translation sections to show the start button again
+    const settingsSections = document.querySelectorAll('.settings-section, .translation-section');
+    settingsSections.forEach(section => {
+        section.addEventListener('change', () => {
+            showStartButtonIfReady();
+        });
+        // Also catch input events for textareas/inputs that might not trigger 'change' until blur
+        section.addEventListener('input', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                showStartButtonIfReady();
+            }
+        });
+    });
+}
+
+function showStartButtonIfReady() {
+    if (state.taskId && elements.startButton) {
+        elements.startButton.style.display = 'flex';
+    }
+}
+
 // === Processing ===
 async function startProcessing() {
     if (!state.taskId) {
         showToast('Încărcați mai întâi un fișier', 'warning');
         return;
     }
+
+    // Reset UI for new processing run
+    elements.resultsSection.style.display = 'none';
+    elements.translationResults.style.display = 'none';
+    if (elements.timelineSection) elements.timelineSection.style.display = 'none';
     
     // Check audio only mode
     const audioOnly = document.getElementById('audioOnly').checked;
     
     // Collect options
     const options = {
+        engine: document.getElementById('engineSelect').value,
+        process_start: parseFloat(document.getElementById('processStart').value) || 0,
+        process_end: parseFloat(document.getElementById('processEnd').value) || 0,
+        hf_token: document.getElementById('hfToken').value,
+        use_diarization: document.getElementById('useDiarization').checked,
         model: document.getElementById('modelSelect').value,
         language: document.getElementById('languageSelect').value,
+            mixed_turkish: document.getElementById('mixedTurkish').checked,
+            mixed_korean: document.getElementById('mixedKorean').checked,
         min_duration: parseFloat(document.getElementById('minDuration').value),
         max_duration: parseFloat(document.getElementById('maxDuration').value),
         max_chars: parseInt(document.getElementById('maxChars').value),
@@ -425,15 +491,40 @@ async function startProcessing() {
         prevent_overlap: document.getElementById('preventOverlap').checked,
         transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
         transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
-        audio_only: audioOnly
+        multi_pass: document.getElementById('multiPass').checked,
+        audio_only: audioOnly,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_merge: document.getElementById('ocrMerge').checked
     };
     
+    // NeMo Language Check
+    if (options.engine === 'nemo' && options.language !== 'auto') {
+        const nemoSupported = ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"];
+        if (!nemoSupported.includes(options.language)) {
+            showToast(`Atenție: NeMo Parakeet v3 nu suportă limba selectată (${options.language}). Se va folosi auto-detect.`, 'warning');
+        }
+    }
+
     if (!audioOnly) {
         options.translate = document.getElementById('enableTranslation').checked;
         if (options.translate) {
             options.target_languages = [document.getElementById('targetLanguageSelect').value];
+            options.translation_engine = document.getElementById('translationEngine').value;
+            options.llm_model = document.getElementById('llmModelSelect').value;
             options.translate_group = parseInt(document.getElementById('translateGroup').value);
             options.use_romistral = document.getElementById('useRomistral').checked;
+            options.refiner_model = document.getElementById('refinerModelSelect').value;
+            options.translation_context = document.getElementById('translationContext').value;
+
+            // LLM API settings
+            options.llm_api_provider = document.getElementById('llmApiProvider').value;
+            options.llm_api_key = document.getElementById('llmApiKey').value;
+            options.llm_api_model = document.getElementById('llmApiModel').value;
+            options.llm_api_url = document.getElementById('llmApiUrl').value;
             
             // Adaugă limbile suplimentare
             const additionalSelects = document.querySelectorAll('.translation-lang-select');
@@ -544,6 +635,7 @@ function cancelProcessing() {
 function showResults(result) {
     state.segments = result.segments || [];
     state.translations = result.translations || {};
+    state.rawText = result.raw_text || '';
     state.displayLanguage = 'original';
     
     console.log('Showing results:', state.segments.length, 'segments');
@@ -579,6 +671,7 @@ function showResults(result) {
     // Render segments
     renderSegments();
     updateFullText();
+    if (elements.rawTextEditor) elements.rawTextEditor.value = state.rawText;
     
     // Scroll to top of segments
     elements.segmentsList.scrollTop = 0;
@@ -615,6 +708,10 @@ function renderSegments() {
             div.classList.add('selected');
         }
 
+        const gender = segment.speaker_gender || 'unknown';
+        const genderIcon = gender === 'female' ? '👩' : (gender === 'male' ? '👨' : '👤');
+        const speakerHtml = segment.speaker ? `<span class="segment-speaker" title="Gen: ${gender}"> [${genderIcon} ${segment.speaker}]</span>` : '';
+
         div.innerHTML = `
             <div class="segment-number">${index + 1}</div>
             <div class="segment-content">
@@ -623,7 +720,7 @@ function renderSegments() {
                     ${escapeHtml(displayText || '')}
                 </div>
                 <div class="segment-time">
-                    ${formatTimestamp(segment.start)} → ${formatTimestamp(segment.end)}
+                    ${formatTimestamp(segment.start)} → ${formatTimestamp(segment.end)}${speakerHtml}
                 </div>
             </div>
             <div class="segment-actions">
@@ -755,6 +852,555 @@ function updateTranslationSegment(lang, index, text) {
             updateFullText();
             updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
         }
+    }
+}
+
+function toggleRefinerOptions() {
+    const enabled = document.getElementById('useRomistral').checked;
+    const group = document.getElementById('refinerModelGroup');
+    if (group) group.style.display = enabled ? 'block' : 'none';
+}
+
+function toggleAdvancedMode() {
+    const isAdvanced = document.getElementById('advancedModeToggle').checked;
+    const advancedContainer = document.getElementById('advancedSettingsContainer');
+    const advancedTranslation = document.getElementById('advancedTranslationContainer');
+
+    if (isAdvanced) {
+        advancedContainer.style.display = 'block';
+        advancedTranslation.style.display = 'block';
+    } else {
+        advancedContainer.style.display = 'none';
+        advancedTranslation.style.display = 'none';
+    }
+}
+
+// === Presets Logic ===
+const defaultPresets = {
+    "default": {
+        name: "Standard (Optimized)",
+        engine: "whisper",
+        model: "large-v3",
+        window: 50,
+        overlap: 25,
+        use_vad: true,
+        use_margin: true,
+        isolate_voice: false,
+        deduplicate: true,
+        prevent_overlap: true,
+        use_diarization: false,
+        multi_pass: false,
+        mixed_turkish: false,
+        mixed_korean: false,
+        audio_only: false,
+        translate: false,
+        target_lang: "ro",
+        trans_engine: "google",
+        use_refinement: false,
+        refiner_model: "allura-forge/Llama-3.3-8B-Instruct",
+        trans_group: 15,
+        llm_api_provider: "claude",
+        llm_api_model: "",
+        llm_api_url: ""
+    },
+    "turkish_mixed": {
+        name: "🇹🇷 Turcă Mixtă (V3+Turbo)",
+        engine: "whisper",
+        language: "tr",
+        mixed_turkish: true,
+        use_vad: true,
+        deduplicate: true,
+        prevent_overlap: true
+    },
+    "korean_mixed": {
+        name: "🇰🇷 Coreeană Mixtă (V3+Turbo)",
+        engine: "whisper",
+        language: "ko",
+        mixed_korean: true,
+        use_vad: true,
+        deduplicate: true,
+        prevent_overlap: true
+    }
+};
+
+function initPresets() {
+    updatePresetDropdown();
+    // Load default if nothing selected
+    loadPreset('default');
+}
+
+function updatePresetDropdown() {
+    const select = document.getElementById('presetSelect');
+    if (!select) return;
+
+    const savedValue = select.value;
+    select.innerHTML = '';
+
+    // Add Built-in
+    Object.entries(defaultPresets).forEach(([id, preset]) => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = preset.name;
+        select.appendChild(opt);
+    });
+
+    // Add User Presets
+    const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
+    if (Object.keys(userPresets).length > 0) {
+        const separator = document.createElement('option');
+        separator.disabled = true;
+        separator.textContent = "─── Salvate de tine ───";
+        select.appendChild(separator);
+
+        Object.entries(userPresets).forEach(([id, preset]) => {
+            const opt = document.createElement('option');
+            opt.value = 'user_' + id;
+            opt.textContent = preset.name;
+            select.appendChild(opt);
+        });
+    }
+
+    if (savedValue) select.value = savedValue;
+}
+
+function savePreset() {
+    const nameInput = document.getElementById('newPresetName');
+    const name = nameInput.value.trim();
+    if (!name) {
+        showToast('Introdu un nume pentru preset', 'warning');
+        return;
+    }
+
+    const id = Date.now().toString();
+    const preset = {
+        name: name,
+        engine: document.getElementById('engineSelect').value,
+        model: document.getElementById('modelSelect').value,
+        window: document.getElementById('transcribeWindow').value,
+        overlap: document.getElementById('transcribeOverlap').value,
+        use_vad: document.getElementById('useVAD').checked,
+        use_margin: document.getElementById('useMargin').checked,
+        isolate_voice: document.getElementById('isolateVoice').checked,
+        deduplicate: document.getElementById('deduplicate').checked,
+        prevent_overlap: document.getElementById('preventOverlap').checked,
+        use_diarization: document.getElementById('useDiarization').checked,
+        multi_pass: document.getElementById('multiPass').checked,
+        mixed_turkish: document.getElementById('mixedTurkish')?.checked || false,
+        mixed_korean: document.getElementById('mixedKorean')?.checked || false,
+        audio_only: document.getElementById('audioOnly').checked,
+        translate: document.getElementById('enableTranslation').checked,
+        target_lang: document.getElementById('targetLanguageSelect').value,
+        trans_engine: document.getElementById('translationEngine').value,
+        use_refinement: document.getElementById('useRomistral').checked,
+        refiner_model: document.getElementById('refinerModelSelect').value,
+        trans_group: document.getElementById('translateGroup').value,
+        language: document.getElementById('languageSelect').value,
+        translation_context: document.getElementById('translationContext').value,
+        llm_api_provider: document.getElementById('llmApiProvider').value,
+        llm_api_model: document.getElementById('llmApiModel').value,
+        llm_api_url: document.getElementById('llmApiUrl').value,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_merge: document.getElementById('ocrMerge').checked
+    };
+
+    const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
+    userPresets[id] = preset;
+    localStorage.setItem('user_presets', JSON.stringify(userPresets));
+
+    nameInput.value = '';
+    updatePresetDropdown();
+    showToast(`Preset "${name}" salvat!`, 'success');
+}
+
+function loadPreset(id) {
+    let preset;
+    if (id.startsWith('user_')) {
+        const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
+        preset = userPresets[id.replace('user_', '')];
+    } else {
+        preset = defaultPresets[id];
+    }
+
+    if (!preset) return;
+
+    // Apply values to UI
+    if (preset.engine !== undefined) document.getElementById('engineSelect').value = preset.engine;
+    if (preset.model !== undefined) document.getElementById('modelSelect').value = preset.model;
+    if (preset.window !== undefined) document.getElementById('transcribeWindow').value = preset.window;
+    if (preset.overlap !== undefined) document.getElementById('transcribeOverlap').value = preset.overlap;
+    if (preset.use_vad !== undefined) document.getElementById('useVAD').checked = preset.use_vad;
+    if (preset.use_margin !== undefined) document.getElementById('useMargin').checked = preset.use_margin;
+    if (preset.isolate_voice !== undefined) document.getElementById('isolateVoice').checked = preset.isolate_voice;
+    if (preset.deduplicate !== undefined) document.getElementById('deduplicate').checked = preset.deduplicate;
+    if (preset.prevent_overlap !== undefined) document.getElementById('preventOverlap').checked = preset.prevent_overlap;
+    if (preset.use_diarization !== undefined) document.getElementById('useDiarization').checked = preset.use_diarization;
+    if (preset.multi_pass !== undefined) document.getElementById('multiPass').checked = preset.multi_pass;
+
+    if (preset.mixed_turkish !== undefined && document.getElementById('mixedTurkish'))
+        document.getElementById('mixedTurkish').checked = preset.mixed_turkish;
+    if (preset.mixed_korean !== undefined && document.getElementById('mixedKorean'))
+        document.getElementById('mixedKorean').checked = preset.mixed_korean;
+
+    if (preset.audio_only !== undefined) document.getElementById('audioOnly').checked = preset.audio_only;
+    if (preset.translate !== undefined) document.getElementById('enableTranslation').checked = preset.translate;
+    if (preset.target_lang !== undefined) document.getElementById('targetLanguageSelect').value = preset.target_lang;
+    if (preset.trans_engine !== undefined) document.getElementById('translationEngine').value = preset.trans_engine;
+    if (preset.use_refinement !== undefined) document.getElementById('useRomistral').checked = preset.use_refinement;
+    if (preset.refiner_model !== undefined) document.getElementById('refinerModelSelect').value = preset.refiner_model;
+    if (preset.trans_group !== undefined) document.getElementById('translateGroup').value = preset.trans_group;
+    if (preset.language !== undefined) document.getElementById('languageSelect').value = preset.language;
+    if (preset.translation_context !== undefined) document.getElementById('translationContext').value = preset.translation_context;
+
+    if (preset.llm_api_provider !== undefined) document.getElementById('llmApiProvider').value = preset.llm_api_provider;
+    if (preset.llm_api_model !== undefined) document.getElementById('llmApiModel').value = preset.llm_api_model;
+    if (preset.llm_api_url !== undefined) document.getElementById('llmApiUrl').value = preset.llm_api_url;
+
+    if (preset.use_ocr !== undefined) document.getElementById('useOCR').checked = preset.use_ocr;
+    if (preset.ocr_conf !== undefined) {
+        document.getElementById('ocrConf').value = preset.ocr_conf;
+        document.getElementById('ocrConfVal').textContent = preset.ocr_conf + '%';
+    }
+    if (preset.ocr_merge !== undefined) document.getElementById('ocrMerge').checked = preset.ocr_merge;
+    if (preset.ocr_region_mode !== undefined) {
+        const radio = document.querySelector(`input[name="ocrRegionMode"][value="${preset.ocr_region_mode}"]`);
+        if (radio) radio.checked = true;
+    } else if (preset.ocr_manual_region !== undefined) {
+        const val = preset.ocr_manual_region ? 'manual' : 'auto';
+        const radio = document.querySelector(`input[name="ocrRegionMode"][value="${val}"]`);
+        if (radio) radio.checked = true;
+    }
+    if (preset.ocr_top !== undefined) document.getElementById('ocrTop').value = preset.ocr_top;
+    if (preset.ocr_bottom !== undefined) document.getElementById('ocrBottom').value = preset.ocr_bottom;
+
+    // Refresh UI dependencies
+    toggleEngineOptions();
+    updateModelOptions();
+    toggleTranslation();
+    toggleRefinerOptions();
+    toggleOCRSettings();
+    toggleOCRManualRegion();
+
+    // Trigger language-dependent UI updates
+    const langEvent = new Event('change');
+    document.getElementById('languageSelect').dispatchEvent(langEvent);
+}
+
+// === Selective Re-processing Logic ===
+
+function startZoneSelection(e) {
+    const content = elements.timelineContent;
+    const rect = content.getBoundingClientRect();
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    const startTime = (e.clientX - rect.left) / pps;
+
+    state.isSelectingZone = true;
+    state.selectionStart = startTime;
+
+    // Create temporary visual selection
+    const div = document.createElement('div');
+    div.className = 'selection-region tmp-selection';
+    div.style.left = (startTime * pps) + 'px';
+    div.style.width = '0px';
+    elements.timelineSelectionOverlay.appendChild(div);
+
+    const onMouseMove = (moveE) => {
+        if (!state.isSelectingZone) return;
+        const currentX = moveE.clientX - rect.left;
+        const currentTime = Math.max(0, currentX / pps);
+
+        const start = Math.min(state.selectionStart, currentTime);
+        const end = Math.max(state.selectionStart, currentTime);
+
+        div.style.left = (start * pps) + 'px';
+        div.style.width = ((end - start) * pps) + 'px';
+    };
+
+    const onMouseUp = () => {
+        if (!state.isSelectingZone) return;
+        state.isSelectingZone = false;
+
+        const start = parseFloat(div.style.left) / pps;
+        const end = (parseFloat(div.style.left) + parseFloat(div.style.width)) / pps;
+
+        div.remove();
+
+        if (end - start > 0.5) {
+            addZone(start, end);
+        }
+
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+}
+
+function addZone(start, end) {
+    start = Math.round(start * 100) / 100;
+    end = Math.round(end * 100) / 100;
+
+    state.selectedZones.push({start, end});
+    state.selectedZones.sort((a, b) => a.start - b.start);
+
+    // Merge overlaps
+    const merged = [];
+    if (state.selectedZones.length > 0) {
+        let current = {...state.selectedZones[0]};
+        for (let i = 1; i < state.selectedZones.length; i++) {
+            let next = state.selectedZones[i];
+            if (next.start <= current.end) {
+                current.end = Math.max(current.end, next.end);
+            } else {
+                merged.push(current);
+                current = {...next};
+            }
+        }
+        merged.push(current);
+    }
+    state.selectedZones = merged;
+    renderZones();
+}
+
+function addManualZone() {
+    const startStr = document.getElementById('manualZoneStart').value;
+    const endStr = document.getElementById('manualZoneEnd').value;
+
+    const parseTime = (s) => {
+        if (!s) return NaN;
+        const parts = s.split(':').map(parseFloat);
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        return parseFloat(s);
+    };
+
+    const start = parseTime(startStr);
+    const end = parseTime(endStr);
+
+    if (isNaN(start) || isNaN(end) || end <= start) {
+        showToast('Interval invalid. Folosește HH:MM:SS', 'warning');
+        return;
+    }
+
+    addZone(start, end);
+    document.getElementById('manualZoneStart').value = '';
+    document.getElementById('manualZoneEnd').value = '';
+}
+
+function renderZones() {
+    const pps = state.pixelsPerSecond * state.zoomLevel;
+    if (!elements.timelineSelectionOverlay) return;
+
+    elements.timelineSelectionOverlay.innerHTML = '';
+
+    state.reprocessedZones.forEach(zone => {
+        const div = document.createElement('div');
+        div.className = 'reprocessed-region';
+        div.style.left = (zone.start * pps) + 'px';
+        div.style.width = ((zone.end - zone.start) * pps) + 'px';
+        elements.timelineSelectionOverlay.appendChild(div);
+    });
+
+    state.selectedZones.forEach((zone) => {
+        const div = document.createElement('div');
+        div.className = 'selection-region';
+        div.style.left = (zone.start * pps) + 'px';
+        div.style.width = ((zone.end - zone.start) * pps) + 'px';
+        elements.timelineSelectionOverlay.appendChild(div);
+    });
+
+    if (elements.selectedZonesList) {
+        elements.selectedZonesList.innerHTML = '';
+        state.selectedZones.forEach((zone, idx) => {
+            const tag = document.createElement('div');
+            tag.className = 'zone-tag';
+            tag.innerHTML = `
+                <span>${formatTimestamp(zone.start).split(',')[0]} → ${formatTimestamp(zone.end).split(',')[0]}</span>
+                <span class="remove" onclick="removeZone(${idx})">×</span>
+            `;
+            elements.selectedZonesList.appendChild(tag);
+        });
+    }
+
+    const info = document.getElementById('selectionInfo');
+    if (info) {
+        info.textContent = state.selectedZones.length > 0 ?
+            `${state.selectedZones.length} zone selectate` :
+            "Selectează zone pe timeline (Click + Drag)";
+    }
+}
+
+function removeZone(idx) {
+    state.selectedZones.splice(idx, 1);
+    renderZones();
+}
+
+function clearSelections() {
+    state.selectedZones = [];
+    renderZones();
+}
+
+async function reprocessZones() {
+    if (state.selectedZones.length === 0) {
+        showToast('Selectează cel puțin o zonă de pe timeline', 'warning');
+        return;
+    }
+
+    if (!state.taskId) return;
+
+    // Collect all target languages
+    const targetLangs = [document.getElementById('targetLanguageSelect').value];
+    document.querySelectorAll('.translation-lang-select').forEach(select => {
+        targetLangs.push(select.value);
+    });
+
+    if (!confirm(`Re-procesezi ${state.selectedZones.length} zone? Segmentele existente din aceste intervale vor fi înlocuite.`)) return;
+
+    const btn = document.getElementById('reprocessBtn');
+    btn.disabled = true;
+    btn.textContent = '⌛ Se procesează...';
+
+    const options = {
+        engine: document.getElementById('engineSelect').value,
+        model: document.getElementById('modelSelect').value,
+        language: document.getElementById('languageSelect').value,
+        hf_token: document.getElementById('hfToken').value,
+        use_diarization: document.getElementById('useDiarization').checked,
+        min_duration: parseFloat(document.getElementById('minDuration').value),
+        max_duration: parseFloat(document.getElementById('maxDuration').value),
+        max_chars: parseInt(document.getElementById('maxChars').value),
+        use_vad: document.getElementById('useVAD').checked,
+        use_margin: document.getElementById('useMargin').checked,
+        isolate_voice: document.getElementById('isolateVoice').checked,
+        deduplicate: document.getElementById('deduplicate').checked,
+        prevent_overlap: document.getElementById('preventOverlap').checked,
+        transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
+        transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
+        translate: document.getElementById('enableTranslation').checked,
+        target_languages: targetLangs,
+        translation_engine: document.getElementById('translationEngine').value,
+        llm_model: document.getElementById('llmModelSelect').value,
+        refiner_model: document.getElementById('refinerModelSelect').value,
+        translation_context: document.getElementById('translationContext').value,
+        llm_api_provider: document.getElementById('llmApiProvider').value,
+        llm_api_key: document.getElementById('llmApiKey').value,
+        llm_api_model: document.getElementById('llmApiModel').value,
+        llm_api_url: document.getElementById('llmApiUrl').value,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_merge: document.getElementById('ocrMerge').checked
+    };
+
+    try {
+        const response = await fetch('/api/process/zones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                task_id: state.taskId,
+                file_path: state.filePath,
+                zones: state.selectedZones,
+                options: options
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            showToast(data.error, 'error');
+        } else {
+            let totalNew = 0;
+            const zonesResults = data.results || [];
+
+            zonesResults.forEach(res => {
+                if (res.segments && res.segments.length > 0) {
+                    mergeSubtitles(res.segments, res.zone_start, res.zone_end, res.translations);
+                    totalNew += res.segments.length;
+                    state.reprocessedZones.push({start: res.zone_start, end: res.zone_end});
+                } else if (res.message) {
+                    showToast(`Zona ${formatTimestamp(res.zone_start).split(',')[0]}: ${res.message}`, 'info');
+                }
+            });
+
+            showToast(`S-au adăugat ${totalNew} subtitrări noi în ${zonesResults.length} zone.`, 'success');
+
+            state.selectedZones = [];
+            renderZones();
+            renderSegments();
+            renderTimeline();
+        }
+    } catch (error) {
+        console.error('Reprocess error:', error);
+        showToast('Eroare la re-procesare', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🔄 Re-procesează selecția';
+    }
+}
+
+function mergeSubtitles(newSegments, zoneStart, zoneEnd, newTranslations) {
+    // Save existing translations into segments to keep them during merge
+    state.segments.forEach((seg, i) => {
+        seg._all_trans = {};
+        Object.keys(state.translations).forEach(lang => {
+            seg._all_trans[lang] = state.translations[lang][i];
+        });
+    });
+
+    // Filter out overlapping
+    state.segments = state.segments.filter(s => {
+        const overlap = Math.min(s.end, zoneEnd) - Math.max(s.start, zoneStart);
+        if (overlap > 1.0 || (overlap > 0 && overlap > (s.end - s.start) * 0.5)) {
+            return false;
+        }
+        return s.end <= zoneStart || s.start >= zoneEnd;
+    });
+
+    // Add new segments with their translations
+    newSegments.forEach((seg, i) => {
+        seg._all_trans = {};
+        Object.keys(newTranslations || {}).forEach(lang => {
+            seg._all_trans[lang] = newTranslations[lang][i];
+        });
+    });
+
+    state.segments = [...state.segments, ...newSegments];
+    state.segments.sort((a, b) => a.start - b.start);
+
+    // Sync back to state.translations
+    const langs = Object.keys(state.translations);
+    langs.forEach(lang => {
+        state.translations[lang] = state.segments.map(seg => seg._all_trans[lang] || "");
+    });
+
+    // Cleanup and ID
+    state.segments.forEach((s, i) => {
+        s.id = i;
+        delete s._all_trans;
+    });
+}
+
+function deletePreset() {
+    const select = document.getElementById('presetSelect');
+    const id = select.value;
+    if (!id.startsWith('user_')) {
+        showToast('Preseturile standard nu pot fi șterse', 'error');
+        return;
+    }
+
+    if (confirm('Sigur vrei să ștergi acest preset?')) {
+        const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
+        delete userPresets[id.replace('user_', '')];
+        localStorage.setItem('user_presets', JSON.stringify(userPresets));
+        updatePresetDropdown();
+        loadPreset('default');
+        showToast('Preset șters', 'info');
     }
 }
 
@@ -990,17 +1636,9 @@ function toggleTranslation() {
     document.getElementById('translationSettings').style.display = enabled ? 'block' : 'none';
     
     if (enabled) {
-        const engineSelect = document.getElementById('translationEngine');
-        document.getElementById('promptGroup').style.display = 
-            engineSelect.value === 'llm' ? 'block' : 'none';
+        updateModelOptions();
     }
 }
-
-// Ascultă pentru schimbarea engine-ului
-document.getElementById('translationEngine')?.addEventListener('change', function() {
-    document.getElementById('promptGroup').style.display = 
-        this.value === 'llm' ? 'block' : 'none';
-});
 
 function addTranslationLanguage() {
     const container = document.getElementById('additionalLanguages');
@@ -1025,20 +1663,31 @@ function switchTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     if (event && event.target) {
         event.target.classList.add('active');
+    } else {
+        // Fallback for direct calls without event
+        const tabId = tab === 'original' ? 'originalTab' : (tab === 'raw' ? 'rawTab' : 'translationTab');
+        const tabEl = document.getElementById(tabId);
+        if (tabEl) tabEl.classList.add('active');
     }
     
+    // Hide all views first
+    document.getElementById('segmentsContainer').style.display = 'none';
+    elements.fullTextView.style.display = 'none';
+    if (elements.rawTextView) elements.rawTextView.style.display = 'none';
+
     if (tab === 'original') {
         state.displayLanguage = 'original';
-        elements.fullTextView.style.display = 'none';
         document.getElementById('segmentsContainer').style.display = 'block';
+    } else if (tab === 'raw') {
+        if (elements.rawTextView) elements.rawTextView.style.display = 'block';
+        if (elements.rawTextEditor) elements.rawTextEditor.value = state.rawText;
     } else {
         // Switch to the first translation if available
         const availableLangs = Object.keys(state.translations);
-        if (availableLangs.length > 0 && state.displayLanguage === 'original') {
+        if (availableLangs.length > 0 && (state.displayLanguage === 'original' || state.displayLanguage === 'raw')) {
             state.displayLanguage = availableLangs[0];
         }
 
-        document.getElementById('segmentsContainer').style.display = 'none';
         elements.fullTextView.style.display = 'block';
         updateFullText();
     }
@@ -1230,6 +1879,7 @@ window.addEventListener('beforeunload', () => {
 function renderTimeline() {
     if (!elements.mainVideoPlayer || isNaN(elements.mainVideoPlayer.duration)) return;
 
+
     const duration = elements.mainVideoPlayer.duration;
     const pps = state.pixelsPerSecond * state.zoomLevel;
     const width = duration * pps;
@@ -1333,8 +1983,12 @@ function renderTimeline() {
 
     // Add Global Mouse Listeners
     if (!window.timelineInited) {
-        window.addEventListener('mousemove', handleTimelineMove);
-        window.addEventListener('mouseup', handleTimelineUp);
+        window.addEventListener('mousemove', (e) => {
+            handleTimelineMove(e);
+        });
+        window.addEventListener('mouseup', () => {
+            handleTimelineUp();
+        });
 
         elements.timelineContainer.addEventListener('wheel', (e) => {
             e.preventDefault();
@@ -1360,15 +2014,22 @@ function renderTimeline() {
     // Adjust container height based on tracks
     elements.timelineContainer.style.height = Math.max(120, tracks.length * 35 + 20) + 'px';
 
-    // Add interaction for playhead dragging and seeking
+    // Combined interaction for playhead and selection
     elements.timelineContent.onmousedown = (e) => {
-        // If clicking on a segment or its handles, don't trigger playhead drag here
-        if (e.target.classList.contains('timeline-segment-block') ||
+        if (e.button !== 0) return; // Only left click
+
+        // If clicking on a segment or its handles, handle elsewhere
+        if (e.target.closest('.timeline-segment-block') ||
             e.target.classList.contains('timeline-delete-btn') ||
             e.target.classList.contains('timeline-resize-handle')) return;
 
-        state.isDraggingPlayhead = true;
-        handleTimelineSeek(e);
+        const selectionMode = document.getElementById('selectionModeToggle')?.checked;
+        if (selectionMode || e.shiftKey) {
+            startZoneSelection(e);
+        } else {
+            state.isDraggingPlayhead = true;
+            handleTimelineSeek(e);
+        }
         e.preventDefault();
     };
 }
@@ -1588,28 +2249,262 @@ function toggleEngineOptions() {
     const engine = document.getElementById('engineSelect').value;
     const whisperGroup = document.getElementById('whisperModelGroup');
     const cohereGroup = document.getElementById('coherePromptGroup');
+    const nemoGroup = document.getElementById('nemoInfoGroup');
 
-    if (whisperGroup) whisperGroup.style.display = engine === 'whisper' ? 'block' : 'none';
-    if (cohereGroup) cohereGroup.style.display = engine === 'cohere' ? 'block' : 'none';
+    if (whisperGroup) whisperGroup.style.display = (engine === 'whisper') ? 'block' : 'none';
+    if (cohereGroup) cohereGroup.style.display = (engine === 'cohere') ? 'block' : 'none';
+    if (nemoGroup) nemoGroup.style.display = (engine === 'nemo') ? 'block' : 'none';
+
+    // Show model selection for Whisper and NeMo
+    if (whisperGroup) whisperGroup.style.display = (engine === 'whisper' || engine === 'nemo') ? 'block' : 'none';
+
+    // Update model dropdown content for NeMo if selected
+    if (engine === 'nemo') {
+        updateNemoModels();
+    } else {
+        restoreWhisperModels();
+    }
+}
+
+function updateNemoModels() {
+    const modelSelect = document.getElementById('modelSelect');
+    const label = document.querySelector('label[for="modelSelect"]') || document.querySelector('#whisperModelGroup label');
+    if (label) label.textContent = 'Model NeMo';
+
+    // Save current whisper models if not already saved
+    if (!window._whisperModelsHtml) {
+        window._whisperModelsHtml = modelSelect.innerHTML;
+    }
+
+    modelSelect.innerHTML = `
+        <option value="parakeet-v3" selected>Parakeet TDT v3 (Fast & Accurate)</option>
+        <option value="canary">Canary-1b (Multilingual/Translation)</option>
+    `;
+}
+
+function restoreWhisperModels() {
+    const modelSelect = document.getElementById('modelSelect');
+    const label = document.querySelector('label[for="modelSelect"]') || document.querySelector('#whisperModelGroup label');
+    if (label) label.textContent = 'Model Whisper';
+
+    if (window._whisperModelsHtml) {
+        modelSelect.innerHTML = window._whisperModelsHtml;
+    }
+}
+
+function toggleOCRSettings() {
+    const useOCR = document.getElementById('useOCR').checked;
+    const ocrSettings = document.getElementById('ocrSettings');
+    if (ocrSettings) ocrSettings.style.display = useOCR ? 'block' : 'none';
+}
+
+function toggleOCRManualRegion() {
+    const mode = document.querySelector('input[name="ocrRegionMode"]:checked').value;
+    const manualRegion = document.getElementById('ocrManualRegion');
+    if (manualRegion) manualRegion.style.display = mode === 'manual' ? 'block' : 'none';
 }
 
 function updateModelOptions() {
     const engine = document.getElementById('translationEngine').value;
     const llmGroup = document.getElementById('llmModelGroup');
     const promptGroup = document.getElementById('promptGroup');
+    const llmApiSettings = document.getElementById('llmApiSettings');
 
     if (llmGroup) llmGroup.style.display = (engine === 'llm' || engine === 'vllm') ? 'block' : 'none';
     if (promptGroup) promptGroup.style.display = engine === 'llm' ? 'block' : 'none';
+
+    if (llmApiSettings) {
+        llmApiSettings.style.display = (engine === 'llm_api') ? 'block' : 'none';
+        if (engine === 'llm_api') updateLlmApiDefaults();
+    }
+}
+
+function updateLlmApiDefaults() {
+    const provider = document.getElementById('llmApiProvider').value;
+    const modelInput = document.getElementById('llmApiModel');
+    const urlGroup = document.getElementById('llmApiUrlGroup');
+
+    if (provider === 'claude') {
+        modelInput.placeholder = 'claude-3-5-sonnet-20240620';
+        urlGroup.style.display = 'none';
+    } else if (provider === 'openai') {
+        modelInput.placeholder = 'gpt-4o';
+        urlGroup.style.display = 'none';
+    } else {
+        modelInput.placeholder = 'model-id';
+        urlGroup.style.display = 'block';
+    }
 }
 
 function toggleSubtitlePosition() {
     const isTop = document.getElementById('subtitleTopToggle').checked;
-    const overlay = document.getElementById('subtitleOverlay');
-    if (overlay) {
-        if (isTop) {
-            overlay.classList.add('top');
-        } else {
-            overlay.classList.remove('top');
+    state.subStyles.isTop = isTop;
+    updateSubStyles();
+}
+
+function toggleStylingPanel() {
+    const panel = document.getElementById('stylingPanel');
+    if (panel) {
+        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    }
+}
+
+function updateSubStyles() {
+    const overlay = elements.subtitleOverlay;
+    if (!overlay) return;
+
+    // Read from UI
+    state.subStyles = {
+        fontFamily: document.getElementById('subFontFamily').value,
+        fontSize: parseInt(document.getElementById('subFontSize').value),
+        color: document.getElementById('subColor').value,
+        bgColor: document.getElementById('subBgColor').value,
+        bgOpacity: parseFloat(document.getElementById('subBgOpacity').value),
+        effect: document.getElementById('subEffect').value,
+        outlineColor: document.getElementById('subOutlineColor').value,
+        offsetY: parseInt(document.getElementById('subOffsetY').value),
+        offsetX: parseInt(document.getElementById('subOffsetX').value),
+        isTop: document.getElementById('subtitleTopToggle')?.checked
+    };
+
+    // Update UI elements visibility
+    const outlineGroup = document.getElementById('subOutlineColorGroup');
+    if (outlineGroup) outlineGroup.style.display = state.subStyles.effect === 'outline' ? 'block' : 'none';
+
+    // Apply to Overlay
+    overlay.style.fontFamily = state.subStyles.fontFamily;
+    overlay.style.fontSize = state.subStyles.fontSize + 'px';
+    overlay.style.color = state.subStyles.color;
+
+    // Background with opacity
+    const r = parseInt(state.subStyles.bgColor.slice(1, 3), 16);
+    const g = parseInt(state.subStyles.bgColor.slice(3, 5), 16);
+    const b = parseInt(state.subStyles.bgColor.slice(5, 7), 16);
+    overlay.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${state.subStyles.bgOpacity})`;
+
+    // Effects
+    if (state.subStyles.effect === 'shadow') {
+        overlay.style.textShadow = '2px 2px 4px rgba(0,0,0,0.8)';
+    } else if (state.subStyles.effect === 'outline') {
+        const c = state.subStyles.outlineColor;
+        overlay.style.textShadow = `-1px -1px 0 ${c}, 1px -1px 0 ${c}, -1px 1px 0 ${c}, 1px 1px 0 ${c}`;
+    } else {
+        overlay.style.textShadow = 'none';
+    }
+
+    // Position
+    if (state.subStyles.isTop) {
+        overlay.style.top = state.subStyles.offsetY + 'px';
+        overlay.style.bottom = 'auto';
+    } else {
+        overlay.style.bottom = state.subStyles.offsetY + 'px';
+        overlay.style.top = 'auto';
+    }
+
+    overlay.style.transform = `translateX(calc(-50% + ${state.subStyles.offsetX}px))`;
+}
+
+function saveProject() {
+    if (state.segments.length === 0) {
+        showToast('Nimic de salvat', 'warning');
+        return;
+    }
+
+    const projectData = {
+        version: "1.0",
+        timestamp: new Date().toISOString(),
+        taskId: state.taskId,
+        filePath: state.filePath,
+        segments: state.segments,
+        translations: state.translations,
+        subStyles: state.subStyles,
+        rawText: state.rawText
+    };
+
+    const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
+    downloadFile(blob, `project_${state.taskId || 'new'}.json`);
+    showToast('Proiect exportat!', 'success');
+}
+
+function loadProjectClick() {
+    document.getElementById('projectInput').click();
+}
+
+async function importProject(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        try {
+            const projectData = JSON.parse(e.target.result);
+
+            // Basic validation
+            if (!projectData.segments) {
+                throw new Error("Format JSON invalid: lipsesc segmentele");
+            }
+
+            // Restore State
+            state.segments = projectData.segments;
+            state.translations = projectData.translations || {};
+            state.taskId = projectData.taskId;
+            state.filePath = projectData.filePath;
+            state.rawText = projectData.rawText || "";
+
+            if (projectData.subStyles) {
+                state.subStyles = projectData.subStyles;
+                // Restore UI for styles
+                document.getElementById('subFontFamily').value = state.subStyles.fontFamily;
+                document.getElementById('subFontSize').value = state.subStyles.fontSize;
+                document.getElementById('subColor').value = state.subStyles.color;
+                document.getElementById('subBgColor').value = state.subStyles.bgColor;
+                document.getElementById('subBgOpacity').value = state.subStyles.bgOpacity;
+                document.getElementById('subEffect').value = state.subStyles.effect;
+                document.getElementById('subOutlineColor').value = state.subStyles.outlineColor;
+                document.getElementById('subOffsetY').value = state.subStyles.offsetY;
+                document.getElementById('subOffsetX').value = state.subStyles.offsetX;
+                document.getElementById('subtitleTopToggle').checked = state.subStyles.isTop || false;
+                updateSubStyles();
+            }
+
+            // Show results view
+            showResults({
+                segments: state.segments,
+                translations: state.translations,
+                raw_text: state.rawText
+            });
+
+            showToast('Proiect încărcat cu succes!', 'success');
+        } catch (error) {
+            console.error('Import error:', error);
+            showToast('Eroare la import: ' + error.message, 'error');
         }
+        input.value = ''; // Reset for next selection
+    };
+    reader.readAsText(file);
+}
+
+async function verifyGpuOcr() {
+    const statusEl = document.getElementById('ocrGpuStatus');
+    statusEl.textContent = '⏳ Se verifică/instalează...';
+    statusEl.style.color = 'var(--text-muted)';
+
+    try {
+        const response = await fetch('/api/ocr/verify-gpu', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.cuda_available) {
+            statusEl.textContent = '✅ GPU (CUDA) este disponibil!';
+            statusEl.style.color = 'var(--success)';
+            showToast('Suport GPU activat pentru OCR', 'success');
+        } else {
+            statusEl.textContent = '⚠️ Doar CPU disponibil.';
+            statusEl.style.color = 'var(--warning)';
+            showToast('OCR va rula pe CPU', 'info');
+        }
+    } catch (error) {
+        statusEl.textContent = '❌ Eroare la verificare.';
+        statusEl.style.color = 'var(--danger)';
+        showToast('Eroare verificare GPU', 'error');
     }
 }

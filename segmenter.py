@@ -16,21 +16,22 @@ class SubtitleSegmenter:
         max_chars: int = 80,
         overlap: float = 0.0
     ) -> List[Dict]:
-        """Segment subtitles by time constraints with optional overlap"""
+        """Segment subtitles by time constraints with optional overlap and speaker awareness"""
         result = []
         
         for segment in segments:
             text = segment.get('text', '').strip()
             start = segment.get('start', 0)
             end = segment.get('end', 0)
+            speaker = segment.get('speaker')
             duration = end - start
             
             if not text:
                 continue
             
-            # If segment is too short, try to merge with next (preserving overlap if possible)
+            # If segment is too short, try to merge with previous (if same speaker)
             if duration < min_duration:
-                if result:
+                if result and result[-1].get('speaker') == speaker:
                     # Merge with previous
                     prev = result[-1]
                     # If they already overlap significantly, just append text
@@ -44,7 +45,8 @@ class SubtitleSegmenter:
                     result.append({
                         'text': text,
                         'start': start,
-                        'end': end + overlap
+                        'end': end + overlap,
+                        'speaker': speaker
                     })
                 continue
             
@@ -53,12 +55,16 @@ class SubtitleSegmenter:
                 sub_segments = self._split_segment(
                     text, start, end, max_duration, max_chars, overlap
                 )
+                # Propagate speaker to sub-segments
+                for sub in sub_segments:
+                    sub['speaker'] = speaker
                 result.extend(sub_segments)
             else:
                 result.append({
                     'text': text,
                     'start': start,
-                    'end': end + overlap
+                    'end': end + overlap,
+                    'speaker': speaker
                 })
         
         return result
@@ -227,8 +233,9 @@ class SubtitleSegmenter:
 
                 # Check for overlap
                 overlap = min(current['end'], next_seg['end']) - max(current['start'], next_seg['start'])
+                same_speaker = current.get('speaker') == next_seg.get('speaker')
 
-                if overlap > 0 and curr_text_norm == next_text_norm:
+                if overlap > 0 and curr_text_norm == next_text_norm and same_speaker:
                     # Merge: extend current and skip next
                     current['start'] = min(current['start'], next_seg['start'])
                     current['end'] = max(current['end'], next_seg['end'])
@@ -281,7 +288,7 @@ class SubtitleSegmenter:
                     common = words1.intersection(words2)
                     similarity = len(common) / max(len(words1), len(words2)) if words1 or words2 else 0
 
-                    if similarity >= threshold:
+                    if similarity >= threshold and current.get('speaker') == next_seg.get('speaker'):
                         # Merge segments: keep the longer one or combine
                         if len(current['text']) >= len(next_seg['text']):
                             current['end'] = max(current['end'], next_seg['end'])
@@ -329,20 +336,21 @@ class SubtitleSegmenter:
 
             # Check for exact matches or high similarity with significant overlap or small gap
             gap = curr['start'] - prev['end']
+            same_speaker = curr.get('speaker') == prev.get('speaker')
 
-            if curr_text == prev_text and curr_text != "":
-                if gap < 2.0: # If identical and close together
+            if curr_text == prev_text and curr_text != "" and same_speaker:
+                if gap < 2.5: # If identical and close together (increased gap tolerance for multi-pass)
                     prev['end'] = max(prev['end'], curr['end'])
                     continue
 
             # Fuzzy match for near-repetitions (often caused by windowing artifacts)
-            if len(curr_text) > 0 and len(prev_text) > 0:
+            if len(curr_text) > 0 and len(prev_text) > 0 and same_speaker:
                 words1 = set(prev_text.split())
                 words2 = set(curr_text.split())
                 if words1 and words2:
                     common = words1.intersection(words2)
                     similarity = len(common) / max(len(words1), len(words2))
-                    if similarity > 0.8 and gap < 1.0:
+                    if similarity > 0.85 and gap < 1.5:
                         # High similarity and small gap: likely a repetition artifact
                         prev['end'] = max(prev['end'], curr['end'])
                         if len(curr['text']) > len(prev['text']):
@@ -353,7 +361,7 @@ class SubtitleSegmenter:
         return result
 
     def ensure_sequential(self, segments: List[Dict]) -> List[Dict]:
-        """Ensure segments do not overlap: next starts exactly after previous ends"""
+        """Ensure segments do not overlap: next starts exactly after previous ends. Forces split on speaker change."""
         if not segments:
             return []
 
@@ -364,6 +372,14 @@ class SubtitleSegmenter:
         for i in range(1, len(sorted_segments)):
             curr = sorted_segments[i].copy()
             prev = result[-1]
+
+            # If speaker changes, we MUST start new segment and prevent merge
+            if curr.get('speaker') != prev.get('speaker'):
+                # Handle potential overlap by clipping previous segment
+                if prev['end'] > curr['start']:
+                     prev['end'] = curr['start']
+                result.append(curr)
+                continue
 
             if curr['start'] < prev['end']:
                 # If the overlap is large, it might be a redundant segment
@@ -389,7 +405,7 @@ class SubtitleSegmenter:
         overlap: float = 0.0,
         margin: float = 1.0
     ) -> List[Dict]:
-        """Segment using Voice Activity Detection based on pauses with overlap and safety margin"""
+        """Segment using Voice Activity Detection based on pauses with overlap, safety margin and speaker awareness"""
         try:
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
 
@@ -422,6 +438,7 @@ class SubtitleSegmenter:
                 start = segment['start']
                 end = segment['end']
                 text = segment.get('text', '').strip()
+                speaker = segment.get('speaker')
 
                 if not text:
                     continue
@@ -459,12 +476,14 @@ class SubtitleSegmenter:
                         splits = self._split_by_pauses(
                             text, start, end, times[mask], speech_frames, overlap
                         )
-                        # Apply margin to the end of each split if appropriate
+                        # Apply margin and speaker to the end of each split if appropriate
+                        for s in splits:
+                            s['speaker'] = speaker
                         result.extend(splits)
                     else:
-                        result.append({'text': text, 'start': start, 'end': actual_end})
+                        result.append({'text': text, 'start': start, 'end': actual_end, 'speaker': speaker})
                 else:
-                    result.append({'text': text, 'start': start, 'end': end + overlap})
+                    result.append({'text': text, 'start': start, 'end': end + overlap, 'speaker': speaker})
 
             return result
 

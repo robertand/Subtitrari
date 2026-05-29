@@ -8,8 +8,11 @@ import uuid
 import json
 import os
 import sys
+import shlex
 import logging
 import librosa
+import numpy as np
+import torch
 from pathlib import Path
 from datetime import datetime
 import shutil
@@ -18,7 +21,9 @@ import shutil
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
-from transcriber import WhisperTranscriber
+from transcriber import WhisperTranscriber, GenderDetector
+from nemo_transcriber import get_nemo_transcriber, NEMO_SUPPORTED_LANGUAGES, check_and_install_nemo
+from ocr_extractor import get_ocr_extractor, merge_ocr_and_asr_segments, check_and_install_paddleocr
 from translator import Translator
 from segmenter import SubtitleSegmenter
 from file_handler import FileHandler
@@ -43,6 +48,7 @@ CORS(app)
 # Initialize components
 Config.init_directories()
 transcriber = WhisperTranscriber()
+gender_detector = GenderDetector(device="cpu") # Force gender detection on CPU to save VRAM
 translator = Translator()
 segmenter = SubtitleSegmenter()
 file_handler = FileHandler(Config)
@@ -235,6 +241,24 @@ def serve_file(filename):
         return send_file(file_path)
     return jsonify({'error': 'File not found'}), 404
 
+@app.route('/api/ocr/verify-gpu', methods=['POST'])
+def verify_ocr_gpu():
+    """Verify and install paddlepaddle-gpu if requested"""
+    try:
+        from ocr_extractor import check_and_install_paddleocr
+        success = check_and_install_paddleocr(use_gpu=True)
+
+        import paddle
+        cuda_available = paddle.device.is_compiled_with_cuda()
+
+        return jsonify({
+            'success': success,
+            'cuda_available': cuda_available,
+            'message': 'GPU (CUDA) is available' if cuda_available else 'Only CPU is available'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/upload/progress/<session_id>')
 def upload_progress(session_id):
     """Get upload progress"""
@@ -289,6 +313,202 @@ def process_status(task_id):
     
     task.last_heartbeat = time.time()
     return jsonify(task.to_dict())
+
+@app.route('/api/process/zones', methods=['POST'])
+def process_zones():
+    """Reprocess specific timeline zones"""
+    try:
+        data = request.json
+        task_id = data.get('task_id')
+        file_path = data.get('file_path')
+        zones = data.get('zones', [])
+        options = data.get('options', {})
+
+        if not task_id or not file_path or not zones:
+            return jsonify({'error': 'Missing parameters'}), 400
+
+        results = []
+        hf_token = options.get('hf_token')
+
+        # Basic sanitization for file_path
+        abs_base = str(Config.DATA_DIR.resolve())
+        abs_file = str(Path(file_path).resolve())
+        if not abs_file.startswith(abs_base) and not abs_file.startswith("/tmp"):
+             # If it's a relative path from the upload dir, it's fine, otherwise block for security
+             if not any(str(abs_file).startswith(str(Config.BASE_DIR / d)) for d in ['data', 'uploads']):
+                 return jsonify({'error': 'Invalid file path'}), 403
+
+        for idx, zone in enumerate(zones):
+            start = float(zone['start'])
+            end = float(zone['end'])
+
+            logger.info(f"Selective reprocessing zone {idx}: {start}s -> {end}s")
+
+            # 1. Extract audio
+            safe_task_id = secure_filename(str(task_id))
+            temp_name = f"reprocess_{safe_task_id}_{int(start)}_{int(end)}.wav"
+            audio_temp_path = Config.TEMP_DIR / temp_name
+
+            try:
+                # Use shlex.quote for file_path just in case, though extract_audio uses subprocess
+                transcriber.extract_audio_from_video(
+                    file_path, str(audio_temp_path),
+                    start_time=start,
+                    duration=(end - start)
+                )
+
+                # 2. Transcribe
+                if options.get('engine') == 'whisper':
+                    res = transcriber.transcribe_whisperx(
+                        str(audio_temp_path),
+                        model_name=options.get('model', 'large-v3'),
+                        language=options.get('language'),
+                        hf_token=hf_token,
+                        use_diarization=options.get('use_diarization', False)
+                    )
+                elif options.get('engine') == 'nemo':
+                    nemo_t = get_nemo_transcriber()
+                    if not nemo_t.is_available():
+                        check_and_install_nemo()
+
+                    # Language detection happens inside transcribe if not specified
+                    lang_code = options.get('language')
+                    segments = nemo_t.transcribe(
+                        str(audio_temp_path),
+                        model_name=options.get('model', 'parakeet-v3'),
+                        language=lang_code,
+                        window_size=options.get('transcribe_window', 30),
+                        overlap=options.get('transcribe_overlap', 10)
+                    )
+                    # Note: Parakeet v3 doesn't explicitly return the detected language code easily
+                    # without re-parsing, but for now we use the requested language or assume auto
+                    res = {"segments": segments, "language": lang_code or "auto"}
+                else:
+                    # Fallback to standard
+                    res = transcriber.transcribe_audio(
+                        str(audio_temp_path),
+                        model_name=options.get('model', 'small'),
+                        language=options.get('language'),
+                        hf_token=hf_token
+                    )
+
+                new_segments = res.get('segments', [])
+
+                # 3. Adjust timestamps (Apply offset)
+                for seg in new_segments:
+                    seg['start'] += start
+                    seg['end'] += start
+
+                # 4. Segmentation
+                new_segments = segmenter.segment_by_time(
+                    new_segments,
+                    min_duration=options.get('min_duration', 1.0),
+                    max_duration=options.get('max_duration', 5.0),
+                    max_chars=options.get('max_chars', 80)
+                )
+
+                # 5. Clean "None" artifacts
+                for seg in new_segments:
+                    seg['text'] = translator._clean_speaker_none(seg['text'])
+
+                # OCR extraction for zone
+                if options.get('use_ocr'):
+                    try:
+                        ocr_extractor = get_ocr_extractor()
+                        if not ocr_extractor.is_available():
+                            check_and_install_paddleocr()
+
+                        ocr_lang = options.get('language') or 'en'
+                        region = None
+                        mode = options.get('ocr_region_mode', 'auto')
+                        if mode == 'manual':
+                            region = (
+                                float(options.get('ocr_top', 0.75)),
+                                float(options.get('ocr_bottom', 0.98))
+                            )
+                        elif mode == 'full':
+                            region = (0.0, 1.0)
+
+                        ocr_segments = ocr_extractor.extract_subtitles(
+                            file_path,
+                            lang=ocr_lang,
+                            subtitle_region=region,
+                            conf_threshold=int(options.get('ocr_conf', 70))
+                            # For zones, we might not want to process the WHOLE video again,
+                            # but PaddleOCR doesn't easily support frame ranges in extract_subtitles
+                            # without modification. However, for a small zone it's okay.
+                            # Actually, we should probably limit frame range if we want it fast.
+                        )
+
+                        # Adjust OCR segments by start offset of zone
+                        # (The extractor processes the whole video, so we need to filter segments
+                        # that fall within our zone)
+                        ocr_segments = [
+                            s for s in ocr_segments
+                            if s['start'] >= start and s['end'] <= end
+                        ]
+
+                        if ocr_segments and options.get('ocr_merge', True):
+                            new_segments = merge_ocr_and_asr_segments(new_segments, ocr_segments)
+                    except Exception as e:
+                        logger.error(f"Zone OCR failed: {e}")
+
+                # 6. Translate
+                new_translations = {}
+                if options.get('translate'):
+                    target_langs = options.get('target_languages', ['ro'])
+                    source_lang = res.get('language', 'en')
+                    engine = options.get('translation_engine', 'google')
+                    context = options.get('translation_context')
+
+                    texts = [s['text'] for s in new_segments]
+                    meta = [{'gender': s.get('speaker_gender'), 'speaker': s.get('speaker')} for s in new_segments]
+
+                    for target_lang in target_langs:
+                        if engine == 'vllm':
+                            t_texts = translator.translate_with_vllm_grouped(
+                                texts, source_lang, target_lang,
+                                model_name=options.get('llm_model'),
+                                metadata=meta, context=context
+                            )
+                        elif engine == 'llm_api':
+                            t_texts = translator.translate_with_api(
+                                texts, source_lang, target_lang,
+                                api_type=options.get('llm_api_provider'),
+                                api_key=options.get('llm_api_key'),
+                                model=options.get('llm_api_model'),
+                                context=context, base_url=options.get('llm_api_url')
+                            )
+                        else: # google
+                            t_texts = translator.translate_batch(
+                                texts, source_lang, target_lang, context=context
+                            )
+
+                        # Validation
+                        t_texts = translator.validate_and_retry_translations(
+                            texts, t_texts, source_lang, target_lang, engine
+                        )
+                        new_translations[target_lang] = t_texts
+
+                results.append({
+                    'zone_start': start,
+                    'zone_end': end,
+                    'segments': new_segments,
+                    'translations': new_translations
+                })
+
+            finally:
+                if audio_temp_path.exists():
+                    audio_temp_path.unlink()
+
+        return jsonify({'results': results})
+
+    except Exception as e:
+        logger.error(f"Zones process error: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        transcriber.unload_model()
+        translator.unload_models()
 
 @app.route('/api/process/cancel/<task_id>', methods=['POST'])
 def cancel_processing(task_id):
@@ -487,6 +707,9 @@ def process_task(task):
         file_path = Path(task.file_path)
         audio_path = task.file_path
         
+        process_start = task.options.get('process_start', 0)
+        process_end = task.options.get('process_end', 0)
+
         if file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}:
             task.progress = 5
             task.message = 'Extracting audio...'
@@ -497,7 +720,19 @@ def process_task(task):
             if task.cancel_flag.is_set():
                 return
             
-            transcriber.extract_audio_from_video(str(task.file_path), str(audio_path))
+            # Use region extraction if requested
+            if process_start > 0 or process_end > 0:
+                task.message = f'Extracting audio region ({process_start}s - {process_end or "end"}s)...'
+                duration = None
+                if process_end > process_start:
+                    duration = process_end - process_start
+                transcriber.extract_audio_from_video(
+                    str(task.file_path), str(audio_path),
+                    start_time=process_start,
+                    duration=duration
+                )
+            else:
+                transcriber.extract_audio_from_video(str(task.file_path), str(audio_path))
 
         # Voice isolation
         if task.options.get('isolate_voice'):
@@ -523,79 +758,313 @@ def process_task(task):
         if language == 'auto':
             language = None
         
-        if engine == 'cohere':
+        if engine == 'nemo':
+            task.message = f'Initializing NVIDIA NeMo {model_name}...'
+            nemo_t = get_nemo_transcriber()
+            if not nemo_t.is_available():
+                task.message = 'Installing NeMo Toolkit...'
+                check_and_install_nemo()
+
+            # NeMo doesn't use the standard transcriber singleton, but its own
+            segments = nemo_t.transcribe(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                window_size=task.options.get('transcribe_window', 30),
+                overlap=task.options.get('transcribe_overlap', 10),
+                progress_callback=lambda m: update_task_progress(task, task.progress, m)
+            )
+            result = {
+                "segments": segments,
+                "text": " ".join([s.get("text", "") for s in segments]),
+                "raw_text": " ".join([s.get("text", "") for s in segments]),
+                "language": language or "auto",
+                "method": "nemo_parakeet"
+            }
+            # Unload after use
+            nemo_t.unload_model()
+        elif engine == 'cohere':
             task.message = 'Initializing Cohere Transcribe...'
             if transcriber.current_model and transcriber.current_model != transcriber.models.get(Config.COHERE_MODEL):
                 transcriber.unload_model()
 
-            # NU mai trimite prompt, deoarece Cohere nu îl suportă oficial
-            result = transcriber.transcribe_with_cohere_chunked(
-                audio_path, 
-                language=lang,
-                chunk_duration=30,  # Ajustează în funcție de necesități
-                use_forced_alignment=True
+            # Cohere non-chunked as it seems transcribe_with_cohere is what's available
+            result = transcriber.transcribe_with_cohere(
+                str(audio_path),
+                language=language or 'en',
+                use_forced_alignment=True,
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
             )
-        else:
-            # Triple-Pass Whisper transcription
+        elif task.options.get('mixed_turkish') and language == 'tr':
+            # Mixed Turkish Mode (Whisper Large V3 + Turbo TR)
             all_segments = []
 
-            # Pass 1: UI settings
-            task.message = "Whisper Pass 1 (UI Settings)..."
+            # Pass 1: OpenAI Whisper Large V3 (60s / 5s)
+            task.message = "Mixed TR Pass 1 (Whisper Large V3, 60s window)..."
             res1 = transcriber.transcribe_with_windowing(
                 str(audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=task.options.get("transcribe_window", Config.DEFAULT_TRANSCRIBE_WINDOW),
-                overlap=task.options.get("transcribe_overlap", Config.DEFAULT_TRANSCRIBE_OVERLAP),
-                progress_callback=lambda p, m: update_task_progress(task, p * 0.33, f"Pass 1: {m}")
+                model_name='large-v3',
+                language='tr',
+                window_size=60,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1 (Large-V3): {m}")
             )
             all_segments.extend(res1.get("segments", []))
 
             if task.cancel_flag.is_set(): return
 
-            # Pass 2: 45s window, 10s overlap, always voice isolated
-            task.message = "Whisper Pass 2 (45s window, isolated)..."
-            pass2_audio_path = audio_path
-            if not task.options.get("isolate_voice"):
-                task.message = "Isolating voice for Pass 2..."
-                audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
-                audio_2 = transcriber.isolate_voice(audio_2, sr_2)
-                pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2.wav"
-                import soundfile as sf
-                sf.write(str(pass2_audio_path), audio_2, sr_2)
+            # Pass 2: Whisper Turbo Turkish (30s / 5s, isolated)
+            task.message = "Mixed TR Pass 2 (Turbo Turkish, 30s window, isolated)..."
+            audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+            pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_tr_mixed.wav"
+            import soundfile as sf
+            sf.write(str(pass2_audio_path), audio_2, sr_2)
 
             res2 = transcriber.transcribe_with_windowing(
                 str(pass2_audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=45,
-                overlap=10,
-                progress_callback=lambda p, m: update_task_progress(task, 33 + p * 0.33, f"Pass 2: {m}")
+                model_name='selimc/whisper-large-v3-turbo-turkish',
+                language='tr',
+                window_size=30,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2 (Turbo-TR): {m}")
             )
             all_segments.extend(res2.get("segments", []))
-            if pass2_audio_path != audio_path:
-                Path(pass2_audio_path).unlink(missing_ok=True)
-
-            if task.cancel_flag.is_set(): return
-
-            # Pass 3: 60s window, 22s overlap, UI isolate_voice
-            task.message = "Whisper Pass 3 (60s window, 22s overlap)..."
-            res3 = transcriber.transcribe_with_windowing(
-                str(audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=60,
-                overlap=22,
-                progress_callback=lambda p, m: update_task_progress(task, 66 + p * 0.34, f"Pass 3: {m}")
-            )
-            all_segments.extend(res3.get("segments", []))
+            Path(pass2_audio_path).unlink(missing_ok=True)
 
             result = {
                 "segments": all_segments,
                 "text": " ".join([s.get("text", "") for s in all_segments]),
-                "language": res1.get("language", "unknown")
+                "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                "language": "tr",
+                "method": "mixed_turkish_double_pass"
             }
+        elif task.options.get('mixed_korean') and language == 'ko':
+            # Mixed Korean Mode (Whisper Large V3 + Turbo KO)
+            all_segments = []
+
+            # Pass 1: OpenAI Whisper Large V3 (50s / 10s)
+            task.message = "Mixed KO Pass 1 (Whisper Large V3, 50s window)..."
+            res1 = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name='large-v3',
+                language='ko',
+                window_size=50,
+                overlap=10,
+                progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1 (Large-V3): {m}")
+            )
+            all_segments.extend(res1.get("segments", []))
+
+            if task.cancel_flag.is_set(): return
+
+            # Pass 2: Whisper Turbo Korean (25s / 5s, isolated)
+            # Using smaller window for Korean Turbo to prevent long runaway transcriptions
+            task.message = "Mixed KO Pass 2 (Turbo Korean, 25s window, isolated)..."
+            audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+            pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_ko_mixed.wav"
+            import soundfile as sf
+            sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+            res2 = transcriber.transcribe_with_windowing(
+                str(pass2_audio_path),
+                model_name='Farazzzzzzz/whisper-tiny_to_korean_accent2',
+                language='ko',
+                window_size=25,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2 (Turbo-KO): {m}")
+            )
+            all_segments.extend(res2.get("segments", []))
+            Path(pass2_audio_path).unlink(missing_ok=True)
+
+            result = {
+                "segments": all_segments,
+                "text": " ".join([s.get("text", "") for s in all_segments]),
+                "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                "language": "ko",
+                "method": "mixed_korean_double_pass"
+            }
+        elif task.options.get('transcribe_window') and task.options.get('transcribe_window') > 0:
+            # Windowed Transcription Path (requested by user for memory and stability)
+            task.message = f"Starting Windowed Transcription ({model_name}, {task.options['transcribe_window']}s window)..."
+            result = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                window_size=task.options.get('transcribe_window', 30),
+                overlap=task.options.get('transcribe_overlap', 10),
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
+        elif task.options.get('multi_pass'):
+            # Multi-Pass Whisper transcription (Legacy/High-Accuracy)
+            all_segments = []
+
+            if model_name == 'selimc/whisper-large-v3-turbo-turkish':
+                # Turkish Specific Multi-Pass (25s/5s and 35s/5s)
+                task.message = "Turkish Pass 1 (25s window)..."
+                res1 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=25,
+                    overlap=5,
+                    progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1: {m}")
+                )
+                all_segments.extend(res1.get("segments", []))
+
+                if task.cancel_flag.is_set(): return
+
+                task.message = "Turkish Pass 2 (35s window, isolated)..."
+                # Always isolate for the second pass in Turkish multi-pass
+                audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+                audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+                pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_tr.wav"
+                import soundfile as sf
+                sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+                res2 = transcriber.transcribe_with_windowing(
+                    str(pass2_audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=35,
+                    overlap=5,
+                    progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2: {m}")
+                )
+                all_segments.extend(res2.get("segments", []))
+                Path(pass2_audio_path).unlink(missing_ok=True)
+
+                result = {
+                    "segments": all_segments,
+                    "text": " ".join([s.get("text", "") for s in all_segments]),
+                    "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                    "language": res1.get("language", "tr")
+                }
+            else:
+                # Standard Triple-Pass
+                # Pass 1: UI settings
+                task.message = "Whisper Pass 1 (UI Settings)..."
+                res1 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=task.options.get("transcribe_window", Config.DEFAULT_TRANSCRIBE_WINDOW),
+                    overlap=task.options.get("transcribe_overlap", Config.DEFAULT_TRANSCRIBE_OVERLAP),
+                    progress_callback=lambda p, m: update_task_progress(task, p * 0.33, f"Pass 1: {m}")
+                )
+                all_segments.extend(res1.get("segments", []))
+
+                if task.cancel_flag.is_set(): return
+
+                # Pass 2: 45s window, 10s overlap, always voice isolated
+                task.message = "Whisper Pass 2 (45s window, isolated)..."
+                pass2_audio_path = audio_path
+                if not task.options.get("isolate_voice"):
+                    task.message = "Isolating voice for Pass 2..."
+                    audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+                    audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+                    pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2.wav"
+                    import soundfile as sf
+                    sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+                res2 = transcriber.transcribe_with_windowing(
+                    str(pass2_audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=45,
+                    overlap=10,
+                    progress_callback=lambda p, m: update_task_progress(task, 33 + p * 0.33, f"Pass 2: {m}")
+                )
+                all_segments.extend(res2.get("segments", []))
+                if pass2_audio_path != audio_path:
+                    Path(pass2_audio_path).unlink(missing_ok=True)
+
+                if task.cancel_flag.is_set(): return
+
+                # Pass 3: 60s window, 22s overlap, UI isolate_voice
+                task.message = "Whisper Pass 3 (60s window, 22s overlap)..."
+                res3 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=60,
+                    overlap=22,
+                    progress_callback=lambda p, m: update_task_progress(task, 66 + p * 0.34, f"Pass 3: {m}")
+                )
+                all_segments.extend(res3.get("segments", []))
+
+                result = {
+                    "segments": all_segments,
+                    "text": " ".join([s.get("text", "") for s in all_segments]),
+                    "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                    "language": res1.get("language", "unknown")
+                }
+        else:
+            # Primary Path: WhisperX
+            task.message = f"Starting WhisperX ({model_name})..."
+            try:
+                result = transcriber.transcribe_whisperx(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    batch_size=16,
+                    use_diarization=task.options.get('use_diarization'),
+                    hf_token=task.options.get('hf_token'),
+                    progress_callback=lambda p, m: update_task_progress(task, p, m)
+                )
+
+                # ENSURE FORCED ALIGNMENT for non-WhisperX internal results
+                if result.get("method") != "whisperx" and result.get("segments"):
+                    task.message = "Ensuring forced alignment (post-transcription)..."
+            finally:
+                # Important: Clear VRAM after transcription before potential LLM/Translation work
+                logger.info("Transcription step finished, unloading models...")
+                transcriber.unload_model()
         
+        # Diarization & Gender Detection
+        speaker_genders = {}
+        if task.options.get('use_diarization') and result.get('segments'):
+            task.message = 'Detecting speaker genders...'
+            try:
+                audio_full, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+
+                # Group segment audio by speaker
+                speaker_audio = {}
+                for seg in result['segments']:
+                    speaker = seg.get('speaker')
+                    if not speaker: continue
+
+                    # Ensure indices are within audio range
+                    start_sample = max(0, int(seg['start'] * sr))
+                    end_sample = min(len(audio_full), int(seg['end'] * sr))
+
+                    if end_sample > start_sample:
+                        chunk = audio_full[start_sample:end_sample]
+                        if speaker not in speaker_audio:
+                            speaker_audio[speaker] = []
+                        speaker_audio[speaker].append(chunk)
+
+                # Classify each speaker
+                for speaker, chunks in speaker_audio.items():
+                    if task.cancel_flag.is_set(): return
+
+                    # Combine a few chunks for better accuracy (up to 10s of speech)
+                    # We pick chunks that are likely to contain clear speech
+                    valid_chunks = [c for c in chunks if len(c) > 0.5 * sr]
+                    combined = np.concatenate(valid_chunks[:5]) if valid_chunks else (chunks[0] if chunks else np.array([]))
+
+                    if len(combined) > 0:
+                        gender = gender_detector.detect_gender(combined, sr)
+                        speaker_genders[speaker] = gender
+                        logger.info(f"Speaker {speaker} detected as {gender}")
+
+                gender_detector.unload()
+
+                # Apply gender to segments
+                for seg in result['segments']:
+                    seg['speaker_gender'] = speaker_genders.get(seg.get('speaker'), 'unknown')
+            except Exception as e:
+                logger.error(f"Gender detection failed: {e}")
+
         # Segment
         task.progress = 60
         task.message = 'Segmenting subtitles...'
@@ -627,9 +1096,11 @@ def process_task(task):
                 overlap=segment_overlap
             )
         
-        # If we did triple-pass Whisper, use LLM to resolve overlaps and select best versions
-        if engine != "cohere":
+        # If we did triple-pass or mixed-language Whisper, use LLM to resolve overlaps and select best versions
+        if engine != "cohere" and (task.options.get('multi_pass') or task.options.get('mixed_turkish') or task.options.get('mixed_korean')):
             task.message = "Refining multi-pass segments with LLM..."
+            # For multi-pass, we also need to clear VRAM before LLM refinement if it's heavy
+            transcriber.unload_model()
             segments = segmenter.merge_segments_llm(segments, translator)
 
         # Deduplication
@@ -645,6 +1116,47 @@ def process_task(task):
             # Even if not strictly sequential, we should merge identical overlaps
             segments = segmenter.merge_identical_overlapping(segments)
 
+        # Hardcoded Subtitles OCR
+        if task.options.get('use_ocr') and file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}:
+            task.message = 'Extracting hardcoded subtitles (OCR)...'
+            try:
+                ocr_extractor = get_ocr_extractor()
+                if not ocr_extractor.is_available():
+                    check_and_install_paddleocr()
+
+                # Use current language or auto
+                ocr_lang = language or 'en'
+
+                # Region selection
+                region = None
+                mode = task.options.get('ocr_region_mode', 'auto')
+                if mode == 'manual':
+                    region = (
+                        float(task.options.get('ocr_top', 0.75)),
+                        float(task.options.get('ocr_bottom', 0.98))
+                    )
+                elif mode == 'full':
+                    region = (0.0, 1.0)
+
+                ocr_segments = ocr_extractor.extract_subtitles(
+                    str(task.file_path),
+                    lang=ocr_lang,
+                    subtitle_region=region,
+                    conf_threshold=int(task.options.get('ocr_conf', 70)),
+                    progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                )
+
+                if ocr_segments:
+                    if task.options.get('ocr_merge', True):
+                        task.message = 'Merging OCR with ASR results...'
+                        segments = merge_ocr_and_asr_segments(segments, ocr_segments)
+            except Exception as e:
+                logger.error(f"OCR extraction failed: {e}")
+
+        # FINAL CLEANUP for speaker artifacts
+        for seg in segments:
+            seg['text'] = translator._clean_speaker_none(seg.get('text', ''))
+
         if task.cancel_flag.is_set():
             return
         
@@ -652,17 +1164,20 @@ def process_task(task):
         translations = {}
         if task.options.get('translate'):
             # Eliberează memoria GPU ocupată de Whisper înainte de a începe traducerea cu LLM
-            task.message = 'Cleaning up VRAM for translation...'
+            task.message = 'Cleaning up VRAM for translation/LLM tasks...'
             transcriber.unload_model()
+            translator.unload_models() # Ensure no old translation models are lingering
 
             task.progress = 80
             task.message = 'Translating...'
             
             target_langs = task.options.get('target_languages', ['en'])
             source_lang = result.get('language', 'en')
-            engine = task.options.get('translation_engine', 'vllm')
+            engine = task.options.get('translation_engine', 'google')
+            context = task.options.get('translation_context')
             
             texts = [seg.get('text', '') for seg in segments]
+            metadata = [{'gender': seg.get('speaker_gender'), 'speaker': seg.get('speaker')} for seg in segments]
             
             llm_model = task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
             custom_prompt = task.options.get('custom_prompt')
@@ -677,7 +1192,9 @@ def process_task(task):
                     translated_texts = translator.translate_with_vllm_grouped(
                         texts, source_lang, target_lang,
                         model_name=llm_model,
-                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
+                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP),
+                        metadata=metadata,
+                        context=context
                     )
                 elif engine == 'llm':
                     translated_texts = translator.translate_with_llm(
@@ -685,27 +1202,57 @@ def process_task(task):
                         model_name=llm_model,
                         custom_prompt=custom_prompt
                     )
-                else:
+                elif engine == 'llm_api':
+                    translated_texts = translator.translate_with_api(
+                        texts, source_lang, target_lang,
+                        api_type=task.options.get('llm_api_provider'),
+                        api_key=task.options.get('llm_api_key'),
+                        model=task.options.get('llm_api_model'),
+                        context=context,
+                        base_url=task.options.get('llm_api_url'),
+                        batch_size=20 # Blocurile de 15-20 segmente
+                    )
+                else: # google
                     translated_texts = translator.translate_batch(
-                        texts, source_lang, target_lang
+                        texts, source_lang, target_lang,
+                        batch_size=15, # Blocuri de 10-15 segmente
+                        context=context
                     )
                 
-                # Apply LLM correction if requested and language is Romanian
-                if task.options.get('use_romistral') and target_lang == 'ro':
-                    task.message = 'Refining translation with RoMistral...'
-                    translated_texts = translator.correct_with_romistral(
+                # Validation and Retry
+                translated_texts = translator.validate_and_retry_translations(
+                    texts, translated_texts, source_lang, target_lang, engine
+                )
+
+                # Apply LLM correction if requested
+                if task.options.get('use_romistral'):
+                    # Use explicit refiner model if provided, else fallback to llm_model or default
+                    refiner_model = task.options.get('refiner_model') or task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
+                    task.message = f'Refining translation with {refiner_model}...'
+                    translated_texts = translator.correct_with_vllm(
                         translated_texts,
                         target_lang,
-                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP)
+                        model_name=refiner_model,
+                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP),
+                        metadata=metadata,
+                        context=context
                     )
 
                 translations[target_lang] = translated_texts
             
             task.progress = 95
         
+        # Apply timestamp offset if we processed a region
+        if process_start > 0:
+            task.message = f'Offsetting timestamps by {process_start}s...'
+            for seg in segments:
+                seg['start'] += process_start
+                seg['end'] += process_start
+
         # Prepare result
         task.result = {
             'full_text': result.get('text', ''),
+            'raw_text': result.get('raw_text', ''),
             'segments': segments,
             'language': result.get('language', 'unknown'),
             'translations': translations,
@@ -716,15 +1263,20 @@ def process_task(task):
         task.progress = 100
         task.message = 'Processing complete!'
         
-        # Cleanup audio if extracted
-        if audio_path != task.file_path:
-            Path(audio_path).unlink(missing_ok=True)
-        
     except Exception as e:
         logger.error(f"Processing error: {e}")
         task.status = 'failed'
         task.error = str(e)
         task.message = f'Error: {str(e)}'
+    finally:
+        # Cleanup VRAM aggressively after every process
+        logger.info(f"Task {task.task_id} finished, clearing VRAM...")
+        transcriber.unload_model()
+        translator.unload_models()
+
+        # Cleanup audio if extracted
+        if 'audio_path' in locals() and audio_path != task.file_path:
+            Path(audio_path).unlink(missing_ok=True)
 
 def update_task_progress(task, progress, message):
     """Update task progress"""

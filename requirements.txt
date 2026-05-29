@@ -1,6 +1,6 @@
 Flask==2.3.3
 Werkzeug==2.3.7
-openai-whisper==20231117
+openai-whisper>=20240930
 torch>=2.0.0
 torchaudio>=2.0.0
 transformers>=4.35.0
@@ -16,3 +16,27 @@ numpy>=1.24.0
 soundfile>=0.12.1
 librosa>=0.10.0
 scipy>=1.11.0
+whisperx @ git+https://github.com/m-bain/whisperX.git
+noisereduce>=3.0.0
+flask-cors>=4.0.0
+deep-translator>=1.11.4
+nemo_toolkit[asr]>=2.0.0
+vllm>=0.6.0
+langdetect>=1.0.9
+anthropic>=0.18.1
+openai>=1.12.0
+# PaddleOCR — alege UNA din variantele de mai jos:
+# CPU (fără GPU):
+# paddlepaddle
+# paddleocr>=2.7.0
+#
+# GPU CUDA 11.8:
+# pip install paddlepaddle-gpu==2.6.2.post118 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html
+# pip install paddleocr>=2.7.0
+#
+# GPU CUDA 12.x - 13.x:
+# pip install paddlepaddle-gpu==2.6.2 -i https://www.paddlepaddle.org.cn/packages/stable/cu120/
+# pip install paddleocr>=2.7.0
+
+paddleocr>=2.7.0
+opencv-python
