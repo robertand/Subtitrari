@@ -253,7 +253,7 @@ class HardcodedSubtitleExtractor:
                 show_log=False,
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
-                use_textline_orientation=False,
+                # use_textline_orientation=False is removed because it's mutually exclusive with use_angle_cls
             )
             self._ocr_loaded = True
             self._current_lang = lang
