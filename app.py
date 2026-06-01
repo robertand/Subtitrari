@@ -12,6 +12,7 @@ import shlex
 import logging
 import librosa
 import numpy as np
+import torch
 from pathlib import Path
 from datetime import datetime
 import shutil
@@ -22,7 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import Config
 from transcriber import WhisperTranscriber, GenderDetector
 from nemo_transcriber import get_nemo_transcriber, NEMO_SUPPORTED_LANGUAGES, check_and_install_nemo
+from ocr_extractor import get_ocr_extractor, merge_ocr_and_asr_segments, check_and_install_paddleocr
+from sdh_detector import get_sdh_detector, merge_all_subtitle_sources
 from translator import Translator
+from translategemma_translator import get_translategemma_translator, TRANSLATEGEMMA_SUPPORTED_LANGS
 from segmenter import SubtitleSegmenter
 from file_handler import FileHandler
 
@@ -239,6 +243,24 @@ def serve_file(filename):
         return send_file(file_path)
     return jsonify({'error': 'File not found'}), 404
 
+@app.route('/api/ocr/verify-gpu', methods=['POST'])
+def verify_ocr_gpu():
+    """Verify and install paddlepaddle-gpu if requested"""
+    try:
+        from ocr_extractor import check_and_install_paddleocr
+        success = check_and_install_paddleocr(use_gpu=True)
+
+        import paddle
+        cuda_available = paddle.device.is_compiled_with_cuda()
+
+        return jsonify({
+            'success': success,
+            'cuda_available': cuda_available,
+            'message': 'GPU (CUDA) is available' if cuda_available else 'Only CPU is available'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/upload/progress/<session_id>')
 def upload_progress(session_id):
     """Get upload progress"""
@@ -260,6 +282,7 @@ def start_processing():
             return jsonify({'error': 'Missing parameters'}), 400
         
         # Create task
+        logger.info(f"[SDH-DEBUG] Options received: use_sdh={options.get('use_sdh')}, type={type(options.get('use_sdh')).__name__}, all_keys={list(options.keys())}")
         task = ProcessingTask(task_id, file_path, options)
         
         with task_lock:
@@ -313,9 +336,10 @@ def process_zones():
         # Basic sanitization for file_path
         abs_base = str(Config.DATA_DIR.resolve())
         abs_file = str(Path(file_path).resolve())
-        if not abs_file.startswith(abs_base) and not abs_file.startswith("/tmp"): # Basic check
-             # If it's a relative path from the upload dir, that's fine
-             pass
+        if not abs_file.startswith(abs_base) and not abs_file.startswith("/tmp"):
+             # If it's a relative path from the upload dir, it's fine, otherwise block for security
+             if not any(str(abs_file).startswith(str(Config.BASE_DIR / d)) for d in ['data', 'uploads']):
+                 return jsonify({'error': 'Invalid file path'}), 403
 
         for idx, zone in enumerate(zones):
             start = float(zone['start'])
@@ -349,11 +373,19 @@ def process_zones():
                     nemo_t = get_nemo_transcriber()
                     if not nemo_t.is_available():
                         check_and_install_nemo()
+
+                    # Language detection happens inside transcribe if not specified
+                    lang_code = options.get('language')
                     segments = nemo_t.transcribe(
                         str(audio_temp_path),
-                        language=options.get('language')
+                        model_name=options.get('model', 'parakeet-v3'),
+                        language=lang_code,
+                        window_size=options.get('transcribe_window', 30),
+                        overlap=options.get('transcribe_overlap', 10)
                     )
-                    res = {"segments": segments}
+                    # Note: Parakeet v3 doesn't explicitly return the detected language code easily
+                    # without re-parsing, but for now we use the requested language or assume auto
+                    res = {"segments": segments, "language": lang_code or "auto"}
                 else:
                     # Fallback to standard
                     res = transcriber.transcribe_audio(
@@ -382,6 +414,47 @@ def process_zones():
                 for seg in new_segments:
                     seg['text'] = translator._clean_speaker_none(seg['text'])
 
+                # OCR extraction for zone
+                if options.get('use_ocr'):
+                    try:
+                        ocr_extractor = get_ocr_extractor()
+                        check_and_install_paddleocr(use_gpu=torch.cuda.is_available())
+
+                        ocr_lang = options.get('language') or 'en'
+                        region = None
+                        mode = options.get('ocr_region_mode', 'auto')
+                        if mode == 'manual':
+                            region = (
+                                float(options.get('ocr_top', 0.75)),
+                                float(options.get('ocr_bottom', 0.98))
+                            )
+                        elif mode == 'full':
+                            region = (0.0, 1.0)
+
+                        ocr_segments = ocr_extractor.extract_subtitles(
+                            file_path,
+                            lang=ocr_lang,
+                            use_gpu=torch.cuda.is_available(),
+                            subtitle_region=region,
+                            conf_threshold=int(options.get('ocr_conf', 70)),
+                            frames_to_skip=int(options.get('ocr_frame_skip', 2)),
+                            start_time=start,
+                            end_time=end
+                        )
+
+                        # Adjust OCR segments by start offset of zone
+                        # (The extractor processes the whole video, so we need to filter segments
+                        # that fall within our zone)
+                        ocr_segments = [
+                            s for s in ocr_segments
+                            if s['start'] >= start and s['end'] <= end
+                        ]
+
+                        if ocr_segments and options.get('ocr_merge', True):
+                            new_segments = merge_ocr_and_asr_segments(new_segments, ocr_segments)
+                    except Exception as e:
+                        logger.error(f"Zone OCR failed: {e}")
+
                 # 6. Translate
                 new_translations = {}
                 if options.get('translate'):
@@ -408,6 +481,14 @@ def process_zones():
                                 model=options.get('llm_api_model'),
                                 context=context, base_url=options.get('llm_api_url')
                             )
+                        elif engine.startswith('translategemma'):
+                            t_tg = get_translategemma_translator()
+                            if source_lang in TRANSLATEGEMMA_SUPPORTED_LANGS and target_lang in TRANSLATEGEMMA_SUPPORTED_LANGS:
+                                tg_model_key = engine
+                                t_tg.load_model(model_key=tg_model_key, use_int8=True)
+                                t_texts = t_tg.translate_batch(texts, source_lang, target_lang, batch_size=10)
+                            else:
+                                t_texts = texts
                         else: # google
                             t_texts = translator.translate_batch(
                                 texts, source_lang, target_lang, context=context
@@ -570,7 +651,7 @@ def translate_text():
         texts = data.get('texts', [])
         source_lang = data.get('source_lang', 'auto')
         target_lang = data.get('target_lang', 'en')
-        engine = data.get('engine', 'nllb')
+        engine = data.get('engine', 'google')
         custom_prompt = data.get('custom_prompt')
         
         if not texts:
@@ -586,6 +667,13 @@ def translate_text():
                 texts, source_lang, target_lang,
                 custom_prompt=custom_prompt
             )
+        elif engine.startswith('translategemma'):
+            t_tg = get_translategemma_translator()
+            if source_lang in TRANSLATEGEMMA_SUPPORTED_LANGS and target_lang in TRANSLATEGEMMA_SUPPORTED_LANGS:
+                t_tg.load_model(model_key=engine, use_int8=True)
+                translations = t_tg.translate_batch(texts, source_lang, target_lang, batch_size=10)
+            else:
+                translations = texts
         else:
             translations = translator.translate_batch(
                 texts, source_lang, target_lang
@@ -688,7 +776,7 @@ def process_task(task):
             language = None
         
         if engine == 'nemo':
-            task.message = 'Initializing NVIDIA NeMo Parakeet...'
+            task.message = f'Initializing NVIDIA NeMo {model_name}...'
             nemo_t = get_nemo_transcriber()
             if not nemo_t.is_available():
                 task.message = 'Installing NeMo Toolkit...'
@@ -697,7 +785,10 @@ def process_task(task):
             # NeMo doesn't use the standard transcriber singleton, but its own
             segments = nemo_t.transcribe(
                 str(audio_path),
+                model_name=model_name,
                 language=language,
+                window_size=task.options.get('transcribe_window', 30),
+                overlap=task.options.get('transcribe_overlap', 10),
                 progress_callback=lambda m: update_task_progress(task, task.progress, m)
             )
             result = {
@@ -1042,6 +1133,85 @@ def process_task(task):
             # Even if not strictly sequential, we should merge identical overlaps
             segments = segmenter.merge_identical_overlapping(segments)
 
+        # Hardcoded Subtitles OCR
+        if task.options.get('use_ocr') and file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}:
+            task.message = 'Extracting hardcoded subtitles (OCR)...'
+            try:
+                ocr_extractor = get_ocr_extractor()
+                check_and_install_paddleocr(use_gpu=torch.cuda.is_available())
+
+                # Use current language or auto
+                ocr_lang = language or 'en'
+
+                # Region selection
+                region = None
+                mode = task.options.get('ocr_region_mode', 'auto')
+                if mode == 'manual':
+                    region = (
+                        float(task.options.get('ocr_top', 0.75)),
+                        float(task.options.get('ocr_bottom', 0.98))
+                    )
+                elif mode == 'full':
+                    region = (0.0, 1.0)
+
+                ocr_segments = ocr_extractor.extract_subtitles(
+                    str(task.file_path),
+                    lang=ocr_lang,
+                    use_gpu=torch.cuda.is_available(),
+                    subtitle_region=region,
+                    conf_threshold=int(task.options.get('ocr_conf', 70)),
+                    frames_to_skip=int(task.options.get('ocr_frame_skip', 2)),
+                    start_time=process_start if process_start > 0 else None,
+                    end_time=process_end if process_end > 0 else None,
+                    progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                )
+
+                if ocr_segments:
+                    if task.options.get('ocr_merge', True):
+                        task.message = 'Merging OCR with ASR results...'
+                        segments = merge_ocr_and_asr_segments(segments, ocr_segments)
+            except Exception as e:
+                logger.error(f"OCR extraction failed: {e}")
+
+        # SDH — Sound event detection
+        sdh_enabled = task.options.get('use_sdh', False)
+        logger.info(f"[SDH] use_sdh={sdh_enabled}, suffix={file_path.suffix}, is_video={file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}}")
+        if (sdh_enabled and
+            file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}):
+            task.message = 'Detecting sound events (SDH)...'
+            try:
+                sdh_detector = get_sdh_detector()
+                sdh_detector.load_model(
+                    progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                )
+
+                user_sdh_lang = task.options.get('sdh_language', 'auto')
+                if user_sdh_lang == 'auto' or not user_sdh_lang:
+                    sdh_target_lang = result.get('language') or 'en'
+                else:
+                    sdh_target_lang = user_sdh_lang
+                sdh_confidence = float(task.options.get('sdh_confidence', 45)) / 100.0
+                sdh_use_llm = task.options.get('sdh_use_llm', False)
+                sdh_llm_callback = None
+
+                sdh_segments = sdh_detector.detect_sound_events(
+                    str(task.file_path),
+                    segments,
+                    target_lang=sdh_target_lang,
+                    confidence_threshold=sdh_confidence,
+                    use_llm_descriptions=sdh_use_llm,
+                    llm_callback=sdh_llm_callback,
+                    start_time=process_start if process_start > 0 else None,
+                    end_time=process_end if process_end > 0 else None,
+                    progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                )
+
+                if sdh_segments:
+                    task.message = 'Merging SDH with ASR and OCR results...'
+                    segments = merge_all_subtitle_sources(segments, [], sdh_segments)
+            except Exception as e:
+                logger.error(f"SDH detection failed: {e}")
+
         # FINAL CLEANUP for speaker artifacts
         for seg in segments:
             seg['text'] = translator._clean_speaker_none(seg.get('text', ''))
@@ -1101,6 +1271,26 @@ def process_task(task):
                         base_url=task.options.get('llm_api_url'),
                         batch_size=20 # Blocurile de 15-20 segmente
                     )
+                elif engine.startswith('translategemma'):
+                    tg_translator = get_translategemma_translator()
+                    if source_lang not in TRANSLATEGEMMA_SUPPORTED_LANGS:
+                        logger.warning(f"[TranslateGemma] Limba sursa '{source_lang}' nu e suportata, se omite traducerea.")
+                        translated_texts = texts
+                    elif target_lang not in TRANSLATEGEMMA_SUPPORTED_LANGS:
+                        logger.warning(f"[TranslateGemma] Limba tinta '{target_lang}' nu e suportata, se omite traducerea.")
+                        translated_texts = texts
+                    else:
+                        tg_model_key = engine  # "translategemma-27b" etc.
+                        tg_translator.load_model(
+                            model_key=tg_model_key,
+                            use_int8=True,
+                            progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                        )
+                        translated_texts = tg_translator.translate_batch(
+                            texts, source_lang, target_lang,
+                            batch_size=10,
+                            progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                        )
                 else: # google
                     translated_texts = translator.translate_batch(
                         texts, source_lang, target_lang,
@@ -1132,20 +1322,25 @@ def process_task(task):
             task.progress = 95
         
         # Apply timestamp offset if we processed a region
+        # Only ASR segments have relative timestamps; OCR and SDH are already absolute
         if process_start > 0:
             task.message = f'Offsetting timestamps by {process_start}s...'
             for seg in segments:
-                seg['start'] += process_start
-                seg['end'] += process_start
+                seg_source = seg.get('source', 'asr')
+                if seg_source == 'asr':
+                    seg['start'] += process_start
+                    seg['end'] += process_start
 
         # Prepare result
+        ocr_was_used = task.options.get('use_ocr', False)
         task.result = {
             'full_text': result.get('text', ''),
             'raw_text': result.get('raw_text', ''),
             'segments': segments,
             'language': result.get('language', 'unknown'),
             'translations': translations,
-            'task_id': task.task_id
+            'task_id': task.task_id,
+            'ocr_not_used': file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'} and not ocr_was_used
         }
         
         task.status = 'completed'

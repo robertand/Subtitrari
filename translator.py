@@ -1,4 +1,3 @@
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, NllbTokenizer
 from deep_translator import GoogleTranslator
 import torch
 import gc
@@ -19,69 +18,8 @@ class Translator:
         self.tokenizers = {}
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Language code mappings for NLLB
-        self.lang_map = {
-            'ro': 'ron_Latn',  # Romanian
-            'en': 'eng_Latn',  # English
-            'fr': 'fra_Latn',  # French
-            'de': 'deu_Latn',  # German
-            'es': 'spa_Latn',  # Spanish
-            'it': 'ita_Latn',  # Italian
-            'pt': 'por_Latn',  # Portuguese
-            'ru': 'rus_Cyrl',  # Russian
-            'zh': 'zho_Hans',  # Chinese (Simplified)
-            'ja': 'jpn_Jpan',  # Japanese
-            'ko': 'kor_Hang',  # Korean
-            'ar': 'arb_Arab',  # Arabic
-            'hi': 'hin_Deva',  # Hindi
-            'tr': 'tur_Latn',  # Turkish
-            'nl': 'nld_Latn',  # Dutch
-            'pl': 'pol_Latn',  # Polish
-            'sv': 'swe_Latn',  # Swedish
-            'da': 'dan_Latn',  # Danish
-            'no': 'nob_Latn',  # Norwegian
-            'fi': 'fin_Latn',  # Finnish
-            'cs': 'ces_Latn',  # Czech
-            'hu': 'hun_Latn',  # Hungarian
-            'el': 'ell_Grek',  # Greek
-            'he': 'heb_Hebr',  # Hebrew
-            'th': 'tha_Thai',  # Thai
-            'vi': 'vie_Latn',  # Vietnamese
-            'id': 'ind_Latn',  # Indonesian
-            'ms': 'zsm_Latn',  # Malay
-            'uk': 'ukr_Cyrl',  # Ukrainian
-            'bg': 'bul_Cyrl',  # Bulgarian
-            'hr': 'hrv_Latn',  # Croatian
-        }
-        
         # Languages that need bridging through English (disabled as per request)
         self.bridge_languages = {}
-    
-    def load_model(self, source_lang: str, target_lang: str) -> tuple:
-        """Load appropriate translation model"""
-        model_name = "facebook/nllb-200-distilled-600M"
-        
-        if model_name not in self.models:
-            logger.info(f"Loading translation model: {model_name}")
-            
-            # Load tokenizer with explicit NllbTokenizer
-            self.tokenizers[model_name] = AutoTokenizer.from_pretrained(
-                model_name,
-                src_lang=self.lang_map.get(source_lang, 'eng_Latn'),
-                clean_up_tokenization_spaces=False
-            )
-            
-            # Load model
-            self.models[model_name] = AutoModelForSeq2SeqLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                low_cpu_mem_usage=True
-            ).to(self.device)
-            
-            # Set model to eval mode
-            self.models[model_name].eval()
-        
-        return self.models[model_name], self.tokenizers[model_name]
     
     def translate_batch(
         self,
@@ -141,77 +79,6 @@ class Translator:
 
         except Exception as e:
             logger.error(f"Google Translate fatal error: {e}")
-            # Fallback to NLLB if Google fails
-            return self._nllb_translate(texts, source_lang, target_lang, 8)
-
-    def _nllb_translate(
-        self,
-        texts: List[str],
-        source_lang: str,
-        target_lang: str,
-        batch_size: int = 8
-    ) -> List[str]:
-        """NLLB Fallback translation"""
-        try:
-            model, tokenizer = self.load_model(source_lang, target_lang)
-            src_code = self.lang_map.get(source_lang, 'eng_Latn')
-            tgt_code = self.lang_map.get(target_lang, 'eng_Latn')
-            translations = []
-            
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i:i + batch_size]
-                if hasattr(tokenizer, 'src_lang'):
-                    tokenizer.src_lang = src_code
-                
-                inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True).to(self.device)
-                
-                # Use target language token ID for generation
-                forced_bos_token_id = tokenizer.convert_tokens_to_ids(tgt_code)
-                
-                # Simple generation
-                with torch.no_grad():
-                    translated = model.generate(
-                        **inputs,
-                        max_length=512,
-                        forced_bos_token_id=forced_bos_token_id
-                    )
-                
-                decoded = tokenizer.batch_decode(translated, skip_special_tokens=True)
-                translations.extend(decoded)
-            return translations
-        except Exception as e:
-            logger.error(f"NLLB Fallback error: {e}")
-            return texts
-    
-    def _simple_translate(
-        self,
-        texts: List[str],
-        source_lang: str,
-        target_lang: str
-    ) -> List[str]:
-        """Simple translation fallback using pipeline"""
-        try:
-            from transformers import pipeline
-            
-            # Use translation pipeline
-            pipe = pipeline(
-                "translation",
-                model="facebook/nllb-200-distilled-600M",
-                src_lang=self.lang_map.get(source_lang, 'eng_Latn'),
-                tgt_lang=self.lang_map.get(target_lang, 'eng_Latn'),
-                device=0 if self.device == "cuda" else -1,
-                max_length=512
-            )
-            
-            translations = []
-            for text in texts:
-                result = pipe(text, max_length=512)
-                translations.append(result[0]['translation_text'])
-            
-            return translations
-            
-        except Exception as e:
-            logger.error(f"Simple translation error: {e}")
             # Return original texts as last resort
             return texts
     
@@ -630,6 +497,8 @@ class Translator:
             stop_tokens = ["<|endoftext|>", "</s>", "<|im_end|>"]
             if "Llama-3" in model_name:
                 stop_tokens = ["<|endoftext|>", "<|eot_id|>", "<|start_header_id|>", "<|end_header_id|>"]
+            elif "gemma" in model_name.lower():
+                stop_tokens = ["<|endoftext|>", "</s>", "<end_of_turn>"]
 
             sampling_params = SamplingParams(
                 temperature=0.01,
@@ -680,6 +549,11 @@ class Translator:
                     )
                 elif "RoMistral" in model_name or "Mistral" in model_name:
                     full_prompt = f"<s>[INST] {system_prompt}\n\n{user_content} [/INST]"
+                elif "gemma" in model_name.lower():
+                    full_prompt = (
+                        f"<start_of_turn>user\n{system_prompt}\n\n{user_content}<end_of_turn>\n"
+                        f"<start_of_turn>model\n"
+                    )
                 else:
                     full_prompt = (
                         f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
@@ -967,24 +841,3 @@ class Translator:
         if self.device == "cuda":
             torch.cuda.empty_cache()
 
-# Helper function to test language code mapping
-def test_language_codes():
-    """Test if language codes are properly mapped"""
-    translator = Translator()
-    
-    # Test some common language pairs
-    test_pairs = [
-        ('en', 'ro'),
-        ('ro', 'en'),
-        ('en', 'fr'),
-        ('en', 'de'),
-        ('ko', 'en'),
-    ]
-    
-    for src, tgt in test_pairs:
-        src_code = translator.lang_map.get(src, 'eng_Latn')
-        tgt_code = translator.lang_map.get(tgt, 'eng_Latn')
-        print(f"{src} → {tgt}: {src_code} → {tgt_code}")
-
-if __name__ == "__main__":
-    test_language_codes()

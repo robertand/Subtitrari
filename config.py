@@ -29,18 +29,16 @@ class Config:
         'tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3', 'large-v3-turbo', 'turbo',
         'selimc/whisper-large-v3-turbo-turkish',
         'Farazzzzzzz/whisper-tiny_to_korean_accent2',
-        'nvidia/parakeet-tdt-0.6b-v3'
+        'parakeet-v3', 'canary'
     ]
     COHERE_MODEL = "CohereLabs/cohere-transcribe-03-2026"
     DEFAULT_TRANSCRIBE_WINDOW = 30
     DEFAULT_TRANSCRIBE_OVERLAP = 10
 
     # LLM Models
-    DEFAULT_LLM_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct'
+    DEFAULT_LLM_MODEL = 'google/gemma-4-26B-A4B-it'
     AVAILABLE_LLM_MODELS = [
-        'Qwen/Qwen3-235B-A22B-Instruct',
         'allura-forge/Llama-3.3-8B-Instruct',
-        'nvidia/Llama-3.3-70B-Instruct-NVFP4',
         'google/gemma-3-12b-it',
         'google/gemma-4-E4B-it',
         'google/gemma-4-26B-A4B-it',
@@ -98,6 +96,10 @@ class Config:
         'hr': 'Croată'
     }
     
+    # OCR
+    DEFAULT_OCR_CONF = 70
+    DEFAULT_OCR_SIM = 80
+
     # Audio extraction
     AUDIO_FORMAT = 'wav'
     AUDIO_SAMPLE_RATE = 16000

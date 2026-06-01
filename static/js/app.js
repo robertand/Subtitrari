@@ -29,7 +29,7 @@ const state = {
     isSelectingZone: false,
     selectionStart: 0,
     reprocessedZones: [],
-    subStyles: {
+    subStyles: JSON.parse(localStorage.getItem('subtitrari_subStyles') || JSON.stringify({
         fontFamily: 'Arial',
         fontSize: 24,
         color: '#ffffff',
@@ -38,8 +38,9 @@ const state = {
         effect: 'shadow',
         outlineColor: '#000000',
         offsetY: 50,
-        offsetX: 0
-    }
+        offsetX: 0,
+        isTop: false
+    }))
 };
 
 // === DOM Elements ===
@@ -100,7 +101,31 @@ document.addEventListener('DOMContentLoaded', () => {
     initSettingsListeners();
     // Initialize Presets
     initPresets();
+    // Add centered class to main-grid (animation start state)
+    document.querySelector('.main-grid')?.classList.add('centered');
+    // Restore saved subtitle styles
+    restoreSubStyles();
 });
+
+function restoreSubStyles() {
+    const s = state.subStyles;
+    const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = val;
+    };
+    setVal('subFontFamily', s.fontFamily);
+    setVal('subFontSize', s.fontSize);
+    setVal('subColor', s.color);
+    setVal('subBgColor', s.bgColor);
+    setVal('subBgOpacity', s.bgOpacity);
+    setVal('subEffect', s.effect);
+    setVal('subOutlineColor', s.outlineColor);
+    setVal('subOffsetY', s.offsetY);
+    setVal('subOffsetX', s.offsetX);
+    const toggle = document.getElementById('subtitleTopToggle');
+    if (toggle) toggle.checked = s.isTop || false;
+    updateSubStyles();
+}
 
 function initUpload() {
     // Drag & Drop
@@ -145,24 +170,52 @@ async function initLanguages() {
         languageSelect.addEventListener('change', updateMixedLanguageOptions);
 
         const targetLanguageSelect = document.getElementById('targetLanguageSelect');
+        const sdhLanguageSelect = document.getElementById('sdhLanguage');
+
+        languageSelect.addEventListener('change', function() {
+            const srcLang = this.value;
+            const currentSdh = sdhLanguageSelect.value;
+            if (currentSdh === 'auto' && srcLang !== 'auto') {
+                const sdhOpt = sdhLanguageSelect.querySelector(`option[value="${srcLang}"]`);
+                if (sdhOpt) sdhOpt.selected = true;
+            }
+        });
         
         // Păstrează opțiunea auto
-        languageSelect.innerHTML = '<option value="auto" selected>🔍 Detectare automată</option>';
+        languageSelect.innerHTML = '<option value="auto" selected data-ro-name="🔍 Detectare automată">🔍 Detectare automată</option>';
         targetLanguageSelect.innerHTML = '';
+        sdhLanguageSelect.innerHTML = '';
         
         Object.entries(languages).forEach(([code, name]) => {
             const option = document.createElement('option');
             option.value = code;
             option.textContent = name;
+            option.setAttribute('data-ro-name', name);
             if (code !== 'auto') {
                 languageSelect.appendChild(option.cloneNode(true));
             }
             targetLanguageSelect.appendChild(option);
+            if (code !== 'auto') {
+                const sdhOpt = option.cloneNode(true);
+                sdhLanguageSelect.appendChild(sdhOpt);
+            }
         });
         
         // Selectează Română implicit pentru limba țintă
         const roOption = targetLanguageSelect.querySelector('option[value="ro"]');
         if (roOption) roOption.selected = true;
+
+        // SDH language defaults to "Auto" (uses detected source language)
+        const autoSdhOption = document.createElement('option');
+        autoSdhOption.value = 'auto';
+        autoSdhOption.textContent = 'Auto (limba detectată)';
+        autoSdhOption.setAttribute('data-ro-name', 'Auto (limba detectată)');
+        autoSdhOption.selected = true;
+        sdhLanguageSelect.insertBefore(autoSdhOption, sdhLanguageSelect.firstChild);
+
+        // Apply current UI language to option texts
+        const currentLang = document.getElementById('uiLanguageSelect');
+        if (currentLang) translateLanguageSelects(currentLang.value);
 
         updateMixedLanguageOptions(); // Initial check after populating options
         
@@ -193,15 +246,33 @@ function initVideoPlayer() {
     state.videoPlayer = video;
     elements.mainVideoPlayer = video;
     
-    video.addEventListener('timeupdate', () => {
+    let rafId = null;
+    function onPlay() {
+        function tick() {
+            if (video.paused || video.ended) return;
+            if (state.segments.length > 0) {
+                updateSubtitleDisplay(video.currentTime);
+                updateActiveSegment(video.currentTime);
+                updateTimelinePlayhead(video.currentTime);
+            }
+            updateTimeDisplay();
+            rafId = requestAnimationFrame(tick);
+        }
+        tick();
+    }
+    function onPause() {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = null;
         if (state.segments.length > 0) {
             updateSubtitleDisplay(video.currentTime);
             updateActiveSegment(video.currentTime);
             updateTimelinePlayhead(video.currentTime);
         }
         updateTimeDisplay();
-    });
-    
+    }
+    video.addEventListener('play', onPlay);
+    video.addEventListener('pause', onPause);
+    video.addEventListener('seeked', onPause);
     video.addEventListener('loadedmetadata', () => {
         updateTimeDisplay();
         if (state.segments.length > 0) {
@@ -492,7 +563,18 @@ async function startProcessing() {
         transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
         transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
         multi_pass: document.getElementById('multiPass').checked,
-        audio_only: audioOnly
+        audio_only: audioOnly,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_frame_skip: document.getElementById('ocrFrameSkip').value,
+        ocr_merge: document.getElementById('ocrMerge').checked,
+        use_sdh: document.getElementById('useSDH').checked,
+        sdh_confidence: document.getElementById('sdhConfidence').value,
+        sdh_language: document.getElementById('sdhLanguage').value,
+        sdh_use_llm: document.getElementById('sdhUseLLM').checked
     };
     
     // NeMo Language Check
@@ -543,8 +625,9 @@ async function startProcessing() {
         
         // Show processing section
         elements.startButton.style.display = 'none';
+        document.querySelector('.main-grid')?.classList.remove('centered');
         elements.processingSection.style.display = 'block';
-        elements.processingMessage.textContent = 'Se inițializează procesarea...';
+        elements.processingMessage.textContent = __('processing_init');
         elements.processingBar.style.width = '0%';
         elements.processingPercentage.textContent = '0%';
         
@@ -553,7 +636,7 @@ async function startProcessing() {
         
     } catch (error) {
         console.error('Processing error:', error);
-        showToast('Eroare la pornirea procesării', 'error');
+        showToast(__('processing_error_start'), 'error');
     }
 }
 
@@ -574,17 +657,17 @@ function startPolling(taskId) {
                 state.processingInterval = null;
                 // Ia rezultatele
                 await fetchResults(taskId);
-                showToast('Procesare completă!', 'success');
+                showToast(__('processing_complete'), 'success');
             } else if (data.status === 'failed') {
                 clearInterval(state.processingInterval);
                 state.processingInterval = null;
-                showToast('Eroare: ' + (data.error || 'Eroare necunoscută'), 'error');
+                showToast('Eroare: ' + (data.error || __('processing_error_unknown')), 'error');
                 elements.processingSection.style.display = 'none';
                 elements.startButton.style.display = 'flex';
             } else if (data.status === 'cancelled') {
                 clearInterval(state.processingInterval);
                 state.processingInterval = null;
-                showToast('Procesare anulată', 'warning');
+                showToast(__('processing_cancelled'), 'warning');
                 elements.processingSection.style.display = 'none';
                 elements.startButton.style.display = 'flex';
             }
@@ -601,7 +684,7 @@ async function fetchResults(taskId) {
         showResults(result);
     } catch (error) {
         console.error('Error fetching results:', error);
-        showToast('Eroare la obținerea rezultatelor', 'error');
+        showToast(__('processing_error_results'), 'error');
     }
 }
 
@@ -676,6 +759,11 @@ function showResults(result) {
 
     // Scroll to results
     elements.resultsSection.scrollIntoView({ behavior: 'smooth' });
+
+    // Check if OCR was not used and we have a video — offer OCR post-processing
+    if (result.ocr_not_used) {
+        setTimeout(() => showOcrPostDialog(), 500);
+    }
 }
 
 function renderSegments() {
@@ -688,7 +776,7 @@ function renderSegments() {
     
     state.segments.forEach((segment, index) => {
         const div = document.createElement('div');
-        div.className = 'segment-item';
+        div.className = 'segment-item' + (segment.source === 'sdh' ? ' sdh-segment' : '');
         div.dataset.index = index;
         div.dataset.start = segment.start;
         div.dataset.end = segment.end;
@@ -873,7 +961,7 @@ function toggleAdvancedMode() {
 const defaultPresets = {
     "default": {
         name: "Standard (Optimized)",
-        engine: "whisper",
+        engine: "nemo",
         model: "large-v3",
         window: 50,
         overlap: 25,
@@ -891,7 +979,7 @@ const defaultPresets = {
         target_lang: "ro",
         trans_engine: "google",
         use_refinement: false,
-        refiner_model: "allura-forge/Llama-3.3-8B-Instruct",
+        refiner_model: "google/gemma-3-12b-it",
         trans_group: 15,
         llm_api_provider: "claude",
         llm_api_model: "",
@@ -992,7 +1080,18 @@ function savePreset() {
         translation_context: document.getElementById('translationContext').value,
         llm_api_provider: document.getElementById('llmApiProvider').value,
         llm_api_model: document.getElementById('llmApiModel').value,
-        llm_api_url: document.getElementById('llmApiUrl').value
+        llm_api_url: document.getElementById('llmApiUrl').value,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_frame_skip: document.getElementById('ocrFrameSkip').value,
+        ocr_merge: document.getElementById('ocrMerge').checked,
+        use_sdh: document.getElementById('useSDH').checked,
+        sdh_confidence: document.getElementById('sdhConfidence').value,
+        sdh_language: document.getElementById('sdhLanguage').value,
+        sdh_use_llm: document.getElementById('sdhUseLLM').checked
     };
 
     const userPresets = JSON.parse(localStorage.getItem('user_presets') || '{}');
@@ -1047,11 +1146,43 @@ function loadPreset(id) {
     if (preset.llm_api_model !== undefined) document.getElementById('llmApiModel').value = preset.llm_api_model;
     if (preset.llm_api_url !== undefined) document.getElementById('llmApiUrl').value = preset.llm_api_url;
 
+    if (preset.use_ocr !== undefined) document.getElementById('useOCR').checked = preset.use_ocr;
+    if (preset.ocr_conf !== undefined) {
+        document.getElementById('ocrConf').value = preset.ocr_conf;
+        document.getElementById('ocrConfVal').textContent = preset.ocr_conf + '%';
+    }
+    if (preset.ocr_merge !== undefined) document.getElementById('ocrMerge').checked = preset.ocr_merge;
+    if (preset.ocr_frame_skip !== undefined) {
+        document.getElementById('ocrFrameSkip').value = preset.ocr_frame_skip;
+        document.getElementById('ocrFrameSkipVal').textContent = preset.ocr_frame_skip;
+    }
+    if (preset.ocr_region_mode !== undefined) {
+        const radio = document.querySelector(`input[name="ocrRegionMode"][value="${preset.ocr_region_mode}"]`);
+        if (radio) radio.checked = true;
+    } else if (preset.ocr_manual_region !== undefined) {
+        const val = preset.ocr_manual_region ? 'manual' : 'auto';
+        const radio = document.querySelector(`input[name="ocrRegionMode"][value="${val}"]`);
+        if (radio) radio.checked = true;
+    }
+    if (preset.ocr_top !== undefined) document.getElementById('ocrTop').value = preset.ocr_top;
+    if (preset.ocr_bottom !== undefined) document.getElementById('ocrBottom').value = preset.ocr_bottom;
+
+    if (preset.use_sdh !== undefined) document.getElementById('useSDH').checked = preset.use_sdh;
+    if (preset.sdh_confidence !== undefined) {
+        document.getElementById('sdhConfidence').value = preset.sdh_confidence;
+        document.getElementById('sdhConfidenceVal').textContent = preset.sdh_confidence + '%';
+    }
+    if (preset.sdh_language !== undefined) document.getElementById('sdhLanguage').value = preset.sdh_language;
+    if (preset.sdh_use_llm !== undefined) document.getElementById('sdhUseLLM').checked = preset.sdh_use_llm;
+
     // Refresh UI dependencies
     toggleEngineOptions();
     updateModelOptions();
     toggleTranslation();
     toggleRefinerOptions();
+    toggleOCRSettings();
+    toggleOCRManualRegion();
+    toggleSDHSettings();
 
     // Trigger language-dependent UI updates
     const langEvent = new Event('change');
@@ -1221,6 +1352,12 @@ async function reprocessZones() {
 
     if (!state.taskId) return;
 
+    // Collect all target languages
+    const targetLangs = [document.getElementById('targetLanguageSelect').value];
+    document.querySelectorAll('.translation-lang-select').forEach(select => {
+        targetLangs.push(select.value);
+    });
+
     if (!confirm(`Re-procesezi ${state.selectedZones.length} zone? Segmentele existente din aceste intervale vor fi înlocuite.`)) return;
 
     const btn = document.getElementById('reprocessBtn');
@@ -1241,8 +1378,10 @@ async function reprocessZones() {
         isolate_voice: document.getElementById('isolateVoice').checked,
         deduplicate: document.getElementById('deduplicate').checked,
         prevent_overlap: document.getElementById('preventOverlap').checked,
+        transcribe_window: parseInt(document.getElementById('transcribeWindow').value),
+        transcribe_overlap: parseInt(document.getElementById('transcribeOverlap').value),
         translate: document.getElementById('enableTranslation').checked,
-        target_languages: [document.getElementById('targetLanguageSelect').value],
+        target_languages: targetLangs,
         translation_engine: document.getElementById('translationEngine').value,
         llm_model: document.getElementById('llmModelSelect').value,
         refiner_model: document.getElementById('refinerModelSelect').value,
@@ -1250,7 +1389,18 @@ async function reprocessZones() {
         llm_api_provider: document.getElementById('llmApiProvider').value,
         llm_api_key: document.getElementById('llmApiKey').value,
         llm_api_model: document.getElementById('llmApiModel').value,
-        llm_api_url: document.getElementById('llmApiUrl').value
+        llm_api_url: document.getElementById('llmApiUrl').value,
+        use_ocr: document.getElementById('useOCR').checked,
+        ocr_region_mode: document.querySelector('input[name="ocrRegionMode"]:checked')?.value || 'auto',
+        ocr_top: document.getElementById('ocrTop').value,
+        ocr_bottom: document.getElementById('ocrBottom').value,
+        ocr_conf: document.getElementById('ocrConf').value,
+        ocr_frame_skip: document.getElementById('ocrFrameSkip').value,
+        ocr_merge: document.getElementById('ocrMerge').checked,
+        use_sdh: document.getElementById('useSDH').checked,
+        sdh_confidence: document.getElementById('sdhConfidence').value,
+        sdh_language: document.getElementById('sdhLanguage').value,
+        sdh_use_llm: document.getElementById('sdhUseLLM').checked
     };
 
     try {
@@ -1979,7 +2129,9 @@ function renderTimeline() {
             e.target.classList.contains('timeline-resize-handle')) return;
 
         const selectionMode = document.getElementById('selectionModeToggle')?.checked;
-        if (selectionMode || e.shiftKey) {
+        const rulerRect = elements.timelineRuler?.getBoundingClientRect();
+        const isOnRuler = rulerRect && e.clientY <= rulerRect.bottom;
+        if ((selectionMode || e.shiftKey) && !isOnRuler) {
             startZoneSelection(e);
         } else {
             state.isDraggingPlayhead = true;
@@ -1987,6 +2139,25 @@ function renderTimeline() {
         }
         e.preventDefault();
     };
+
+    // Playhead handle drag
+    const handle = document.getElementById('playheadHandle');
+    if (handle) {
+        let dragging = false;
+        handle.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+            dragging = true;
+            state.isDraggingPlayhead = true;
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            handleTimelineSeek(e);
+        });
+        document.addEventListener('mouseup', () => {
+            dragging = false;
+        });
+    }
 }
 
 function handleTimelineSeek(e) {
@@ -2210,8 +2381,59 @@ function toggleEngineOptions() {
     if (cohereGroup) cohereGroup.style.display = (engine === 'cohere') ? 'block' : 'none';
     if (nemoGroup) nemoGroup.style.display = (engine === 'nemo') ? 'block' : 'none';
 
-    // Show model selection only for Whisper (NeMo has one fixed model here, Cohere also handles it internally)
-    if (whisperGroup) whisperGroup.style.display = (engine === 'whisper') ? 'block' : 'none';
+    // Show model selection for Whisper and NeMo
+    if (whisperGroup) whisperGroup.style.display = (engine === 'whisper' || engine === 'nemo') ? 'block' : 'none';
+
+    // Update model dropdown content for NeMo if selected
+    if (engine === 'nemo') {
+        updateNemoModels();
+    } else {
+        restoreWhisperModels();
+    }
+}
+
+function updateNemoModels() {
+    const modelSelect = document.getElementById('modelSelect');
+    const label = document.querySelector('label[for="modelSelect"]') || document.querySelector('#whisperModelGroup label');
+    if (label) label.textContent = 'Model NeMo';
+
+    // Save current whisper models if not already saved
+    if (!window._whisperModelsHtml) {
+        window._whisperModelsHtml = modelSelect.innerHTML;
+    }
+
+    modelSelect.innerHTML = `
+        <option value="parakeet-v3" selected>Parakeet TDT v3 (Fast & Accurate)</option>
+        <option value="canary">Canary-1b (Multilingual/Translation)</option>
+    `;
+}
+
+function restoreWhisperModels() {
+    const modelSelect = document.getElementById('modelSelect');
+    const label = document.querySelector('label[for="modelSelect"]') || document.querySelector('#whisperModelGroup label');
+    if (label) label.textContent = 'Model Whisper';
+
+    if (window._whisperModelsHtml) {
+        modelSelect.innerHTML = window._whisperModelsHtml;
+    }
+}
+
+function toggleOCRSettings() {
+    const useOCR = document.getElementById('useOCR').checked;
+    const ocrSettings = document.getElementById('ocrSettings');
+    if (ocrSettings) ocrSettings.style.display = useOCR ? 'block' : 'none';
+}
+
+function toggleSDHSettings() {
+    const useSDH = document.getElementById('useSDH').checked;
+    const sdhSettings = document.getElementById('sdhSettings');
+    if (sdhSettings) sdhSettings.style.display = useSDH ? 'block' : 'none';
+}
+
+function toggleOCRManualRegion() {
+    const mode = document.querySelector('input[name="ocrRegionMode"]:checked').value;
+    const manualRegion = document.getElementById('ocrManualRegion');
+    if (manualRegion) manualRegion.style.display = mode === 'manual' ? 'block' : 'none';
 }
 
 function updateModelOptions() {
@@ -2312,6 +2534,9 @@ function updateSubStyles() {
     }
 
     overlay.style.transform = `translateX(calc(-50% + ${state.subStyles.offsetX}px))`;
+
+    // Persist to localStorage
+    localStorage.setItem('subtitrari_subStyles', JSON.stringify(state.subStyles));
 }
 
 function saveProject() {
@@ -2393,3 +2618,408 @@ async function importProject(input) {
     };
     reader.readAsText(file);
 }
+
+function showOcrPostDialog() {
+    if (!confirm('Dorești să selectezi zone din timeline pentru a extrage subtitrări hardcodate (OCR) pe tot ecranul?')) return;
+
+    // Enable OCR
+    document.getElementById('useOCR').checked = true;
+    toggleOCRSettings();
+
+    // Set region to full screen
+    const fullRadio = document.querySelector('input[name="ocrRegionMode"][value="full"]');
+    if (fullRadio) fullRadio.checked = true;
+
+    showToast('Selectează zonele dorite pe timeline, apasă "Reprocesează Zonele"', 'info');
+    document.getElementById('reprocessBtn').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function verifyGpuOcr() {
+    const statusEl = document.getElementById('ocrGpuStatus');
+    statusEl.textContent = '⏳ Se verifică/instalează...';
+    statusEl.style.color = 'var(--text-muted)';
+
+    try {
+        const response = await fetch('/api/ocr/verify-gpu', { method: 'POST' });
+        const data = await response.json();
+
+        if (data.cuda_available) {
+            statusEl.textContent = '✅ GPU (CUDA) este disponibil!';
+            statusEl.style.color = 'var(--success)';
+            showToast('Suport GPU activat pentru OCR', 'success');
+        } else {
+            statusEl.textContent = '⚠️ Doar CPU disponibil.';
+            statusEl.style.color = 'var(--warning)';
+            showToast('OCR va rula pe CPU', 'info');
+        }
+    } catch (error) {
+        statusEl.textContent = '❌ Eroare la verificare.';
+        statusEl.style.color = 'var(--danger)';
+        showToast('Eroare verificare GPU', 'error');
+    }
+}
+
+// === UI Language Switching ===
+const UI_STRINGS = {
+    ro: {
+        'app-title': 'Subtitratorul PRO',
+        'fileMenuBtn': 'Fișier ▾',
+        'openProject': '📂 Deschide Proiect (.json)',
+        'saveProject': '💾 Exportă ca Proiect (.json)',
+        'preview-title': 'Preview & Player',
+        'styling-title': '🎨 Personalizare Subtitrare',
+        'upload-title': 'Încărcare Fișier',
+        'settings-title': 'Setări Procesare',
+        'translation-title': 'Traducere',
+        'processing-title': 'Procesare',
+        'results-title': 'Rezultate',
+        'translations-title': 'Traduceri',
+        'startBtn': 'Start Procesare',
+        'advanced_mode': 'Opțiuni Avansate',
+        'presets': 'Presetări',
+        'transcription_engine': 'Motor Transcriere',
+        'model': 'Model',
+        'hf_token': 'Hugging Face Token',
+        'hf_token_info': 'Necesar pentru modele gated (ex: pyannote) și diarizare.',
+        'source_lang': 'Limba Sursă',
+        'target_lang': 'Limba Țintă',
+        'transcribe_window': 'Fereastră Transcriere (s)',
+        'transcribe_overlap': 'Overlap Transcriere (s)',
+        'segmentation': 'Segmentare',
+        'min_duration': 'Durată minimă (s)',
+        'max_duration': 'Durată maximă (s)',
+        'max_chars': 'Max caractere',
+        'vad': 'VAD (pauze vorbire)',
+        'margin': 'Marjă 1s după voce',
+        'isolate_voice': 'Izolare Voce',
+        'deduplicate': 'Elimină repetiții',
+        'sequential': 'Segmente secvențiale',
+        'diarization': 'Diarizare (Speakeri)',
+        'multipass': 'Multi-Pass (Acuratețe Maximă - LENT)',
+        'ocr': '🔍 Citire subtitrări hardcodate (OCR)',
+        'ocr_region': 'Zonă de căutare',
+        'ocr_auto': 'Auto-detect',
+        'ocr_manual': 'Manual',
+        'ocr_full': 'Toată imaginea',
+        'ocr_top': 'Sus (0.0-1.0)',
+        'ocr_bottom': 'Jos (0.0-1.0)',
+        'ocr_conf': 'Confidence minim (%)',
+        'ocr_frame_skip': 'Sări frame-uri',
+        'ocr_merge': 'Adaugă la rezultate',
+        'ocr_verify_gpu': '⚙️ Verifică instalare GPU (OCR)',
+        'sdh': '♿ Subtitrări pentru surzi (SDH)',
+        'sdh_conf': 'Confidence minim',
+        'sdh_lang': 'Limbă descrieri',
+        'sdh_use_llm': 'Folosește LLM pentru descrieri mai naturale',
+        'process_region': 'Regiune Procesare (Secunde)',
+        'process_start': 'Start',
+        'process_end': 'Sfârșit (0 = tot)',
+        'process_region_info': 'Procesează doar o porțiune din fișier. Timecodurile vor fi raportate la videoul întreg.',
+        'audio_only': 'Doar extracție audio (fără transcriere)',
+        'save_preset': 'Salvează Setările Actuale ca Preset',
+        'preset_name': 'Nume preset...',
+        'save': '💾 Salvează',
+        'use_cohere_prompt': 'Folosește Prompt Sistem (Cohere)',
+        'cohere_placeholder': 'Ex: Transcriere pentru un documentar despre natură...',
+        'enable_translation': 'Activează traducerea',
+        'engine': 'Engine Traducere',
+        'translation_context': 'Context Conținut (Optional)',
+        'context_placeholder': 'ex: Film italian, comedie dramatică, personajele: Guido, Dora...',
+        'translate_group_size': 'Mărime Grup Traducere',
+        'refinement': 'Corectură Traducere (LLM)',
+        'refinement_model': 'Model Corectură',
+        'add_lang': '➕ Adaugă altă limbă',
+        'selection_mode': 'Mod Selecție',
+        'reprocess': '🔄 Re-procesează selecția',
+        'clear_selections': '🧹 Șterge selecțiile',
+        'selection_info': 'Selectează zone pe timeline (Click + Drag)',
+        'manual_zone_start': 'Start HH:MM:SS',
+        'manual_zone_end': 'End HH:MM:SS',
+        'add_zone': '➕ Adaugă zonă',
+        'add_segment': '➕ Adaugă segment',
+        'copy_text': '📋 Copiază text',
+        'save_project': '📂 Salvează Proiect',
+        'load_project': '📂 Încarcă Proiect',
+        'export_srt': '💾 Export SRT',
+        'export_docx': '📄 Export DOCX',
+        'original_tab': 'Original',
+        'raw_tab': 'Raw',
+        'translation_tab': 'Traducere',
+        'play_pause': '⏯️ Play/Pause',
+        'subtitle_top': 'Subtitrare Sus',
+        'styling': '🎨 Stil',
+        'close': 'Close',
+        'font_family': 'Font Family',
+        'font_size': 'Mărime (px)',
+        'color': 'Culoare Text',
+        'bg_color': 'Culoare Fundal',
+        'effects': 'Efecte',
+        'none_effect': 'Fără (Simplu)',
+        'shadow_effect': 'Drop Shadow',
+        'outline_effect': 'Outline (Contur)',
+        'outline_color': 'Culoare Contur',
+        'position_y': 'Poziție Y (Offset px)',
+        'position_x': 'Poziție X (Offset px)',
+        'llm_api_provider': 'Provider API',
+        'llm_api_key': 'API Key',
+        'llm_api_model': 'Model',
+        'llm_api_custom_url': 'Custom Endpoint URL',
+        'custom_prompt': 'Prompt Personalizat',
+        'prompt_placeholder': 'Tradu textul din {source} în {target}...',
+        'cancel': 'Anulează',
+        'cancel_processing': '❌ Anulează procesarea',
+        'pause': '⏸️ Pauză',
+        'cancel_upload': '❌ Anulare',
+        'upload_drag': 'Drag & Drop sau Click',
+        'upload_video': 'Video: MP4, AVI, MOV, MKV, WebM, MXF',
+        'upload_audio': 'Audio: MP3, WAV, M4A, FLAC, OGG',
+        'upload_max': 'Maxim 50GB per fișier',
+        'mixed_turkish': '🇹🇷 Transcriere Mixtă Turcă (V3 60s + Turbo 30s)',
+        'mixed_korean': '🇰🇷 Transcriere Mixtă Coreeană (V3 60s + Turbo 30s)',
+        'docx_title': 'Export DOCX - Traducători Profesioniști',
+        'docx_title_field': 'Titlu',
+        'docx_title_placeholder': 'Titlu film/episod...',
+        'docx_series': 'Serie / Episod',
+        'docx_series_placeholder': 'S01E01...',
+        'docx_translator': 'Nume Traducător',
+        'docx_translator_placeholder': 'Nume traducător...',
+        'docx_editor': 'Nume Redactor',
+        'docx_editor_placeholder': 'Nume redactor...',
+        'docx_legacy_diacritics': 'Conversie diacritice legacy (ș→ş, ț→ţ)',
+        'export_docx_btn': 'Exportă DOCX',
+        'processing_init': 'Se inițializează procesarea...',
+        'processing_error_start': 'Eroare la pornirea procesării',
+        'processing_complete': 'Procesare completă!',
+        'processing_cancelled': 'Procesare anulată',
+        'processing_error_results': 'Eroare la obținerea rezultatelor',
+        'processing_error_unknown': 'Eroare necunoscută',
+    },
+    en: {
+        'app-title': 'Subtitles PRO',
+        'fileMenuBtn': 'File ▾',
+        'openProject': '📂 Open Project (.json)',
+        'saveProject': '💾 Export as Project (.json)',
+        'preview-title': 'Preview & Player',
+        'styling-title': '🎨 Caption Styling',
+        'upload-title': 'Upload File',
+        'settings-title': 'Processing Settings',
+        'translation-title': 'Translation',
+        'processing-title': 'Processing',
+        'results-title': 'Results',
+        'translations-title': 'Translations',
+        'startBtn': 'Start Processing',
+        'advanced_mode': 'Advanced Options',
+        'presets': 'Presets',
+        'transcription_engine': 'Transcription Engine',
+        'model': 'Model',
+        'hf_token': 'Hugging Face Token',
+        'hf_token_info': 'Required for gated models (e.g. pyannote) and diarization.',
+        'source_lang': 'Source Language',
+        'target_lang': 'Target Language',
+        'transcribe_window': 'Transcription Window (s)',
+        'transcribe_overlap': 'Transcription Overlap (s)',
+        'segmentation': 'Segmentation',
+        'min_duration': 'Min Duration (s)',
+        'max_duration': 'Max Duration (s)',
+        'max_chars': 'Max Characters',
+        'vad': 'VAD (speech pauses)',
+        'margin': '1s margin after speech',
+        'isolate_voice': 'Isolate Voice',
+        'deduplicate': 'Remove Duplicates',
+        'sequential': 'Sequential Segments',
+        'diarization': 'Diarization (Speakers)',
+        'multipass': 'Multi-Pass (Max Accuracy - SLOW)',
+        'ocr': '🔍 Read hardcoded subtitles (OCR)',
+        'ocr_region': 'Search Region',
+        'ocr_auto': 'Auto-detect',
+        'ocr_manual': 'Manual',
+        'ocr_full': 'Full Frame',
+        'ocr_top': 'Top (0.0-1.0)',
+        'ocr_bottom': 'Bottom (0.0-1.0)',
+        'ocr_conf': 'Min Confidence (%)',
+        'ocr_frame_skip': 'Frame Skip',
+        'ocr_merge': 'Add to results',
+        'ocr_verify_gpu': '⚙️ Verify GPU Setup (OCR)',
+        'sdh': '♿ Subtitles for Deaf/Hard-of-hearing (SDH)',
+        'sdh_conf': 'Min Confidence',
+        'sdh_lang': 'Description Language',
+        'sdh_use_llm': 'Use LLM for more natural descriptions',
+        'process_region': 'Processing Region (Seconds)',
+        'process_start': 'Start',
+        'process_end': 'End (0 = all)',
+        'process_region_info': 'Process only a portion of the file. Timestamps will be relative to the full video.',
+        'audio_only': 'Audio extraction only (no transcription)',
+        'save_preset': 'Save Current Settings as Preset',
+        'preset_name': 'Preset name...',
+        'save': '💾 Save',
+        'use_cohere_prompt': 'Use System Prompt (Cohere)',
+        'cohere_placeholder': 'Ex: Transcription for a nature documentary...',
+        'enable_translation': 'Enable translation',
+        'engine': 'Translation Engine',
+        'translation_context': 'Content Context (Optional)',
+        'context_placeholder': 'ex: Italian film, dramatic comedy, characters: Guido, Dora...',
+        'translate_group_size': 'Translation Group Size',
+        'refinement': 'Translation Refinement (LLM)',
+        'refinement_model': 'Refinement Model',
+        'add_lang': '➕ Add Another Language',
+        'selection_mode': 'Selection Mode',
+        'reprocess': '🔄 Re-process Selection',
+        'clear_selections': '🧹 Clear Selections',
+        'selection_info': 'Select zones on timeline (Click + Drag)',
+        'manual_zone_start': 'Start HH:MM:SS',
+        'manual_zone_end': 'End HH:MM:SS',
+        'add_zone': '➕ Add Zone',
+        'add_segment': '➕ Add Segment',
+        'copy_text': '📋 Copy Text',
+        'save_project': '📂 Save Project',
+        'load_project': '📂 Load Project',
+        'export_srt': '💾 Export SRT',
+        'export_docx': '📄 Export DOCX',
+        'original_tab': 'Original',
+        'raw_tab': 'Raw',
+        'translation_tab': 'Translation',
+        'play_pause': '⏯️ Play/Pause',
+        'subtitle_top': 'Top Subtitle',
+        'styling': '🎨 Style',
+        'close': 'Close',
+        'font_family': 'Font Family',
+        'font_size': 'Font Size (px)',
+        'color': 'Text Color',
+        'bg_color': 'Background Color',
+        'effects': 'Effects',
+        'none_effect': 'None (Simple)',
+        'shadow_effect': 'Drop Shadow',
+        'outline_effect': 'Outline',
+        'outline_color': 'Outline Color',
+        'position_y': 'Y Offset (px)',
+        'position_x': 'X Offset (px)',
+        'llm_api_provider': 'API Provider',
+        'llm_api_key': 'API Key',
+        'llm_api_model': 'Model',
+        'llm_api_custom_url': 'Custom Endpoint URL',
+        'custom_prompt': 'Custom Prompt',
+        'prompt_placeholder': 'Translate text from {source} to {target}...',
+        'cancel': 'Cancel',
+        'cancel_processing': '❌ Cancel processing',
+        'pause': '⏸️ Pause',
+        'cancel_upload': '❌ Cancel',
+        'upload_drag': 'Drag & Drop or Click',
+        'upload_video': 'Video: MP4, AVI, MOV, MKV, WebM, MXF',
+        'upload_audio': 'Audio: MP3, WAV, M4A, FLAC, OGG',
+        'upload_max': 'Max 50GB per file',
+        'mixed_turkish': '🇹🇷 Mixed Turkish Transcription (V3 60s + Turbo 30s)',
+        'mixed_korean': '🇰🇷 Mixed Korean Transcription (V3 60s + Turbo 30s)',
+        'docx_title': 'DOCX Export - Professional Translators',
+        'docx_title_field': 'Title',
+        'docx_title_placeholder': 'Movie/Episode title...',
+        'docx_series': 'Series / Episode',
+        'docx_series_placeholder': 'S01E01...',
+        'docx_translator': 'Translator Name',
+        'docx_translator_placeholder': 'Translator name...',
+        'docx_editor': 'Editor Name',
+        'docx_editor_placeholder': 'Editor name...',
+        'docx_legacy_diacritics': 'Legacy diacritics conversion (ș→ş, ț→ţ)',
+        'export_docx_btn': 'Export DOCX',
+        'processing_init': 'Initializing processing...',
+        'processing_error_start': 'Error starting processing',
+        'processing_complete': 'Processing complete!',
+        'processing_cancelled': 'Processing cancelled',
+        'processing_error_results': 'Error fetching results',
+        'processing_error_unknown': 'Unknown error',
+    }
+};
+
+function switchUILanguage(lang) {
+    localStorage.setItem('uiLang', lang);
+    applyUILanguage(lang);
+}
+
+function __(key) {
+    const lang = document.getElementById('uiLanguageSelect')?.value || 'ro';
+    const t = UI_STRINGS[lang] || UI_STRINGS.ro;
+    return t[key] !== undefined ? t[key] : key;
+}
+
+const LANGUAGE_NAMES = {
+    ro: {
+        'Română': 'Română', 'Engleză': 'Engleză', 'Franceză': 'Franceză',
+        'Germană': 'Germană', 'Spaniolă': 'Spaniolă', 'Italiană': 'Italiană',
+        'Portugheză': 'Portugheză', 'Rusă': 'Rusă', 'Chineză': 'Chineză',
+        'Japoneză': 'Japoneză', 'Coreeană': 'Coreeană', 'Arabă': 'Arabă',
+        'Hindi': 'Hindi', 'Turcă': 'Turcă', 'Olandeză': 'Olandeză',
+        'Poloneză': 'Poloneză', 'Suedeză': 'Suedeză', 'Daneză': 'Daneză',
+        'Norvegiană': 'Norvegiană', 'Finlandeză': 'Finlandeză', 'Cehă': 'Cehă',
+        'Maghiară': 'Maghiară', 'Greacă': 'Greacă', 'Ebraică': 'Ebraică',
+        'Thailandeză': 'Thailandeză', 'Vietnameză': 'Vietnameză',
+        'Indoneziană': 'Indoneziană', 'Malaieză': 'Malaieză', 'Ucraineană': 'Ucraineană',
+        'Bulgară': 'Bulgară', 'Croată': 'Croată',
+        '🔍 Detectare automată': '🔍 Detectare automată',
+        'Auto (limba detectată)': 'Auto (limba detectată)',
+    },
+    en: {
+        'Română': 'Romanian', 'Engleză': 'English', 'Franceză': 'French',
+        'Germană': 'German', 'Spaniolă': 'Spanish', 'Italiană': 'Italian',
+        'Portugheză': 'Portuguese', 'Rusă': 'Russian', 'Chineză': 'Chinese',
+        'Japoneză': 'Japanese', 'Coreeană': 'Korean', 'Arabă': 'Arabic',
+        'Hindi': 'Hindi', 'Turcă': 'Turkish', 'Olandeză': 'Dutch',
+        'Poloneză': 'Polish', 'Suedeză': 'Swedish', 'Daneză': 'Danish',
+        'Norvegiană': 'Norwegian', 'Finlandeză': 'Finnish', 'Cehă': 'Czech',
+        'Maghiară': 'Hungarian', 'Greacă': 'Greek', 'Ebraică': 'Hebrew',
+        'Thailandeză': 'Thai', 'Vietnameză': 'Vietnamese',
+        'Indoneziană': 'Indonesian', 'Malaieză': 'Malay', 'Ucraineană': 'Ukrainian',
+        'Bulgară': 'Bulgarian', 'Croată': 'Croatian',
+        '🔍 Detectare automată': '🔍 Auto-detect',
+        'Auto (limba detectată)': 'Auto (detected language)',
+    }
+};
+
+function translateLanguageSelects(lang) {
+    const map = LANGUAGE_NAMES[lang] || LANGUAGE_NAMES.ro;
+    ['languageSelect', 'targetLanguageSelect', 'sdhLanguage'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        Array.from(sel.options).forEach(opt => {
+            const roName = opt.getAttribute('data-ro-name');
+            if (roName && map[roName] !== undefined) {
+                opt.textContent = map[roName];
+            }
+        });
+    });
+}
+
+function applyUILanguage(lang) {
+    const t = UI_STRINGS[lang] || UI_STRINGS.ro;
+    document.documentElement.lang = lang;
+
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (t[key] === undefined) return;
+
+        const icon = el.querySelector(':scope > .icon');
+        if (icon) {
+            el.innerHTML = icon.outerHTML + ' ' + t[key];
+        } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            el.placeholder = t[key];
+        } else {
+            el.textContent = t[key];
+        }
+    });
+
+    const appTitle = document.querySelector('.app-title');
+    if (appTitle) {
+        const icon = appTitle.querySelector('.icon');
+        appTitle.innerHTML = icon ? icon.outerHTML + ' ' + t['app-title'] : t['app-title'];
+    }
+
+    translateLanguageSelects(lang);
+}
+
+// Init UI language
+(function() {
+    const saved = localStorage.getItem('uiLang') || 'ro';
+    const sel = document.getElementById('uiLanguageSelect');
+    if (sel) {
+        sel.value = saved;
+        applyUILanguage(saved);
+    }
+})();
