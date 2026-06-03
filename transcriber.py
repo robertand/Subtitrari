@@ -159,14 +159,26 @@ class WhisperTranscriber:
         language: Optional[str] = None,
         window_size: int = 30,
         overlap: int = 5,
-        progress_callback = None
+        progress_callback = None,
+        force_isolate: bool = False
     ) -> Dict[str, Any]:
         """Process large audio files in windows to save memory"""
         try:
             audio, sr = librosa.load(audio_path, sr=16000, mono=True)
+            if force_isolate:
+                audio = self.isolate_voice(audio, sr)
+
             total_duration = len(audio) / sr
             
             if total_duration <= window_size:
+                # Save temporarily if modified
+                if force_isolate:
+                    temp_isolated = Path(f"data/temp/isolated_{time.time()}.wav")
+                    temp_isolated.parent.mkdir(parents=True, exist_ok=True)
+                    sf.write(temp_isolated, audio, sr)
+                    res = self.transcribe_audio(str(temp_isolated), model_name, language, progress_callback)
+                    temp_isolated.unlink(missing_ok=True)
+                    return res
                 return self.transcribe_audio(audio_path, model_name, language, progress_callback)
             
             segments = []

@@ -528,23 +528,58 @@ def process_task(task):
             if transcriber.current_model and transcriber.current_model != transcriber.models.get(Config.COHERE_MODEL):
                 transcriber.unload_model()
 
-            # NU mai trimite prompt, deoarece Cohere nu îl suportă oficial
-            result = transcriber.transcribe_with_cohere_chunked(
+            result = transcriber.transcribe_with_cohere(
                 audio_path, 
-                language=lang,
-                chunk_duration=30,  # Ajustează în funcție de necesități
+                language=language if language else 'en',
                 use_forced_alignment=True
             )
         else:
-            # Whisper transcription
-            result = transcriber.transcribe_with_windowing(
-                str(audio_path),
-                model_name=model_name,
-                language=language,
-                window_size=60,
-                overlap=10,
-                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            # Whisper Triple-Pass Transcription
+            task.message = 'Triple-Pass Transcription...'
+            window = task.options.get('transcribe_window', 60)
+            overlap = task.options.get('transcribe_overlap', 10)
+
+            # Pass 1: UI Settings
+            update_task_progress(task, 15, "Pass 1/3 (UI settings)...")
+            res1 = transcriber.transcribe_with_windowing(
+                str(audio_path), model_name=model_name, language=language,
+                window_size=window, overlap=overlap
             )
+
+            # Pass 2: Forced Isolation + Alternative Window (45s)
+            update_task_progress(task, 30, "Pass 2/3 (Isolated/45s)...")
+            res2 = transcriber.transcribe_with_windowing(
+                str(audio_path), model_name=model_name, language=language,
+                window_size=45, overlap=10, force_isolate=True
+            )
+
+            # Pass 3: Extended Window (60s) + Regular Settings
+            update_task_progress(task, 45, "Pass 3/3 (Regular/60s)...")
+            res3 = transcriber.transcribe_with_windowing(
+                str(audio_path), model_name=model_name, language=language,
+                window_size=60, overlap=22
+            )
+
+            # Use RoMistral to refine and merge the results ONLY if language is Romanian
+            is_romanian = language == 'ro' or res1.get('language') == 'ro'
+
+            if task.options.get('use_romistral') and is_romanian:
+                task.message = "RoMistral Refinement..."
+                merged_segments = segmenter.merge_passes_romistral(res1, res2, res3, translator)
+                result = {
+                    'segments': merged_segments,
+                    'language': res1.get('language', 'unknown'),
+                    'text': " ".join([s.get('text', '') for s in merged_segments])
+                }
+            else:
+                # Merge passes without LLM for other languages
+                task.message = "Merging passes..."
+                merged_segments = segmenter.merge_passes_simple(res1, res2, res3)
+                result = {
+                    'segments': merged_segments,
+                    'language': res1.get('language', 'unknown'),
+                    'text': " ".join([s['text'] for s in merged_segments])
+                }
         
         # Segment
         task.progress = 60
