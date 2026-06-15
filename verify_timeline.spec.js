@@ -4,6 +4,11 @@ test('verify timeline interactions and localized UI', async ({ page }) => {
   // Go to the app
   await page.goto('http://localhost:5000');
 
+  // Handle Login
+  await page.fill('#loginUsername', 'TestUser');
+  await page.click('button:has-text("Intră")');
+  await expect(page.locator('#loginModal')).toBeHidden();
+
   // Verify localization and default settings
   const isolateLabel = page.locator('label', { hasText: 'Izolare Voce' });
   await expect(isolateLabel).toBeVisible();
