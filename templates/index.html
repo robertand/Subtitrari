@@ -43,6 +43,35 @@
             </div>
         </header>
 
+        <!-- Movie Library -->
+        <div class="glass-container library-section" id="librarySection">
+            <div class="section-header-row">
+                <h2 class="section-title" data-i18n="library-title">
+                    <span class="icon">🎬</span>
+                    Librărie Filme
+                </h2>
+                <button class="btn btn-sm btn-primary" onclick="addToLibrary()" data-i18n="library_add">➕ Adaugă Film</button>
+            </div>
+            <div class="library-grid" id="libraryGrid">
+                <div class="library-empty" data-i18n="library_empty">Niciun film încă. Apasă "Adaugă Film" pentru a începe.</div>
+            </div>
+            <div class="library-upload-progress" id="libraryUploadProgress" style="display: none;">
+                <div class="progress-header">
+                    <span class="progress-filename" id="libraryUploadFilename"></span>
+                    <span class="progress-percentage" id="libraryUploadPercentage">0%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="libraryUploadBar"></div>
+                    <div class="chunk-indicators" id="libraryChunkIndicators"></div>
+                </div>
+                <div class="progress-stats">
+                    <span id="libraryUploadSpeed">0 MB/s</span>
+                    <span id="libraryUploadETA">Calculare...</span>
+                </div>
+            </div>
+            <input type="file" id="libraryFileInput" accept=".mp4,.avi,.mov,.mkv,.webm,.mxf" style="display: none;">
+        </div>
+
         <!-- Video Player -->
         <div class="glass-container player-section" id="playerSection" style="display: none;">
             <h2 class="section-title" data-i18n="preview-title">
@@ -54,9 +83,14 @@
                     <source src="" type="video/mp4">
                 </video>
                 <div class="subtitle-overlay" id="subtitleOverlay"></div>
+                <div class="subtitle-overlay overlay-top" id="subtitleOverlayTop"></div>
             </div>
             <div class="player-controls">
                 <button class="btn btn-sm" onclick="togglePlayPause()" data-i18n="play_pause">⏯️ Play/Pause</button>
+                <button class="btn btn-sm btn-secondary" onclick="skipBackward(5)" data-i18n="rew_5s" title="Rewind 5s">⏪ -5s</button>
+                <button class="btn btn-sm btn-secondary" onclick="skipForward(5)" data-i18n="ffwd_5s" title="Forward 5s">⏩ +5s</button>
+                <button class="btn btn-sm btn-secondary" onclick="jumpToPreviousSubtitle()" data-i18n="prev_sub" title="Previous Subtitle">⬆ Sub</button>
+                <button class="btn btn-sm btn-secondary" onclick="jumpToNextSubtitle()" data-i18n="next_sub" title="Next Subtitle">⬇ Sub</button>
                 <select id="subtitleLangSelect" class="setting-select btn-sm"
                         style="width: auto; margin: 0 10px; display: none;"
                         onchange="changeSubtitleLanguage(this.value)">
@@ -68,7 +102,12 @@
                         <span data-i18n="subtitle_top">Subtitrare Sus</span>
                     </label>
                 </div>
+                <label class="checkbox-label" style="margin-left: 10px;">
+                    <input type="checkbox" id="dualSubtitleToggle" class="setting-checkbox" onchange="toggleDualSubtitles()">
+                    <span data-i18n="dual_subtitles">Original + Traducere</span>
+                </label>
                 <button class="btn btn-sm btn-secondary" onclick="toggleStylingPanel()" style="margin-left: 10px;" data-i18n="styling">🎨 Stil</button>
+                <button class="btn btn-sm btn-secondary" onclick="toggleShortcutsPanel()" style="margin-left: 5px;" title="Keyboard Shortcuts">⌨️</button>
                 <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
                 <div class="zoom-controls">
                     <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(0.8)">➖</button>
@@ -170,6 +209,21 @@
             </div>
         </div>
 
+        <!-- Keyboard Shortcuts Panel -->
+        <div class="glass-container styling-panel" id="shortcutsPanel" style="display: none;">
+            <div class="section-header-row">
+                <h2 class="section-title" data-i18n="shortcuts_title">⌨️ Scurtături Tastatură</h2>
+                <button class="btn btn-sm btn-secondary" onclick="toggleShortcutsPanel()" data-i18n="close">Close</button>
+            </div>
+            <div class="setting-group">
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 12px;" data-i18n="shortcuts_hint">Click pe o comandă și apasă noua combinație de taste pentru a o personaliza.</p>
+                <div id="shortcutsList"></div>
+                <div style="margin-top: 12px; display: flex; gap: 8px;">
+                    <button class="btn btn-sm btn-primary" onclick="resetShortcuts()" data-i18n="shortcuts_reset">🔄 Resetare</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Main Grid -->
         <div class="main-grid">
             <!-- Left Panel - Upload & Settings -->
@@ -251,7 +305,7 @@
                             <label class="setting-label" data-i18n="transcription_engine">Motor Transcriere</label>
                             <select id="engineSelect" class="setting-select" onchange="toggleEngineOptions()">
                                 <option value="whisper">OpenAI Whisper</option>
-                                <option value="nemo" selected>NVIDIA NeMo Parakeet v3</option>
+                                <option value="nemo" selected>NVIDIA NeMo (Parakeet / Nemotron)</option>
                             </select>
                         </div>
 
@@ -264,9 +318,9 @@
                                 <option value="medium">Medium</option>
                                 <option value="large">Large</option>
                                 <option value="large-v3" selected>Large v3 (cel mai precis)</option>
-                                <option value="large-v3-turbo">Large v3 Turbo (Rapid & Precis)</option>
                                 <option value="selimc/whisper-large-v3-turbo-turkish">Turkish Turbo (High Accuracy)</option>
                                 <option value="Farazzzzzzz/whisper-tiny_to_korean_accent2">Korean Accent (Optimized)</option>
+                                <option value="large-v3-turbo">Large v3 Turbo (Rapid & Precis)</option>
                             </select>
                             <div class="model-status" id="modelStatus">
                                 <span class="model-loading" style="display: none;">⏳ Se încarcă...</span>
@@ -383,6 +437,25 @@
                         </div>
                     </div>
 
+                        <!-- Segment Spacing -->
+                        <div class="setting-group">
+                            <div class="setting-row">
+                                <div class="setting-half">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="segmentSpacingToggle" class="setting-checkbox" checked
+                                               onchange="document.getElementById('segmentSpacingRange').disabled = !this.checked">
+                                        <span data-i18n="segment_spacing">Spațiu între segmente</span>
+                                    </label>
+                                </div>
+                                <div class="setting-half">
+                                    <label class="setting-label" data-i18n="segment_spacing_frames" style="font-size:0.8rem;">Cadre (1-25)</label>
+                                    <input type="range" id="segmentSpacingRange" min="1" max="25" value="2" step="1"
+                                           oninput="segmentSpacingVal.textContent = this.value">
+                                    <span id="segmentSpacingVal" style="font-size:0.8rem;color:var(--text-muted);">2</span>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Multi-Pass Option -->
                         <div class="setting-group">
                             <label class="checkbox-label">
@@ -454,8 +527,8 @@
                                     </div>
                                     <div class="setting-half">
                                         <label class="setting-label" data-i18n="ocr_frame_skip">Sări frame-uri</label>
-                                        <input type="range" id="ocrFrameSkip" min="0" max="10" value="2" step="1" oninput="ocrFrameSkipVal.textContent = this.value">
-                                        <span id="ocrFrameSkipVal" style="font-size: 0.8rem; color: var(--text-muted);">2</span>
+                                        <input type="range" id="ocrFrameSkip" min="0" max="50" value="20" step="1" oninput="ocrFrameSkipVal.textContent = this.value">
+                                        <span id="ocrFrameSkipVal" style="font-size: 0.8rem; color: var(--text-muted);">20</span>
                                     </div>
                                 </div>
                                 <div class="setting-row">
@@ -659,6 +732,10 @@
                             </div>
                             <div id="additionalLanguages"></div>
                         </div> <!-- End advancedTranslationContainer -->
+
+                        <div class="setting-group" style="margin-top: 16px;">
+                            <button class="btn btn-primary" id="retranslateBtn" onclick="retranslate()" data-i18n="retranslate_btn">🔄 Refă traducerea</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -692,6 +769,7 @@
                         </h2>
                         <div class="toolbar-actions">
                             <button class="btn btn-sm" onclick="addSegment()" data-i18n="add_segment">➕ Adaugă segment</button>
+                            <button class="btn btn-sm" onclick="translateExisting()" id="translateExistingBtn" style="display:none" data-i18n="translate_btn">🌐 Tradu</button>
                             <button class="btn btn-sm" onclick="copyFullText()" data-i18n="copy_text">📋 Copiază text</button>
                             <button class="btn btn-sm" onclick="saveProject()" data-i18n="save_project">📂 Salvează Proiect</button>
                             <button class="btn btn-sm" onclick="loadProjectClick()" data-i18n="load_project">📂 Încarcă Proiect</button>
@@ -744,6 +822,34 @@
         <span class="fab-icon">▶️</span>
         <span class="fab-text" data-i18n="startBtn">Start Procesare</span>
     </button>
+
+    <!-- OCR Post-Processing Dialog -->
+    <div class="modal" id="ocrModal" style="display: none;">
+        <div class="modal-content glass-container">
+            <h2 data-i18n="ocr_post_title">🔍 Extragere Subtitrări Hardcodate (OCR)</h2>
+            <div class="modal-body">
+                <p style="margin-bottom: 16px;" data-i18n="ocr_post_desc">
+                    Video-ul conține posibile subtitrări încorporate (hardcoded). 
+                    Dorești să selectezi zone din timeline pentru a le extrage cu OCR?
+                </p>
+                <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="ocrPostSelectionMode" class="setting-checkbox" checked>
+                        <span data-i18n="ocr_post_enable_selection">Activează Mod Selecție pe timeline</span>
+                    </label>
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label" data-i18n="ocr_frame_skip">Sări frame-uri</label>
+                    <input type="range" id="ocrPostFrameSkip" min="0" max="50" value="20" step="1" oninput="ocrPostFrameSkipVal.textContent = this.value">
+                    <span id="ocrPostFrameSkipVal" style="font-size: 0.8rem; color: var(--text-muted);">20</span>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="acceptOcrPost()" data-i18n="ocr_post_yes">Da, extrage subtitrările</button>
+                <button class="btn btn-secondary" onclick="closeOcrModal()" data-i18n="ocr_post_no">Nu, mulțumesc</button>
+            </div>
+        </div>
+    </div>
 
     <!-- DOCX Export Dialog -->
     <div class="modal" id="docxModal" style="display: none;">

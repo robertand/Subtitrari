@@ -13,6 +13,7 @@ const state = {
     videoPlayer: null,
     activeSegment: -1,
     displayLanguage: 'original',
+    detectedLanguage: null,
     videoUrl: null,
     isVideo: false,
     pixelsPerSecond: 50,
@@ -40,6 +41,14 @@ const state = {
         offsetY: 50,
         offsetX: 0,
         isTop: false
+    })),
+    dualSubtitle: localStorage.getItem('subtitrari_dualSubtitle') === 'true',
+    shortcuts: JSON.parse(localStorage.getItem('subtitrari_shortcuts') || JSON.stringify({
+        'play_pause': 'Space',
+        'ffwd_5s': 'ArrowRight',
+        'rew_5s': 'ArrowLeft',
+        'next_sub': 'ArrowDown',
+        'prev_sub': 'ArrowUp',
     }))
 };
 
@@ -66,6 +75,7 @@ const elements = {
     playerSection: document.getElementById('playerSection'),
     mainVideoPlayer: document.getElementById('mainVideoPlayer'),
     subtitleOverlay: document.getElementById('subtitleOverlay'),
+    subtitleOverlayTop: document.getElementById('subtitleOverlayTop'),
     timeDisplay: document.getElementById('timeDisplay'),
     resultsSection: document.getElementById('resultsSection'),
     segmentsList: document.getElementById('segmentsList'),
@@ -99,12 +109,20 @@ document.addEventListener('DOMContentLoaded', () => {
     initVideoPlayer();
     checkDevice();
     initSettingsListeners();
+    initLibrary();
     // Initialize Presets
     initPresets();
     // Add centered class to main-grid (animation start state)
     document.querySelector('.main-grid')?.classList.add('centered');
     // Restore saved subtitle styles
     restoreSubStyles();
+    // Initialize dual subtitle toggle
+    const dualToggle = document.getElementById('dualSubtitleToggle');
+    if (dualToggle) {
+        dualToggle.checked = state.dualSubtitle;
+    }
+    // Sync advanced mode toggle with UI
+    toggleAdvancedMode();
 });
 
 function restoreSubStyles() {
@@ -153,6 +171,244 @@ function initUpload() {
         const file = e.target.files[0];
         if (file) handleFile(file);
     });
+}
+
+// === Movie Library ===
+let libraryItems = [];
+
+async function initLibrary() {
+    document.getElementById('libraryFileInput').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (file) await uploadToLibrary(file);
+        e.target.value = '';
+    });
+    await loadLibrary();
+}
+
+async function loadLibrary() {
+    try {
+        const resp = await fetch('/api/library');
+        libraryItems = await resp.json();
+        renderLibrary();
+    } catch (e) {
+        console.error('Library load error:', e);
+    }
+}
+
+function renderLibrary() {
+    const grid = document.getElementById('libraryGrid');
+    if (!grid) return;
+
+    if (libraryItems.length === 0) {
+        grid.innerHTML = '<div class="library-empty">' + __('library_empty') + '</div>';
+        return;
+    }
+
+    grid.innerHTML = '';
+    libraryItems.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'library-item';
+        div.title = item.filename;
+
+        const hasThumb = item.has_thumbnail;
+        const thumbUrl = hasThumb ? `/api/library/thumbnail/${item.id}` : '';
+
+        div.innerHTML = `
+            <button class="library-item-delete" onclick="event.stopPropagation(); deleteLibraryMovie('${item.id}')" title="Șterge">✕</button>
+            ${hasThumb
+                ? `<img class="library-thumb" src="${thumbUrl}" alt="${item.filename}" loading="lazy">`
+                : `<div class="library-thumb-placeholder">🎬</div>`
+            }
+            <div class="library-item-info">
+                <div class="library-item-name">${escapeHtml(item.filename)}</div>
+                <div class="library-item-size">${formatFileSize(item.size)}</div>
+            </div>
+        `;
+
+        div.addEventListener('click', () => loadLibraryMovie(item.id));
+        grid.appendChild(div);
+    });
+}
+
+async function addToLibrary() {
+    document.getElementById('libraryFileInput').click();
+}
+
+async function uploadToLibrary(file) {
+    if (!file.type.startsWith('video/')) {
+        const ext = file.name.split('.').pop().toLowerCase();
+        if (!['mp4', 'avi', 'mov', 'mkv', 'webm', 'mxf'].includes(ext)) {
+            showToast('Doar fișiere video sunt acceptate în librărie', 'warning');
+            return;
+        }
+    }
+
+    let chunkSize = 10 * 1024 * 1024;
+    let totalChunks = Math.ceil(file.size / chunkSize);
+
+    // Show progress bar
+    const progressSection = document.getElementById('libraryUploadProgress');
+    const grid = document.getElementById('libraryGrid');
+    grid.style.display = 'none';
+    progressSection.style.display = 'block';
+    document.getElementById('libraryUploadFilename').textContent = file.name;
+
+    try {
+        const initResponse = await fetch('/api/upload/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filename: file.name,
+                total_size: file.size,
+                total_chunks: totalChunks,
+                library: true
+            })
+        });
+
+        if (!initResponse.ok) {
+            const errData = await initResponse.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${initResponse.status}`);
+        }
+
+        const initData = await initResponse.json();
+        const sessionId = initData.session_id;
+        if (initData.chunk_size) chunkSize = initData.chunk_size;
+        totalChunks = Math.ceil(file.size / chunkSize);
+
+        // Create chunk indicators
+        const indicators = document.getElementById('libraryChunkIndicators');
+        indicators.innerHTML = '';
+        const maxDots = Math.min(totalChunks, 100);
+        const step = Math.max(1, Math.ceil(totalChunks / maxDots));
+        for (let i = 0; i < totalChunks; i += step) {
+            const dot = document.createElement('div');
+            dot.className = 'chunk-dot';
+            dot.dataset.chunk = i;
+            indicators.appendChild(dot);
+        }
+
+        const startTime = Date.now();
+        let uploadedBytes = 0;
+
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * chunkSize;
+            const end = Math.min(start + chunkSize, file.size);
+            const chunk = file.slice(start, end);
+
+            const formData = new FormData();
+            formData.append('session_id', sessionId);
+            formData.append('chunk_number', i);
+            formData.append('chunk', chunk);
+
+            const resp = await fetch('/api/upload/chunk', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Chunk ${i} failed (HTTP ${resp.status})`);
+            }
+
+            uploadedBytes += chunk.size;
+            const progress = (uploadedBytes / file.size) * 100;
+
+            // Update progress bar
+            document.getElementById('libraryUploadBar').style.width = progress + '%';
+            document.getElementById('libraryUploadPercentage').textContent = Math.round(progress) + '%';
+
+            // Update chunk dots
+            const dots = indicators.children;
+            const dotIdx = Math.floor((i / totalChunks) * dots.length);
+            for (let d = 0; d <= dotIdx && d < dots.length; d++) {
+                dots[d].classList.add('uploaded');
+            }
+
+            // Speed & ETA
+            const elapsed = (Date.now() - startTime) / 1000;
+            if (elapsed > 0) {
+                const speed = uploadedBytes / elapsed;
+                document.getElementById('libraryUploadSpeed').textContent = formatSpeed(speed);
+                const remaining = (file.size - uploadedBytes) / speed;
+                document.getElementById('libraryUploadETA').textContent = formatTime(remaining);
+            }
+        }
+
+        const completeResponse = await fetch('/api/upload/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: sessionId,
+                total_chunks: totalChunks,
+                library: true
+            })
+        });
+
+        if (!completeResponse.ok) {
+            const errData = await completeResponse.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${completeResponse.status}`);
+        }
+
+        // Done
+        progressSection.style.display = 'none';
+        grid.style.display = '';
+        showToast(`"${file.name}" adăugat în librărie!`, 'success');
+        await loadLibrary();
+
+    } catch (e) {
+        console.error('Library upload error:', e);
+        progressSection.style.display = 'none';
+        document.getElementById('libraryGrid').style.display = '';
+        showToast('Eroare: ' + e.message, 'error');
+    }
+}
+
+async function loadLibraryMovie(id) {
+    const item = libraryItems.find(i => i.id === id);
+    if (!item) return;
+
+    showToast(`Se încarcă "${item.filename}"...`, 'info');
+
+    try {
+        const resp = await fetch(`/api/library/${id}/load`, {
+            method: 'POST'
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.error || 'Load failed');
+        }
+        const data = await resp.json();
+
+        state.taskId = data.task_id;
+        state.filePath = data.file_path;
+        state.isVideo = item.is_video;
+
+        const videoUrl = item.is_video ? `/api/video/${data.task_id}` : `/api/audio/${data.task_id}`;
+        state.videoUrl = videoUrl;
+        elements.playerSection.style.display = 'block';
+        elements.mainVideoPlayer.src = videoUrl;
+        elements.mainVideoPlayer.load();
+
+        elements.startButton.style.display = 'flex';
+        showToast(`"${item.filename}" încărcat! Poți începe procesarea.`, 'success');
+    } catch (e) {
+        showToast('Eroare: ' + e.message, 'error');
+    }
+}
+
+async function deleteLibraryMovie(id) {
+    const item = libraryItems.find(i => i.id === id);
+    if (!item) return;
+    if (!confirm(`Sigur vrei să ștergi "${item.filename}" din librărie?`)) return;
+
+    try {
+        const resp = await fetch(`/api/library/${id}`, { method: 'DELETE' });
+        if (!resp.ok) throw new Error('Delete failed');
+        showToast(`"${item.filename}" șters din librărie`, 'info');
+        await loadLibrary();
+    } catch (e) {
+        showToast('Eroare la ștergere', 'error');
+    }
 }
 
 async function initLanguages() {
@@ -574,12 +830,14 @@ async function startProcessing() {
         use_sdh: document.getElementById('useSDH').checked,
         sdh_confidence: document.getElementById('sdhConfidence').value,
         sdh_language: document.getElementById('sdhLanguage').value,
-        sdh_use_llm: document.getElementById('sdhUseLLM').checked
+        sdh_use_llm: document.getElementById('sdhUseLLM').checked,
+        segment_spacing: document.getElementById('segmentSpacingToggle').checked
+            ? parseInt(document.getElementById('segmentSpacingRange').value) : 0
     };
     
     // NeMo Language Check
     if (options.engine === 'nemo' && options.language !== 'auto') {
-        const nemoSupported = ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"];
+        const nemoSupported = ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk", "ar", "hi", "ja", "ko", "vi", "tr", "nb", "zh", "he", "th"];
         if (!nemoSupported.includes(options.language)) {
             showToast(`Atenție: NeMo Parakeet v3 nu suportă limba selectată (${options.language}). Se va folosi auto-detect.`, 'warning');
         }
@@ -714,6 +972,7 @@ function showResults(result) {
     state.translations = result.translations || {};
     state.rawText = result.raw_text || '';
     state.displayLanguage = 'original';
+    state.detectedLanguage = result.language || null;
     
     console.log('Showing results:', state.segments.length, 'segments');
     console.log('Is video:', state.isVideo);
@@ -722,6 +981,7 @@ function showResults(result) {
     elements.processingSection.style.display = 'none';
     elements.resultsSection.style.display = 'block';
     elements.playerSection.style.display = 'block';
+    document.querySelector('.main-grid')?.classList.remove('centered');
     
     // Use the server-side file once processed
     const mediaUrl = state.isVideo ? `/api/video/${state.taskId}` : `/api/audio/${state.taskId}`;
@@ -763,6 +1023,74 @@ function showResults(result) {
     // Check if OCR was not used and we have a video — offer OCR post-processing
     if (result.ocr_not_used) {
         setTimeout(() => showOcrPostDialog(), 500);
+    }
+
+    // Show translate button if no translations yet
+    updateTranslateButton();
+}
+
+function updateTranslateButton() {
+    const btn = document.getElementById('translateExistingBtn');
+    if (!btn) return;
+    const hasSegmentText = state.segments.some(s => s.text && s.text.trim());
+    const hasTranslations = Object.keys(state.translations).length > 0;
+    btn.style.display = hasSegmentText && !hasTranslations ? 'inline-block' : 'none';
+}
+
+async function translateExisting() {
+    const texts = state.segments.map(s => s.text).filter(t => t && t.trim());
+    if (texts.length === 0) {
+        showToast('Nu există segmente de tradus', 'warning');
+        return;
+    }
+
+    const sourceLang = state.detectedLanguage || document.getElementById('languageSelect').value || 'auto';
+    const targetLang = document.getElementById('targetLanguageSelect').value;
+    const engine = document.getElementById('translationEngine').value;
+
+    const payload = {
+        texts: texts,
+        source_lang: sourceLang,
+        target_lang: targetLang,
+        engine: engine,
+        context: document.getElementById('translationContext').value,
+        llm_model: document.getElementById('llmModelSelect').value
+    };
+
+    if (engine === 'llm_api') {
+        payload.api_provider = document.getElementById('llmApiProvider').value;
+        payload.api_key = document.getElementById('llmApiKey').value;
+        payload.api_model = document.getElementById('llmApiModel').value;
+        payload.api_url = document.getElementById('llmApiUrl').value;
+    }
+
+    const btn = document.getElementById('translateExistingBtn');
+    if (btn) btn.textContent = '⏳ Traduc...';
+
+    try {
+        const resp = await fetch('/api/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (data.error) {
+            showToast('Eroare traducere: ' + data.error, 'error');
+            return;
+        }
+        state.translations[targetLang] = data.translations;
+        state.detectedLanguage = data.source_lang;
+        showToast('Traducere finalizată', 'success');
+        displayTranslations();
+        updateSubtitleLangSelect();
+        document.getElementById('translationResults').style.display = 'block';
+        document.getElementById('translationTab').style.display = 'inline-block';
+        updateTranslateButton();
+        changeSubtitleLanguage(targetLang);
+    } catch (e) {
+        showToast('Eroare de rețea: ' + e.message, 'error');
+    } finally {
+        if (btn) btn.innerHTML = '🌐 Tradu';
     }
 }
 
@@ -937,6 +1265,13 @@ function updateTranslationSegment(lang, index, text) {
     }
 }
 
+async function retranslate() {
+    const btn = document.getElementById('retranslateBtn');
+    if (btn) btn.innerHTML = '⏳...';
+    await translateExisting();
+    if (btn) btn.innerHTML = __('retranslate_btn');
+}
+
 function toggleRefinerOptions() {
     const enabled = document.getElementById('useRomistral').checked;
     const group = document.getElementById('refinerModelGroup');
@@ -962,7 +1297,7 @@ const defaultPresets = {
     "default": {
         name: "Standard (Optimized)",
         engine: "nemo",
-        model: "large-v3",
+        model: "parakeet-v3",
         window: 50,
         overlap: 25,
         use_vad: true,
@@ -1543,6 +1878,150 @@ function togglePlayPause() {
     }
 }
 
+function skipForward(seconds) {
+    const video = elements.mainVideoPlayer;
+    if (video) {
+        video.currentTime = Math.min(video.duration, video.currentTime + seconds);
+    }
+}
+
+function skipBackward(seconds) {
+    const video = elements.mainVideoPlayer;
+    if (video) {
+        video.currentTime = Math.max(0, video.currentTime - seconds);
+    }
+}
+
+function jumpToNextSubtitle() {
+    const video = elements.mainVideoPlayer;
+    if (!video || state.segments.length === 0) return;
+    const wasPaused = video.paused;
+    const currentTime = video.currentTime;
+    let next = state.segments.find(s => s.start > currentTime + 0.1);
+    if (!next) next = state.segments[state.segments.length - 1];
+    video.currentTime = next.start;
+    if (wasPaused) {
+        const onSeek = () => {
+            video.pause();
+            video.removeEventListener('seeked', onSeek);
+        };
+        video.addEventListener('seeked', onSeek);
+    }
+}
+
+function jumpToPreviousSubtitle() {
+    const video = elements.mainVideoPlayer;
+    if (!video || state.segments.length === 0) return;
+    const wasPaused = video.paused;
+    const currentTime = video.currentTime;
+    let prev = null;
+    for (let i = state.segments.length - 1; i >= 0; i--) {
+        if (state.segments[i].end < currentTime - 0.1) {
+            prev = state.segments[i];
+            break;
+        }
+    }
+    if (!prev) prev = state.segments[0];
+    video.currentTime = prev.start;
+    if (wasPaused) {
+        const onSeek = () => {
+            video.pause();
+            video.removeEventListener('seeked', onSeek);
+        };
+        video.addEventListener('seeked', onSeek);
+    }
+}
+
+function toggleDualSubtitles() {
+    state.dualSubtitle = document.getElementById('dualSubtitleToggle').checked;
+    localStorage.setItem('subtitrari_dualSubtitle', state.dualSubtitle);
+    updateSubStyles();
+    if (elements.mainVideoPlayer) {
+        updateSubtitleDisplay(elements.mainVideoPlayer.currentTime);
+    }
+}
+
+function toggleShortcutsPanel() {
+    const panel = document.getElementById('shortcutsPanel');
+    if (panel) {
+        const visible = panel.style.display !== 'none';
+        panel.style.display = visible ? 'none' : 'block';
+        if (!visible) renderShortcutsList();
+    }
+}
+
+function renderShortcutsList() {
+    const container = document.getElementById('shortcutsList');
+    if (!container) return;
+    container.innerHTML = '';
+    const labels = {
+        'play_pause': __('play_pause'),
+        'ffwd_5s': __('ffwd_5s'),
+        'rew_5s': __('rew_5s'),
+        'next_sub': __('next_sub'),
+        'prev_sub': __('prev_sub'),
+    };
+    Object.entries(state.shortcuts).forEach(([action, key]) => {
+        const row = document.createElement('div');
+        row.className = 'shortcut-row';
+        row.innerHTML = `
+            <span class="shortcut-label">${escapeHtml(labels[action] || action)}</span>
+            <span class="shortcut-key" data-action="${action}">${escapeHtml(key)}</span>
+        `;
+        const keyEl = row.querySelector('.shortcut-key');
+        keyEl.addEventListener('click', () => {
+            keyEl.contentEditable = true;
+            keyEl.classList.add('editing');
+            keyEl.textContent = '...';
+            keyEl.focus();
+            const onKeyDown = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let combo = '';
+                if (e.ctrlKey) combo += 'Ctrl+';
+                if (e.altKey) combo += 'Alt+';
+                if (e.shiftKey) combo += 'Shift+';
+                if (e.code) {
+                    const keyName = e.code.replace('Key', '').replace('Digit', '');
+                    if (!['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'ShiftLeft', 'ShiftRight', 'MetaLeft', 'MetaRight'].includes(e.code)) {
+                        combo += keyName;
+                        state.shortcuts[action] = combo;
+                        localStorage.setItem('subtitrari_shortcuts', JSON.stringify(state.shortcuts));
+                        keyEl.textContent = combo;
+                        keyEl.contentEditable = false;
+                        keyEl.classList.remove('editing');
+                        document.removeEventListener('keydown', onKeyDown);
+                        showToast(__('shortcuts_hint'), 'success');
+                    }
+                }
+            };
+            document.addEventListener('keydown', onKeyDown);
+            const onBlur = () => {
+                keyEl.contentEditable = false;
+                keyEl.classList.remove('editing');
+                keyEl.textContent = state.shortcuts[action];
+                document.removeEventListener('keydown', onKeyDown);
+                keyEl.removeEventListener('blur', onBlur);
+            };
+            keyEl.addEventListener('blur', onBlur);
+        });
+        container.appendChild(row);
+    });
+}
+
+function resetShortcuts() {
+    state.shortcuts = {
+        'play_pause': 'Space',
+        'ffwd_5s': 'ArrowRight',
+        'rew_5s': 'ArrowLeft',
+        'next_sub': 'ArrowDown',
+        'prev_sub': 'ArrowUp',
+    };
+    localStorage.setItem('subtitrari_shortcuts', JSON.stringify(state.shortcuts));
+    renderShortcutsList();
+    showToast(__('shortcuts_reset'), 'success');
+}
+
 function updateSubtitleDisplay(currentTime) {
     const activeIndices = [];
     state.segments.forEach((s, i) => {
@@ -1550,6 +2029,8 @@ function updateSubtitleDisplay(currentTime) {
             activeIndices.push(i);
         }
     });
+
+    const dual = state.dualSubtitle && Object.keys(state.translations).length > 0;
 
     if (activeIndices.length > 0) {
         const html = activeIndices.map(index => {
@@ -1566,9 +2047,26 @@ function updateSubtitleDisplay(currentTime) {
 
         elements.subtitleOverlay.innerHTML = html;
         elements.subtitleOverlay.style.display = 'block';
+
+        // Dual subtitle mode: show original text on top overlay
+        if (dual) {
+            const topHtml = activeIndices.map(index => {
+                let text = state.segments[index].text;
+                const lines = text.split('\n');
+                return lines.map(line => escapeHtml(line)).join('<br>');
+            }).join('<br><hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.3); margin: 4px 0;"><br>');
+
+            elements.subtitleOverlayTop.innerHTML = topHtml;
+            elements.subtitleOverlayTop.style.display = 'block';
+        } else {
+            elements.subtitleOverlayTop.textContent = '';
+            elements.subtitleOverlayTop.style.display = 'none';
+        }
     } else {
         elements.subtitleOverlay.textContent = '';
         elements.subtitleOverlay.style.display = 'none';
+        elements.subtitleOverlayTop.textContent = '';
+        elements.subtitleOverlayTop.style.display = 'none';
     }
 }
 
@@ -1808,18 +2306,61 @@ function switchTab(tab) {
 // === Toast Notifications ===
 function showToast(message, type = 'info') {
     const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `
-        <span>${getToastIcon(type)}</span>
-        <span>${message}</span>
-    `;
-    
+    const isPersistent = (type === 'error' || type === 'warning');
+    toast.className = `toast toast-${type}${isPersistent ? ' toast-persistent' : ''}`;
+
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'toast-msg';
+    msgDiv.textContent = message;
+
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'toast-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'toast-btn';
+    copyBtn.title = 'Copy message';
+    copyBtn.innerHTML = '📋';
+    copyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(message).catch(() => {});
+        copyBtn.innerHTML = '✅';
+        setTimeout(() => { copyBtn.innerHTML = '📋'; }, 1500);
+    });
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'toast-btn';
+    dismissBtn.title = 'Dismiss';
+    dismissBtn.innerHTML = '✕';
+    dismissBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dismissToast(toast);
+    });
+
+    actionsDiv.appendChild(copyBtn);
+    if (isPersistent) {
+        actionsDiv.appendChild(dismissBtn);
+    }
+
+    const iconSpan = document.createElement('span');
+    iconSpan.textContent = getToastIcon(type);
+
+    toast.appendChild(iconSpan);
+    toast.appendChild(msgDiv);
+    toast.appendChild(actionsDiv);
+
     elements.toastContainer.appendChild(toast);
-    
-    setTimeout(() => {
-        toast.classList.add('toast-fade-out');
-        setTimeout(() => toast.remove(), 300);
-    }, 4000);
+
+    if (!isPersistent) {
+        setTimeout(() => {
+            dismissToast(toast);
+        }, 4000);
+    }
+}
+
+function dismissToast(toast) {
+    if (toast.classList.contains('toast-fade-out')) return;
+    toast.classList.add('toast-fade-out');
+    setTimeout(() => toast.remove(), 300);
 }
 
 function getToastIcon(type) {
@@ -1930,42 +2471,77 @@ function changeSubtitleLanguage(lang) {
 }
 
 // === Keyboard Shortcuts ===
+function matchesShortcut(e, shortcut) {
+    const parts = shortcut.split('+');
+    const key = parts.pop();
+    const hasCtrl = parts.includes('Ctrl');
+    const hasAlt = parts.includes('Alt');
+    const hasShift = parts.includes('Shift');
+    if (e.ctrlKey !== hasCtrl) return false;
+    if (e.altKey !== hasAlt) return false;
+    if (e.shiftKey !== hasShift) return false;
+    if (key === 'Space') return e.code === 'Space';
+    return e.code === key;
+}
+
 document.addEventListener('keydown', (e) => {
-    // Space for play/pause (doar când nu e focus pe un input)
-    if (e.code === 'Space' && document.activeElement === document.body) {
-        e.preventDefault();
-        togglePlayPause();
+    const isInputFocused = document.activeElement !== document.body
+        && document.activeElement?.tagName !== 'BODY';
+
+    // Allow typing in inputs
+    if (isInputFocused) return;
+
+    // Built-in shortcuts that can't be overridden
+    if (e.code === 'Escape') {
+        const shortcutsPanel = document.getElementById('shortcutsPanel');
+        if (shortcutsPanel?.style.display !== 'none') {
+            shortcutsPanel.style.display = 'none';
+            e.preventDefault();
+            return;
+        }
+        closeDOCXDialog();
+        return;
     }
-    
-    // Ctrl+S for SRT export
     if (e.ctrlKey && e.code === 'KeyS') {
         e.preventDefault();
         exportSRT();
+        return;
     }
-    
-    // Ctrl+D for DOCX export
     if (e.ctrlKey && e.code === 'KeyD') {
         e.preventDefault();
         showDOCXDialog();
+        return;
     }
-    
-    // Escape to close modals
-    if (e.code === 'Escape') {
-        closeDOCXDialog();
-    }
-    
-    // Săgeți pentru navigare între segmente
-    if (e.code === 'ArrowUp' && state.activeSegment > 0) {
+
+    // Configurable shortcuts
+    if (matchesShortcut(e, state.shortcuts.play_pause)) {
         e.preventDefault();
-        seekToTime(state.segments[state.activeSegment - 1].start);
+        togglePlayPause();
+        return;
     }
-    if (e.code === 'ArrowDown' && state.activeSegment < state.segments.length - 1) {
+    if (matchesShortcut(e, state.shortcuts.ffwd_5s)) {
         e.preventDefault();
-        seekToTime(state.segments[state.activeSegment + 1].start);
+        skipForward(5);
+        return;
+    }
+    if (matchesShortcut(e, state.shortcuts.rew_5s)) {
+        e.preventDefault();
+        skipBackward(5);
+        return;
+    }
+    if (matchesShortcut(e, state.shortcuts.next_sub)) {
+        e.preventDefault();
+        jumpToNextSubtitle();
+        return;
+    }
+    if (matchesShortcut(e, state.shortcuts.prev_sub)) {
+        e.preventDefault();
+        jumpToPreviousSubtitle();
+        return;
     }
 
     // Delete pentru ștergere segment selectat
-    if (e.code === 'Delete' && state.selectedSegment !== null && document.activeElement === document.body) {
+    if (e.code === 'Delete' && state.selectedSegment !== null) {
         e.preventDefault();
         deleteSegment(state.selectedSegment);
     }
@@ -2404,6 +2980,7 @@ function updateNemoModels() {
 
     modelSelect.innerHTML = `
         <option value="parakeet-v3" selected>Parakeet TDT v3 (Fast & Accurate)</option>
+        <option value="nemotron-3.5">Nemotron 3.5 ASR (Streaming, 40 limbi)</option>
         <option value="canary">Canary-1b (Multilingual/Translation)</option>
     `;
 }
@@ -2481,6 +3058,38 @@ function toggleStylingPanel() {
     }
 }
 
+function applyOverlayStyles(overlay, isTop) {
+    if (!overlay) return;
+    overlay.style.fontFamily = state.subStyles.fontFamily;
+    overlay.style.fontSize = (isTop ? state.subStyles.fontSize - 2 : state.subStyles.fontSize) + 'px';
+    overlay.style.color = isTop ? '#ccc' : state.subStyles.color;
+
+    const r = parseInt(state.subStyles.bgColor.slice(1, 3), 16);
+    const g = parseInt(state.subStyles.bgColor.slice(3, 5), 16);
+    const b = parseInt(state.subStyles.bgColor.slice(5, 7), 16);
+    overlay.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${state.subStyles.bgOpacity})`;
+
+    if (state.subStyles.effect === 'shadow') {
+        overlay.style.textShadow = '2px 2px 4px rgba(0,0,0,0.8)';
+    } else if (state.subStyles.effect === 'outline') {
+        const c = state.subStyles.outlineColor;
+        overlay.style.textShadow = `-1px -1px 0 ${c}, 1px -1px 0 ${c}, -1px 1px 0 ${c}, 1px 1px 0 ${c}`;
+    } else {
+        overlay.style.textShadow = 'none';
+    }
+
+    if (!isTop) {
+        if (state.subStyles.isTop) {
+            overlay.style.top = state.subStyles.offsetY + 'px';
+            overlay.style.bottom = 'auto';
+        } else {
+            overlay.style.bottom = state.subStyles.offsetY + 'px';
+            overlay.style.top = 'auto';
+        }
+        overlay.style.transform = `translateX(calc(-50% + ${state.subStyles.offsetX}px))`;
+    }
+}
+
 function updateSubStyles() {
     const overlay = elements.subtitleOverlay;
     if (!overlay) return;
@@ -2503,37 +3112,10 @@ function updateSubStyles() {
     const outlineGroup = document.getElementById('subOutlineColorGroup');
     if (outlineGroup) outlineGroup.style.display = state.subStyles.effect === 'outline' ? 'block' : 'none';
 
-    // Apply to Overlay
-    overlay.style.fontFamily = state.subStyles.fontFamily;
-    overlay.style.fontSize = state.subStyles.fontSize + 'px';
-    overlay.style.color = state.subStyles.color;
-
-    // Background with opacity
-    const r = parseInt(state.subStyles.bgColor.slice(1, 3), 16);
-    const g = parseInt(state.subStyles.bgColor.slice(3, 5), 16);
-    const b = parseInt(state.subStyles.bgColor.slice(5, 7), 16);
-    overlay.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${state.subStyles.bgOpacity})`;
-
-    // Effects
-    if (state.subStyles.effect === 'shadow') {
-        overlay.style.textShadow = '2px 2px 4px rgba(0,0,0,0.8)';
-    } else if (state.subStyles.effect === 'outline') {
-        const c = state.subStyles.outlineColor;
-        overlay.style.textShadow = `-1px -1px 0 ${c}, 1px -1px 0 ${c}, -1px 1px 0 ${c}, 1px 1px 0 ${c}`;
-    } else {
-        overlay.style.textShadow = 'none';
-    }
-
-    // Position
-    if (state.subStyles.isTop) {
-        overlay.style.top = state.subStyles.offsetY + 'px';
-        overlay.style.bottom = 'auto';
-    } else {
-        overlay.style.bottom = state.subStyles.offsetY + 'px';
-        overlay.style.top = 'auto';
-    }
-
-    overlay.style.transform = `translateX(calc(-50% + ${state.subStyles.offsetX}px))`;
+    // Apply to both overlays
+    applyOverlayStyles(overlay, false);
+    const topOverlay = document.getElementById('subtitleOverlayTop');
+    if (topOverlay) applyOverlayStyles(topOverlay, true);
 
     // Persist to localStorage
     localStorage.setItem('subtitrari_subStyles', JSON.stringify(state.subStyles));
@@ -2553,7 +3135,9 @@ function saveProject() {
         segments: state.segments,
         translations: state.translations,
         subStyles: state.subStyles,
-        rawText: state.rawText
+        rawText: state.rawText,
+        isVideo: state.isVideo,
+        detectedLanguage: state.detectedLanguage
     };
 
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
@@ -2585,6 +3169,8 @@ async function importProject(input) {
             state.taskId = projectData.taskId;
             state.filePath = projectData.filePath;
             state.rawText = projectData.rawText || "";
+            state.isVideo = projectData.isVideo === true;
+            state.detectedLanguage = projectData.detectedLanguage || null;
 
             if (projectData.subStyles) {
                 state.subStyles = projectData.subStyles;
@@ -2601,6 +3187,9 @@ async function importProject(input) {
                 document.getElementById('subtitleTopToggle').checked = state.subStyles.isTop || false;
                 updateSubStyles();
             }
+
+            // Try to load matching media from library
+            await loadMediaForProject();
 
             // Show results view
             showResults({
@@ -2619,19 +3208,86 @@ async function importProject(input) {
     reader.readAsText(file);
 }
 
+async function loadMediaForProject() {
+    // First try the old taskId path
+    if (state.taskId) {
+        const mediaUrl = state.isVideo ? `/api/video/${state.taskId}` : `/api/audio/${state.taskId}`;
+        try {
+            const resp = await fetch(mediaUrl, { method: 'HEAD' });
+            if (resp.ok) {
+                // Media still available at old path
+                state.videoUrl = mediaUrl;
+                elements.playerSection.style.display = 'block';
+                elements.mainVideoPlayer.src = mediaUrl;
+                elements.mainVideoPlayer.load();
+                return;
+            }
+        } catch (_) {}
+    }
+
+    // Fallback: look for file in library
+    try {
+        const libResp = await fetch('/api/library');
+        const library = await libResp.json();
+        const fileName = state.filePath ? state.filePath.replace(/\\/g, '/').split('/').pop() : '';
+        const entry = fileName ? library.find(e => e.filename === fileName) : null;
+        if (entry) {
+            const resp = await fetch(`/api/library/${entry.id}/load`, { method: 'POST' });
+            if (resp.ok) {
+                const data = await resp.json();
+                state.taskId = data.task_id;
+                state.filePath = data.file_path;
+                state.isVideo = entry.is_video;
+                const mediaUrl = state.isVideo ? `/api/video/${data.task_id}` : `/api/audio/${data.task_id}`;
+                state.videoUrl = mediaUrl;
+                elements.playerSection.style.display = 'block';
+                elements.mainVideoPlayer.src = mediaUrl;
+                elements.mainVideoPlayer.load();
+                return;
+            }
+        }
+    } catch (_) {}
+
+    // No media found — show player section anyway so results are visible
+    elements.playerSection.style.display = 'block';
+}
+
 function showOcrPostDialog() {
-    if (!confirm('Dorești să selectezi zone din timeline pentru a extrage subtitrări hardcodate (OCR) pe tot ecranul?')) return;
+    document.getElementById('ocrModal').style.display = 'flex';
+    document.getElementById('ocrPostFrameSkip').value = 20;
+    document.getElementById('ocrPostFrameSkipVal').textContent = '20';
+}
+
+function acceptOcrPost() {
+    closeOcrModal();
 
     // Enable OCR
     document.getElementById('useOCR').checked = true;
     toggleOCRSettings();
 
+    // Set frame skip from modal
+    const skip = parseInt(document.getElementById('ocrPostFrameSkip').value);
+    document.getElementById('ocrFrameSkip').value = skip;
+    document.getElementById('ocrFrameSkipVal').textContent = skip;
+
     // Set region to full screen
     const fullRadio = document.querySelector('input[name="ocrRegionMode"][value="full"]');
     if (fullRadio) fullRadio.checked = true;
 
-    showToast('Selectează zonele dorite pe timeline, apasă "Reprocesează Zonele"', 'info');
+    // Enable selection mode if checked
+    const enableSelection = document.getElementById('ocrPostSelectionMode').checked;
+    if (enableSelection) {
+        document.getElementById('selectionModeToggle').checked = true;
+        showToast('Mod Selecție activat! Selectează zone pe timeline și apasă "Reprocesează Zonele".', 'info');
+    } else {
+        showToast('Setări OCR aplicate. Poți ajusta zonele din timeline.', 'info');
+    }
+
     document.getElementById('reprocessBtn').scrollIntoView({ behavior: 'smooth' });
+}
+
+function closeOcrModal() {
+    document.getElementById('ocrModal').style.display = 'none';
 }
 
 async function verifyGpuOcr() {
@@ -2695,6 +3351,8 @@ const UI_STRINGS = {
         'deduplicate': 'Elimină repetiții',
         'sequential': 'Segmente secvențiale',
         'diarization': 'Diarizare (Speakeri)',
+        'segment_spacing': 'Spațiu între segmente',
+        'segment_spacing_frames': 'Cadre (1-25)',
         'multipass': 'Multi-Pass (Acuratețe Maximă - LENT)',
         'ocr': '🔍 Citire subtitrări hardcodate (OCR)',
         'ocr_region': 'Zonă de căutare',
@@ -2745,9 +3403,19 @@ const UI_STRINGS = {
         'original_tab': 'Original',
         'raw_tab': 'Raw',
         'translation_tab': 'Traducere',
+        'translate_btn': '🌐 Tradu',
+        'retranslate_btn': '🔄 Refă traducerea',
         'play_pause': '⏯️ Play/Pause',
+        'ffwd_5s': '⏩ +5s',
+        'rew_5s': '⏪ -5s',
+        'prev_sub': '⬆ Sub Anterior',
+        'next_sub': '⬇ Sub Următor',
+        'dual_subtitles': 'Original + Traducere',
         'subtitle_top': 'Subtitrare Sus',
         'styling': '🎨 Stil',
+        'shortcuts_title': '⌨️ Scurtături Tastatură',
+        'shortcuts_hint': 'Click pe o comandă și apasă noua combinație de taste pentru a o personaliza.',
+        'shortcuts_reset': '🔄 Resetare',
         'close': 'Close',
         'font_family': 'Font Family',
         'font_size': 'Mărime (px)',
@@ -2792,7 +3460,16 @@ const UI_STRINGS = {
         'processing_complete': 'Procesare completă!',
         'processing_cancelled': 'Procesare anulată',
         'processing_error_results': 'Eroare la obținerea rezultatelor',
+        'library-title': '🎬 Librărie Filme',
+        'library_add': '➕ Adaugă Film',
+        'library_empty': 'Niciun film încă. Apasă "Adaugă Film" pentru a începe.',
+        'library_loading': '📂 Se încarcă filmul...',
         'processing_error_unknown': 'Eroare necunoscută',
+        'ocr_post_title': '🔍 Extragere Subtitrări Hardcodate (OCR)',
+        'ocr_post_desc': 'Video-ul conține posibile subtitrări încorporate (hardcoded). Dorești să selectezi zone din timeline pentru a le extrage cu OCR?',
+        'ocr_post_enable_selection': 'Activează Mod Selecție pe timeline',
+        'ocr_post_yes': 'Da, extrage subtitrările',
+        'ocr_post_no': 'Nu, mulțumesc',
     },
     en: {
         'app-title': 'Subtitles PRO',
@@ -2828,6 +3505,8 @@ const UI_STRINGS = {
         'deduplicate': 'Remove Duplicates',
         'sequential': 'Sequential Segments',
         'diarization': 'Diarization (Speakers)',
+        'segment_spacing': 'Space between segments',
+        'segment_spacing_frames': 'Frames (1-25)',
         'multipass': 'Multi-Pass (Max Accuracy - SLOW)',
         'ocr': '🔍 Read hardcoded subtitles (OCR)',
         'ocr_region': 'Search Region',
@@ -2878,9 +3557,19 @@ const UI_STRINGS = {
         'original_tab': 'Original',
         'raw_tab': 'Raw',
         'translation_tab': 'Translation',
+        'translate_btn': '🌐 Translate',
+        'retranslate_btn': '🔄 Redo translation',
         'play_pause': '⏯️ Play/Pause',
+        'ffwd_5s': '⏩ +5s',
+        'rew_5s': '⏪ -5s',
+        'prev_sub': '⬆ Prev Sub',
+        'next_sub': '⬇ Next Sub',
+        'dual_subtitles': 'Original + Translation',
         'subtitle_top': 'Top Subtitle',
         'styling': '🎨 Style',
+        'shortcuts_title': '⌨️ Keyboard Shortcuts',
+        'shortcuts_hint': 'Click a command then press the new key combination to customize.',
+        'shortcuts_reset': '🔄 Reset',
         'close': 'Close',
         'font_family': 'Font Family',
         'font_size': 'Font Size (px)',
@@ -2925,7 +3614,16 @@ const UI_STRINGS = {
         'processing_complete': 'Processing complete!',
         'processing_cancelled': 'Processing cancelled',
         'processing_error_results': 'Error fetching results',
+        'library-title': '🎬 Movie Library',
+        'library_add': '➕ Add Movie',
+        'library_empty': 'No movies yet. Click "Add Movie" to get started.',
+        'library_loading': '📂 Loading movie...',
         'processing_error_unknown': 'Unknown error',
+        'ocr_post_title': '🔍 Extract Hardcoded Subtitles (OCR)',
+        'ocr_post_desc': 'The video may contain hardcoded subtitles. Would you like to select zones on the timeline to extract them via OCR?',
+        'ocr_post_enable_selection': 'Enable Selection Mode on timeline',
+        'ocr_post_yes': 'Yes, extract subtitles',
+        'ocr_post_no': 'No, thanks',
     }
 };
 
