@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - Subtitrari</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .admin-container { max-width: 800px; margin: 40px auto; padding: 24px; }
+        .admin-nav { display: flex; gap: 8px; margin-bottom: 24px; align-items: center; flex-wrap: wrap; }
+        .admin-nav a { color: var(--text-secondary); text-decoration: none; padding: 8px 16px; border-radius: 8px; transition: var(--transition); }
+        .admin-nav a:hover { background: rgba(255,255,255,0.05); color: white; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--glass-border); }
+        th { color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; }
+        .add-form { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; align-items: flex-end; }
+        .add-form input, .add-form select { padding: 8px 12px; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius: var(--radius-sm); color: white; }
+        .add-form input:focus { outline: none; border-color: var(--primary); }
+        .add-form select option { background: #1a1a2e; }
+        .btn-sm { padding: 8px 16px; font-size: 0.85rem; }
+        .btn-danger { background: var(--danger); }
+        .flash { padding: 12px; border-radius: var(--radius-sm); margin-bottom: 16px; display: none; }
+        .flash.success { background: rgba(0,200,83,0.2); border: 1px solid var(--success); display: block; color: var(--success); }
+        .flash.error { background: rgba(255,23,68,0.2); border: 1px solid var(--danger); display: block; color: var(--danger); }
+        .lang-select { margin-left: auto; background: rgba(255,255,255,0.05); color: white; border: 1px solid var(--glass-border); border-radius: 6px; padding: 4px 12px; font-size: 0.85rem; cursor: pointer; }
+        .lang-select:focus { outline: none; border-color: var(--primary); }
+        .password-form { display: flex; gap: 6px; flex-wrap: wrap; }
+        .password-form input { padding: 4px 8px; font-size: 0.8rem; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius: 4px; color: white; width: 100px; }
+        .password-form input:focus { outline: none; border-color: var(--primary); }
+        .btn-xs { padding: 4px 10px; font-size: 0.75rem; border-radius: 4px; }
+        .inline-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    </style>
+</head>
+<body>
+    <div class="glass-container admin-container">
+        <div class="admin-nav">
+            <a href="/" id="navBack">⬅ Înapoi la aplicație</a>
+            <a href="#" id="navLogout" onclick="logout()">🚪 Deconectare</a>
+            <select id="uiLanguageSelect" class="lang-select" onchange="switchLang(this.value)">
+                <option value="ro">RO</option>
+                <option value="en">EN</option>
+            </select>
+        </div>
+
+        <h1 class="section-title"><span class="icon">⚙️</span> <span id="title">Panou Administrare</span></h1>
+
+        <div class="flash" id="flashMsg"></div>
+
+        <h3 style="margin-bottom:12px">➕ <span id="addUserLabel">Adaugă Utilizator</span></h3>
+        <div class="add-form" id="addForm">
+            <input type="text" id="newUser" placeholder="Nume utilizator" style="flex:1; min-width:140px;">
+            <input type="password" id="newPass" placeholder="Parolă" style="flex:1; min-width:120px;">
+            <select id="newRole" style="flex:0 0 auto;">
+                <option value="user">Utilizator</option>
+                <option value="admin">Admin</option>
+            </select>
+            <button class="btn btn-sm btn-primary" id="addBtn" onclick="addUser()">Adaugă</button>
+        </div>
+
+        <h3 style="margin-bottom:12px">👥 <span id="usersLabel">Utilizatori</span></h3>
+        <table>
+            <thead><tr>
+                <th id="thUser">Utilizator</th>
+                <th id="thRole">Rol</th>
+                <th id="thCreated">Creat</th>
+                <th id="thPass">Parolă</th>
+                <th id="thActions">Acțiuni</th>
+            </tr></thead>
+            <tbody id="usersTable"></tbody>
+        </table>
+
+        <hr style="border-color: var(--glass-border); margin: 32px 0;">
+
+        <h3 style="margin-bottom:12px">🤖 <span id="geminiLabel" data-prefix="">Google Gemini API</span></h3>
+        <div class="add-form" id="geminiForm">
+            <input type="password" id="geminiApiKey" class="setting-input"
+                   placeholder="Cheie API Gemini" style="flex:1; min-width:200px;">
+            <button class="btn btn-sm btn-primary" id="saveGeminiBtn" onclick="saveGeminiKey()">
+                <span id="saveGeminiLabel" data-prefix="">Salvează Cheia</span>
+            </button>
+            <button class="btn btn-sm" id="testGeminiBtn" onclick="testGeminiKey()" style="display:none;">
+                <span id="testGeminiLabel" data-prefix="">Testează</span>
+            </button>
+        </div>
+        <div id="geminiStatus" style="font-size:0.9rem; margin-top:4px; color: var(--text-secondary);">
+            <span id="geminiStatusText"></span>
+        </div>
+        <div id="geminiModelList" style="font-size:0.85rem; margin-top:8px; color: var(--text-secondary);"></div>
+    </div>
+
+    <script>
+    const UI = {
+        ro: {
+            back: 'Înapoi la aplicație', logout: 'Deconectare', title: 'Panou Administrare',
+            addUser: 'Adaugă Utilizator', username: 'Nume utilizator', password: 'Parolă',
+            addBtn: 'Adaugă', users: 'Utilizatori', role: 'Rol', created: 'Creat',
+            actions: 'Acțiuni', delete: 'Șterge', changePass: 'Schimbă parola',
+            confirmDel: 'Ștergi utilizatorul', newPassPlaceholder: 'parolă nouă',
+            added: 'Adăugat', deleted: 'Șters', passChanged: 'Parolă schimbată',
+            error: 'Eroare', loadError: 'Eroare la încărcare', fillFields: 'Completează toate câmpurile',
+            cancel: 'Anulează', roleUser: 'Utilizator',
+            geminiLabel: 'Google Gemini API', saveGemini: 'Salvează Cheia', testGemini: 'Testează',
+            geminiOk: 'Conectat', geminiNok: 'Neconfigurat',
+        },
+        en: {
+            back: 'Back to app', logout: 'Logout', title: 'Admin Panel',
+            addUser: 'Add User', username: 'Username', password: 'Password',
+            addBtn: 'Add', users: 'Users', role: 'Role', created: 'Created',
+            actions: 'Actions', delete: 'Delete', changePass: 'Change password',
+            confirmDel: 'Delete user', newPassPlaceholder: 'new password',
+            added: 'Added', deleted: 'Deleted', passChanged: 'Password changed',
+            error: 'Error', loadError: 'Load error', fillFields: 'Fill all fields',
+            cancel: 'Cancel', roleUser: 'User',
+            geminiLabel: 'Google Gemini API', saveGemini: 'Save Key', testGemini: 'Test',
+            geminiOk: 'Connected', geminiNok: 'Not configured',
+        }
+    };
+
+    let lang = 'ro';
+
+    function t(key) {
+        const m = UI[lang] || UI.ro;
+        return m[key] !== undefined ? m[key] : key;
+    }
+
+    function applyLang() {
+        const byId = {
+            navBack: 'back', navLogout: 'logout', title: 'title',
+            addUserLabel: 'addUser', addBtn: 'addBtn', usersLabel: 'users',
+            thUser: 'username', thRole: 'role', thCreated: 'created', thActions: 'actions', thPass: 'password',
+            geminiLabel: 'geminiLabel', saveGeminiLabel: 'saveGemini', testGeminiLabel: 'testGemini',
+        };
+        for (const [id, key] of Object.entries(byId)) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = el.dataset.prefix ? el.dataset.prefix + ' ' + t(key) : t(key);
+        }
+        document.getElementById('newUser').placeholder = t('username');
+        document.getElementById('newPass').placeholder = t('password');
+        document.querySelector('#newRole option[value="user"]').textContent = t('roleUser');
+        // Re-render Gemini status with translated text
+        loadGeminiStatus();
+    }
+
+    function switchLang(l) {
+        lang = l;
+        localStorage.setItem('uiLang', l);
+        applyLang();
+    }
+
+    async function loadUsers() {
+        const r = await fetch('/api/admin/users');
+        if (!r.ok) { showFlash(t('loadError'), 'error'); return; }
+        const d = await r.json();
+        const tbody = document.getElementById('usersTable');
+        tbody.innerHTML = d.users.map(u => `
+            <tr>
+                <td>${u.username}</td>
+                <td>${u.role}</td>
+                <td>${new Date(u.created_at * 1000).toLocaleDateString()}</td>
+                <td>
+                    <div class="password-form">
+                        <input type="password" id="pw_${u.username}" placeholder="${t('newPassPlaceholder')}">
+                        <button class="btn btn-xs" onclick="changePass('${u.username}')">${t('changePass')}</button>
+                    </div>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-danger" onclick="deleteUser('${u.username}')" ${u.username === '{{ username }}' ? 'disabled' : ''}>${t('delete')}</button>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    async function addUser() {
+        const u = document.getElementById('newUser').value.trim();
+        const p = document.getElementById('newPass').value;
+        const r = document.getElementById('newRole').value;
+        if (!u || !p) { showFlash(t('fillFields'), 'error'); return; }
+        const res = await fetch('/api/admin/users', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username: u, password: p, role: r})
+        });
+        if (res.ok) {
+            showFlash(t('added') + ': ' + u, 'success');
+            document.getElementById('newUser').value = '';
+            document.getElementById('newPass').value = '';
+            loadUsers();
+        } else {
+            const d = await res.json();
+            showFlash(d.error || t('error'), 'error');
+        }
+    }
+
+    async function deleteUser(u) {
+        if (!confirm(t('confirmDel') + ' "' + u + '"?')) return;
+        const res = await fetch('/api/admin/users/' + encodeURIComponent(u), { method: 'DELETE' });
+        if (res.ok) { showFlash(t('deleted') + ': ' + u, 'success'); loadUsers(); }
+        else { const d = await res.json(); showFlash(d.error || t('error'), 'error'); }
+    }
+
+    async function changePass(u) {
+        const pw = document.getElementById('pw_' + u).value;
+        if (!pw) { showFlash(t('fillFields'), 'error'); return; }
+        const res = await fetch('/api/admin/password', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username: u, new_password: pw})
+        });
+        if (res.ok) {
+            showFlash(t('passChanged') + ': ' + u, 'success');
+            document.getElementById('pw_' + u).value = '';
+        } else {
+            const d = await res.json();
+            showFlash(d.error || t('error'), 'error');
+        }
+    }
+
+    async function logout() {
+        await fetch('/api/logout', { method: 'POST' });
+        window.location.href = '/login';
+    }
+
+    async function loadGeminiStatus() {
+        const r = await fetch('/api/admin/gemini-key');
+        if (!r.ok) return;
+        const d = await r.json();
+        const input = document.getElementById('geminiApiKey');
+        const status = document.getElementById('geminiStatus');
+        const testBtn = document.getElementById('testGeminiBtn');
+        if (d.configured) {
+            input.placeholder = '●●●●●●●● ' + d.key_preview;
+            status.innerHTML = '✅ ' + t('geminiOk');
+            testBtn.style.display = 'inline-block';
+        } else {
+            status.innerHTML = '❌ ' + t('geminiNok');
+            testBtn.style.display = 'none';
+        }
+    }
+
+    async function saveGeminiKey() {
+        const key = document.getElementById('geminiApiKey').value.trim();
+        if (!key) { showFlash(t('fillFields'), 'error'); return; }
+        const r = await fetch('/api/admin/gemini-key', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({api_key: key})
+        });
+        if (r.ok) {
+            showFlash('Gemini API key saved', 'success');
+            document.getElementById('geminiApiKey').value = '';
+            loadGeminiStatus();
+        } else {
+            const d = await r.json();
+            showFlash(d.error || 'Error', 'error');
+        }
+    }
+
+    async function testGeminiKey() {
+        const btn = document.getElementById('testGeminiBtn');
+        btn.disabled = true;
+        btn.textContent = 'Testing...';
+        const r = await fetch('/api/models/gemini');
+        const d = await r.json();
+        const modelsLabel = lang === 'ro' ? 'Modele disponibile:' : 'Available models:';
+        const list = document.getElementById('geminiModelList');
+        list.innerHTML = '<strong>' + modelsLabel + '</strong><br>' + d.models.map(m => '• ' + m).join('<br>');
+        btn.disabled = false;
+        btn.innerHTML = '<span id="testGeminiLabel">' + t('testGemini') + '</span>';
+    }
+
+    function showFlash(msg, type) {
+        const el = document.getElementById('flashMsg');
+        el.textContent = msg;
+        el.className = 'flash ' + type;
+        el.style.display = 'block';
+        setTimeout(() => { el.style.display = 'none'; }, 3000);
+    }
+
+    const savedLang = localStorage.getItem('uiLang') || 'ro';
+    document.getElementById('uiLanguageSelect').value = savedLang;
+    switchLang(savedLang);
+    loadUsers();
+    loadGeminiStatus();
+    </script>
+</body>
+</html>

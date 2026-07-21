@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subtitratorul PRO - Transcriere și Traducere Audio/Video</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Header -->
+        <header class="glass-container">
+            <div class="header-content">
+                <div class="header-left">
+                    <h1 class="app-title">
+                        <span class="icon">🎙️</span>
+                        Subtitratorul PRO
+                    </h1>
+                    <div class="header-menu">
+                        <div class="dropdown">
+                            <button class="dropdown-toggle" id="fileMenuBtn" data-i18n="fileMenuBtn">Fișier ▾</button>
+                            <div class="dropdown-content">
+                                <button class="dropdown-item" onclick="loadProjectClick()" data-i18n="openProject">📂 Deschide Proiect (.json)</button>
+                                <button class="dropdown-item" onclick="saveProject()" data-i18n="saveProject">💾 Exportă ca Proiect (.json)</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="header-lang">
+                    <select id="uiLanguageSelect" class="lang-select" onchange="switchUILanguage(this.value)">
+                        <option value="ro">RO</option>
+                        <option value="en">EN</option>
+                    </select>
+                </div>
+                <div class="header-stats">
+                    <span class="device-badge" id="deviceBadge" style="display:none;">
+                        <span class="status-dot"></span>
+                        <span id="deviceText">CPU</span>
+                    </span>
+                    <div class="dropdown user-dropdown">
+                        <span class="device-badge dropdown-toggle" style="margin-left:8px; cursor:pointer;">
+                            👤 {{ username }} ▾
+                        </span>
+                        <div class="dropdown-content dropdown-content-right">
+                            <button class="dropdown-item" onclick="document.getElementById('settingsSection').scrollIntoView({behavior:'smooth'})" data-i18n="user_settings">⚙️ Setări</button>
+                            <button class="dropdown-item" onclick="logout()" data-i18n="user_logout">🚪 Deconectare</button>
+                        </div>
+                    </div>
+                    {% if session and session.get('role') == 'admin' %}
+                    <span class="device-badge" style="margin-left:4px; cursor:pointer;" onclick="window.location.href='/admin'" title="Admin">
+                        ⚙️ Admin
+                    </span>
+                    {% endif %}
+                </div>
+            </div>
+        </header>
+
+        <!-- Movie Library -->
+        <div class="glass-container library-section" id="librarySection">
+            <div class="section-header-row">
+                <h2 class="section-title" data-i18n="library-title">
+                    <span class="icon">🎬</span>
+                    Librărie Filme
+                </h2>
+                <button class="btn btn-sm btn-primary" onclick="addToLibrary()" data-i18n="library_add">➕ Adaugă Film</button>
+            </div>
+            <div class="library-grid" id="libraryGrid">
+                <div class="library-empty" data-i18n="library_empty">Niciun film încă. Apasă "Adaugă Film" pentru a începe.</div>
+            </div>
+            <div class="library-upload-progress" id="libraryUploadProgress" style="display: none;">
+                <div class="progress-header">
+                    <span class="progress-filename" id="libraryUploadFilename"></span>
+                    <span class="progress-percentage" id="libraryUploadPercentage">0%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="libraryUploadBar"></div>
+                    <div class="chunk-indicators" id="libraryChunkIndicators"></div>
+                </div>
+                <div class="progress-stats">
+                    <span id="libraryUploadSpeed">0 MB/s</span>
+                    <span id="libraryUploadETA">Calculare...</span>
+                </div>
+            </div>
+            <input type="file" id="libraryFileInput" accept=".mp4,.avi,.mov,.mkv,.webm,.mxf" style="display: none;">
+        </div>
+
+        <!-- Video Player -->
+        <div class="glass-container player-section" id="playerSection" style="display: none;">
+            <h2 class="section-title" data-i18n="preview-title">
+                <span class="icon">▶️</span>
+                Preview & Player
+            </h2>
+            <div class="video-container">
+                <video id="mainVideoPlayer" controls>
+                    <source src="" type="video/mp4">
+                </video>
+                <div class="subtitle-overlay" id="subtitleOverlay"></div>
+                <div class="subtitle-overlay overlay-top" id="subtitleOverlayTop"></div>
+            </div>
+            <div class="player-controls">
+                <button class="btn btn-sm" onclick="togglePlayPause()" data-i18n="play_pause">⏯️ Play/Pause</button>
+                <button class="btn btn-sm btn-secondary" onclick="skipBackward(5)" data-i18n="rew_5s" title="Rewind 5s">⏪ -5s</button>
+                <button class="btn btn-sm btn-secondary" onclick="skipForward(5)" data-i18n="ffwd_5s" title="Forward 5s">⏩ +5s</button>
+                <button class="btn btn-sm btn-secondary" onclick="jumpToPreviousSubtitle()" data-i18n="prev_sub" title="Previous Subtitle">⬆ Sub</button>
+                <button class="btn btn-sm btn-secondary" onclick="jumpToNextSubtitle()" data-i18n="next_sub" title="Next Subtitle">⬇ Sub</button>
+                <select id="subtitleLangSelect" class="setting-select btn-sm"
+                        style="width: auto; margin: 0 10px; display: none;"
+                        onchange="changeSubtitleLanguage(this.value)">
+                    <option value="original" data-i18n="original_tab">Original</option>
+                </select>
+                <div class="subtitle-pos-toggle" style="margin-left: 10px;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="subtitleTopToggle" class="setting-checkbox" onchange="toggleSubtitlePosition()">
+                        <span data-i18n="subtitle_top">Subtitrare Sus</span>
+                    </label>
+                </div>
+                <label class="checkbox-label" style="margin-left: 10px;">
+                    <input type="checkbox" id="dualSubtitleToggle" class="setting-checkbox" onchange="toggleDualSubtitles()">
+                    <span data-i18n="dual_subtitles">Original + Traducere</span>
+                </label>
+                <button class="btn btn-sm btn-secondary" onclick="toggleStylingPanel()" style="margin-left: 10px;" data-i18n="styling">🎨 Stil</button>
+                <button class="btn btn-sm btn-secondary" onclick="toggleShortcutsPanel()" style="margin-left: 5px;" title="Keyboard Shortcuts">⌨️</button>
+                <span class="time-display" id="timeDisplay">00:00:00 / 00:00:00</span>
+                <div class="zoom-controls">
+                    <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(0.8)">➖</button>
+                    <span id="zoomLevel">100%</span>
+                    <button class="btn btn-sm btn-secondary" onclick="zoomTimeline(1.2)">➕</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Timeline Section -->
+        <div class="glass-container timeline-section" id="timelineSection" style="display: none; width: 100%; max-width: none;">
+            <div class="timeline-toolbar">
+                <div class="timeline-actions">
+                    <label class="mode-switch" style="margin-right: 15px; background: rgba(0, 210, 255, 0.1); padding: 5px 12px; border-radius: 20px; border: 1px solid var(--accent);">
+                        <input type="checkbox" id="selectionModeToggle">
+                        <span class="mode-label" style="color: var(--accent);" data-i18n="selection_mode">Mod Selecție</span>
+                    </label>
+                    <button class="btn btn-sm btn-primary" onclick="reprocessZones()" id="reprocessBtn" data-i18n="reprocess">🔄 Re-procesează selecția</button>
+                    <button class="btn btn-sm btn-secondary" onclick="clearSelections()" data-i18n="clear_selections">🧹 Șterge selecțiile</button>
+                    <span class="selection-info" id="selectionInfo" data-i18n="selection_info">Selectează zone pe timeline (Click + Drag)</span>
+                </div>
+                <div class="manual-zone">
+                    <input type="text" id="manualZoneStart" class="setting-input btn-sm" data-i18n="manual_zone_start" placeholder="Start HH:MM:SS" style="width: 120px;">
+                    <input type="text" id="manualZoneEnd" class="setting-input btn-sm" data-i18n="manual_zone_end" placeholder="End HH:MM:SS" style="width: 120px;">
+                    <button class="btn btn-sm" onclick="addManualZone()" data-i18n="add_zone">➕ Adaugă zonă</button>
+                </div>
+            </div>
+            <div class="timeline-container" id="timelineContainer">
+                <div class="timeline-content" id="timelineContent">
+                    <div class="timeline-ruler" id="timelineRuler"></div>
+                    <div class="timeline-selection-overlay" id="timelineSelectionOverlay"></div>
+                    <div class="timeline-segments" id="timelineSegments"></div>
+                    <div class="timeline-playhead" id="timelinePlayhead">
+                        <div class="playhead-handle" id="playheadHandle"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="selectedZonesList" class="selected-zones-list"></div>
+        </div>
+
+        <!-- Subtitle Styling Panel -->
+        <div class="glass-container styling-panel" id="stylingPanel" style="display: none;">
+            <div class="section-header-row">
+                <h2 class="section-title" data-i18n="styling-title">🎨 Personalizare Subtitrare</h2>
+                <button class="btn btn-sm btn-secondary" onclick="toggleStylingPanel()" data-i18n="close">Close</button>
+            </div>
+            <div class="setting-row">
+                <div class="setting-half">
+                    <label class="setting-label">Font Family</label>
+                    <select id="subFontFamily" class="setting-select" onchange="updateSubStyles()">
+                        <option value="Arial" selected>Arial</option>
+                        <option value="'Segoe UI'">Segoe UI</option>
+                        <option value="Tahoma">Tahoma</option>
+                        <option value="Verdana">Verdana</option>
+                        <option value="Courier New">Courier New</option>
+                    </select>
+                </div>
+                <div class="setting-half">
+                    <label class="setting-label">Mărime (px)</label>
+                    <input type="number" id="subFontSize" class="setting-input" value="24" min="12" max="60" oninput="updateSubStyles()">
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="setting-half">
+                    <label class="setting-label">Culoare Text</label>
+                    <input type="color" id="subColor" class="setting-input" value="#ffffff" oninput="updateSubStyles()">
+                </div>
+                <div class="setting-half">
+                    <label class="setting-label">Culoare Fundal</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="color" id="subBgColor" class="setting-input" value="#000000" oninput="updateSubStyles()">
+                        <input type="range" id="subBgOpacity" min="0" max="1" step="0.1" value="0.8" oninput="updateSubStyles()" title="Opacitate">
+                    </div>
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="setting-half">
+                    <label class="setting-label">Efecte</label>
+                    <select id="subEffect" class="setting-select" onchange="updateSubStyles()">
+                        <option value="none">Fără (Simplu)</option>
+                        <option value="shadow" selected>Drop Shadow</option>
+                        <option value="outline">Outline (Contur)</option>
+                    </select>
+                </div>
+                <div class="setting-half" id="subOutlineColorGroup" style="display: none;">
+                    <label class="setting-label">Culoare Contur</label>
+                    <input type="color" id="subOutlineColor" class="setting-input" value="#000000" oninput="updateSubStyles()">
+                </div>
+            </div>
+            <div class="setting-row">
+                <div class="setting-half">
+                    <label class="setting-label">Poziție Y (Offset px)</label>
+                    <input type="number" id="subOffsetY" class="setting-input" value="50" oninput="updateSubStyles()">
+                </div>
+                <div class="setting-half">
+                    <label class="setting-label">Poziție X (Offset px)</label>
+                    <input type="number" id="subOffsetX" class="setting-input" value="0" oninput="updateSubStyles()">
+                </div>
+            </div>
+        </div>
+
+        <!-- Keyboard Shortcuts Panel -->
+        <div class="glass-container styling-panel" id="shortcutsPanel" style="display: none;">
+            <div class="section-header-row">
+                <h2 class="section-title" data-i18n="shortcuts_title">⌨️ Scurtături Tastatură</h2>
+                <button class="btn btn-sm btn-secondary" onclick="toggleShortcutsPanel()" data-i18n="close">Close</button>
+            </div>
+            <div class="setting-group">
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 12px;" data-i18n="shortcuts_hint">Click pe o comandă și apasă noua combinație de taste pentru a o personaliza.</p>
+                <div id="shortcutsList"></div>
+                <div style="margin-top: 12px; display: flex; gap: 8px;">
+                    <button class="btn btn-sm btn-primary" onclick="resetShortcuts()" data-i18n="shortcuts_reset">🔄 Resetare</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="main-grid">
+            <!-- Left Panel - Upload & Settings -->
+            <div class="left-panel">
+                <!-- Upload Section -->
+                <div class="glass-container upload-section">
+                    <h2 class="section-title" data-i18n="upload-title">
+                        <span class="icon">📤</span>
+                        Încărcare Fișier
+                    </h2>
+                    
+                    <div class="upload-area" id="uploadArea">
+                        <div class="upload-content">
+                            <div class="upload-icon">🎬</div>
+                            <h3 data-i18n="upload_drag">Drag & Drop sau Click</h3>
+                            <p class="upload-info">
+                                <span data-i18n="upload_video">Video: MP4, AVI, MOV, MKV, WebM, MXF</span><br>
+                                <span data-i18n="upload_audio">Audio: MP3, WAV, M4A, FLAC, OGG</span>
+                            </p>
+                            <p class="upload-size" data-i18n="upload_max">Maxim 50GB per fișier</p>
+                        </div>
+                        <input type="file" id="fileInput" accept=".mp4,.avi,.mov,.mkv,.webm,.mxf,.mp3,.wav,.m4a,.flac,.ogg" hidden>
+                    </div>
+
+                    <!-- Upload Progress -->
+                    <div class="upload-progress" id="uploadProgress" style="display: none;">
+                        <div class="progress-header">
+                            <span class="progress-filename" id="uploadFilename"></span>
+                            <span class="progress-percentage" id="uploadPercentage">0%</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="uploadBar"></div>
+                            <div class="chunk-indicators" id="chunkIndicators"></div>
+                        </div>
+                        <div class="progress-stats">
+                            <span id="uploadSpeed">0 MB/s</span>
+                            <span id="uploadETA">Calculare...</span>
+                        </div>
+                        <div class="progress-actions">
+                            <button class="btn btn-sm btn-pause" id="pauseUpload" onclick="pauseUpload()" data-i18n="pause">
+                                ⏸️ Pauză
+                            </button>
+                            <button class="btn btn-sm btn-cancel" onclick="cancelUpload()" data-i18n="cancel_upload">
+                                ❌ Anulare
+                            </button>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Settings Section -->
+                <div class="glass-container settings-section" id="settingsSection">
+                    <div class="section-header-row">
+                        <h2 class="section-title" data-i18n="settings-title">
+                            <span class="icon">⚙️</span>
+                            Setări
+                        </h2>
+                    </div>
+                    <div class="settings-tabs">
+                        <button class="settings-tab active" data-tab="basic" onclick="switchSettingsTab('basic')">📋 De Bază</button>
+                        <button class="settings-tab" data-tab="advanced" onclick="switchSettingsTab('advanced')">🔧 Avansate</button>
+                        <button class="settings-tab" data-tab="translation" onclick="switchSettingsTab('translation')">🌍 Traducere</button>
+                    </div>
+
+                    <div class="settings-tab-content" id="settingsBasic">
+                        <div class="setting-group" id="presetGroup">
+                            <label class="setting-label" data-i18n="presets">Presetări</label>
+                            <div style="display: flex; gap: 8px;">
+                                <select id="presetSelect" class="setting-select" onchange="loadPreset(this.value)">
+                                    <option value="default" selected>Standard (Optimized)</option>
+                                </select>
+                                <button class="btn btn-sm btn-secondary" onclick="deletePreset()" title="Șterge preset selectat">🗑️</button>
+                            </div>
+                        </div>
+
+                        <!-- Engine & Model Selection -->
+                        <div class="setting-group">
+                            <label class="setting-label" data-i18n="transcription_engine">Motor Transcriere</label>
+                            <select id="engineSelect" class="setting-select" onchange="toggleEngineOptions()">
+                                <option value="whisper" selected>OpenAI Whisper</option>
+                                <option value="nemo">NVIDIA NeMo (Parakeet / Nemotron)</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group" id="whisperModelGroup">
+                            <label class="setting-label" data-i18n="model">Model</label>
+                            <select id="modelSelect" class="setting-select">
+                                <option value="tiny">Tiny (rapid, memorie redusă)</option>
+                                <option value="base">Base</option>
+                                <option value="small">Small</option>
+                                <option value="medium">Medium</option>
+                                <option value="large">Large</option>
+                                <option value="large-v3" selected>Large v3 (cel mai precis)</option>
+                                <option value="selimc/whisper-large-v3-turbo-turkish">Turkish Turbo (High Accuracy)</option>
+                                <option value="Farazzzzzzz/whisper-tiny_to_korean_accent2">Korean Accent (Optimized)</option>
+                                <option value="large-v3-turbo">Large v3 Turbo (Rapid & Precis)</option>
+                            </select>
+                            <div class="model-status" id="modelStatus">
+                                <span class="model-loading" style="display: none;">⏳ Se încarcă...</span>
+                            </div>
+                        </div>
+
+                    <div class="setting-group" id="coherePromptGroup" style="display: none;">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="useCoherePrompt" class="setting-checkbox">
+                            <span data-i18n="use_cohere_prompt">Folosește Prompt Sistem (Cohere)</span>
+                        </label>
+                        <textarea id="coherePrompt" class="setting-textarea"
+                                  data-i18n="cohere_placeholder" placeholder="Ex: Transcriere pentru un documentar despre natură..."
+                                  rows="2" style="margin-top: 8px;"></textarea>
+                    </div>
+
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="hf_token">Hugging Face Token</label>
+                        <input type="password" id="hfToken" class="setting-input"
+                               placeholder="hf_..." autocomplete="off">
+                        <p class="setting-info" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;" data-i18n="hf_token_info">
+                            Necesar pentru modele gated (ex: pyannote) și diarizare.
+                        </p>
+                    </div>
+
+                    <!-- Language Selection -->
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="source_lang">Limba Sursă</label>
+                        <select id="languageSelect" class="setting-select">
+                            <option value="auto" selected>🔍 Detectare automată</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-group">
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label data-i18n="transcribe_window">Fereastră Transcriere (s)</label>
+                                <input type="number" id="transcribeWindow" class="setting-input"
+                                       value="30" min="10" max="300" step="10">
+                            </div>
+                            <div class="setting-half">
+                                <label data-i18n="transcribe_overlap">Overlap Transcriere (s)</label>
+                                <input type="number" id="transcribeOverlap" class="setting-input"
+                                       value="10" min="0" max="60" step="1">
+                            </div>
+                        </div>
+                    </div>
+                    </div> <!-- End settingsBasic -->
+
+                    <div class="settings-tab-content" id="settingsAdvanced" style="display:none;">
+
+                    <!-- Segmentation Settings -->
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="segmentation">Segmentare</label>
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label data-i18n="min_duration">Durată minimă (s)</label>
+                                <input type="number" id="minDuration" class="setting-input" 
+                                       value="1.0" min="0.5" max="3.0" step="0.1">
+                            </div>
+                            <div class="setting-half">
+                                <label data-i18n="max_duration">Durată maximă (s)</label>
+                                <input type="number" id="maxDuration" class="setting-input" 
+                                       value="5.0" min="3.0" max="10.0" step="0.1">
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label data-i18n="max_chars">Max caractere</label>
+                                <input type="number" id="maxChars" class="setting-input" 
+                                       value="80" min="40" max="120" step="5">
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="useVAD" class="setting-checkbox" checked>
+                                    <span data-i18n="vad">VAD (pauze vorbire)</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="useMargin" class="setting-checkbox" checked>
+                                    <span data-i18n="margin">Marjă 1s după voce</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Processing Options -->
+                    <div class="setting-group">
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="isolateVoice" class="setting-checkbox" checked>
+                                    <span data-i18n="isolate_voice">Izolare Voce</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="deduplicate" class="setting-checkbox" checked>
+                                    <span data-i18n="deduplicate">Elimină repetiții</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="setting-row" style="margin-top: 8px;">
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="preventOverlap" class="setting-checkbox">
+                                    <span data-i18n="sequential">Segmente secvențiale</span>
+                                </label>
+                            </div>
+                            <div class="setting-half">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="useDiarization" class="setting-checkbox">
+                                    <span data-i18n="diarization">Diarizare (Speakeri)</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                        <!-- Segment Spacing -->
+                        <div class="setting-group">
+                            <div class="setting-row">
+                                <div class="setting-half">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="segmentSpacingToggle" class="setting-checkbox" checked
+                                               onchange="document.getElementById('segmentSpacingRange').disabled = !this.checked">
+                                        <span data-i18n="segment_spacing">Spațiu între segmente</span>
+                                    </label>
+                                </div>
+                                <div class="setting-half">
+                                    <label class="setting-label" data-i18n="segment_spacing_frames" style="font-size:0.8rem;">Cadre (1-25)</label>
+                                    <input type="range" id="segmentSpacingRange" min="1" max="25" value="2" step="1"
+                                           oninput="segmentSpacingVal.textContent = this.value">
+                                    <span id="segmentSpacingVal" style="font-size:0.8rem;color:var(--text-muted);">2</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Multi-Pass Option -->
+                        <div class="setting-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="multiPass" class="setting-checkbox">
+                                <span data-i18n="multipass">Multi-Pass (Acuratețe Maximă - LENT)</span>
+                            </label>
+                        </div>
+
+                        <!-- Mixed Turkish Option -->
+                        <div class="setting-group" id="mixedTurkishGroup" style="display: none;">
+                            <label class="checkbox-label" style="color: var(--accent);">
+                                <input type="checkbox" id="mixedTurkish" class="setting-checkbox">
+                                <span data-i18n="mixed_turkish">🇹🇷 Transcriere Mixtă Turcă (V3 60s + Turbo 30s)</span>
+                            </label>
+                        </div>
+
+                        <!-- Mixed Korean Option -->
+                        <div class="setting-group" id="mixedKoreanGroup" style="display: none;">
+                            <label class="checkbox-label" style="color: var(--accent);">
+                                <input type="checkbox" id="mixedKorean" class="setting-checkbox">
+                                <span data-i18n="mixed_korean">🇰🇷 Transcriere Mixtă Coreeană (V3 60s + Turbo 30s)</span>
+                            </label>
+                        </div>
+
+                        <!-- OCR Option -->
+                        <div class="setting-group" style="padding-top: 10px; border-top: 1px solid var(--glass-border);">
+                            <label class="checkbox-label" style="color: var(--accent); font-weight: 600;">
+                                <input type="checkbox" id="useOCR" class="setting-checkbox" onchange="toggleOCRSettings()">
+                                <span data-i18n="ocr">🔍 Citire subtitrări hardcodate (OCR)</span>
+                            </label>
+
+                            <div id="ocrSettings" style="display: none; margin-top: 12px; padding-left: 20px;">
+                                <div class="setting-group">
+                                    <label class="setting-label" data-i18n="ocr_region">Zonă de căutare</label>
+                                    <div style="display: flex; gap: 15px;">
+                                        <label class="checkbox-label">
+                                            <input type="radio" name="ocrRegionMode" value="auto" checked onchange="toggleOCRManualRegion()">
+                                            <span data-i18n="ocr_auto">Auto-detect</span>
+                                        </label>
+                                        <label class="checkbox-label">
+                                            <input type="radio" name="ocrRegionMode" value="manual" onchange="toggleOCRManualRegion()">
+                                            <span data-i18n="ocr_manual">Manual</span>
+                                        </label>
+                                        <label class="checkbox-label">
+                                            <input type="radio" name="ocrRegionMode" value="full" onchange="toggleOCRManualRegion()">
+                                            <span data-i18n="ocr_full">Toată imaginea</span>
+                                        </label>
+                                    </div>
+
+                                    <div id="ocrManualRegion" style="display: none; margin-top: 8px;">
+                                        <div class="setting-row">
+                                            <div class="setting-half">
+                                                <label style="font-size: 0.8rem;" data-i18n="ocr_top">Sus (0.0-1.0)</label>
+                                                <input type="number" id="ocrTop" class="setting-input" value="0.75" min="0" max="1" step="0.01">
+                                            </div>
+                                            <div class="setting-half">
+                                                <label style="font-size: 0.8rem;" data-i18n="ocr_bottom">Jos (0.0-1.0)</label>
+                                                <input type="number" id="ocrBottom" class="setting-input" value="0.98" min="0" max="1" step="0.01">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="setting-row">
+                                    <div class="setting-half">
+                                        <label class="setting-label" data-i18n="ocr_conf">Confidence minim (%)</label>
+                                        <input type="range" id="ocrConf" min="50" max="95" value="70" step="5" oninput="ocrConfVal.textContent = this.value + '%'">
+                                        <span id="ocrConfVal" style="font-size: 0.8rem; color: var(--text-muted);">70%</span>
+                                    </div>
+                                    <div class="setting-half">
+                                        <label class="setting-label" data-i18n="ocr_frame_skip">Sări frame-uri</label>
+                                        <input type="range" id="ocrFrameSkip" min="0" max="50" value="20" step="1" oninput="ocrFrameSkipVal.textContent = this.value">
+                                        <span id="ocrFrameSkipVal" style="font-size: 0.8rem; color: var(--text-muted);">20</span>
+                                    </div>
+                                </div>
+                                <div class="setting-row">
+                                    <div class="setting-half">
+                                        <label class="checkbox-label" style="margin-top: 5px;">
+                                            <input type="checkbox" id="ocrMerge" checked>
+                                            <span data-i18n="ocr_merge">Adaugă la rezultate</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="setting-group" style="margin-top: 10px;">
+                                    <button class="btn btn-sm btn-secondary" onclick="verifyGpuOcr()" data-i18n="ocr_verify_gpu">
+                                        ⚙️ Verifică instalare GPU (OCR)
+                                    </button>
+                                    <span id="ocrGpuStatus" style="font-size: 0.8rem; margin-left: 10px;"></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- SDH Option -->
+                        <div class="setting-group" style="padding-top: 10px; border-top: 1px solid var(--glass-border);">
+                            <label class="checkbox-label" style="color: var(--accent); font-weight: 600;">
+                                <input type="checkbox" id="useSDH" class="setting-checkbox" onchange="toggleSDHSettings()">
+                                <span data-i18n="sdh">♿ Subtitrări pentru surzi (SDH)</span>
+                            </label>
+
+                            <div id="sdhSettings" style="display: none; margin-top: 12px; padding-left: 20px;">
+                                <div class="setting-row">
+                                    <div class="setting-half">
+                                        <label class="setting-label" data-i18n="sdh_conf">Confidence minim</label>
+                                        <input type="range" id="sdhConfidence" min="20" max="80" value="30" step="5" oninput="sdhConfidenceVal.textContent = this.value + '%'">
+                                        <span id="sdhConfidenceVal" style="font-size: 0.8rem; color: var(--text-muted);">45%</span>
+                                    </div>
+                                    <div class="setting-half">
+                                        <label class="setting-label" data-i18n="sdh_lang">Limbă descrieri</label>
+                                        <select id="sdhLanguage" class="setting-input"></select>
+                                    </div>
+                                </div>
+                                <label class="checkbox-label" style="margin-top: 5px;">
+                                    <input type="checkbox" id="sdhUseLLM" class="setting-checkbox">
+                                    <span data-i18n="sdh_use_llm">Folosește LLM pentru descrieri mai naturale</span>
+                                </label>
+                            </div>
+                        </div>
+
+                    <!-- Video Region Processing -->
+                    <div class="setting-group">
+                        <label class="setting-label" data-i18n="process_region">Regiune Procesare (Secunde)</label>
+                        <div class="setting-row">
+                            <div class="setting-half">
+                                <label data-i18n="process_start">Start</label>
+                                <input type="number" id="processStart" class="setting-input"
+                                       value="0" min="0" step="1">
+                            </div>
+                            <div class="setting-half">
+                                <label data-i18n="process_end">Sfârșit (0 = tot)</label>
+                                <input type="number" id="processEnd" class="setting-input"
+                                       value="0" min="0" step="1">
+                            </div>
+                        </div>
+                        <p class="setting-info" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" data-i18n="process_region_info">
+                            Procesează doar o porțiune din fișier. Timecodurile vor fi raportate la videoul întreg.
+                        </p>
+                    </div>
+
+                        <!-- Audio Extraction Only -->
+                        <div class="setting-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="audioOnly" class="setting-checkbox">
+                                <span data-i18n="audio_only">Doar extracție audio (fără transcriere)</span>
+                            </label>
+                        </div>
+
+                        <!-- Save Preset Section -->
+                        <div class="setting-group" style="padding-top: 15px; border-top: 1px solid var(--glass-border);">
+                            <label class="setting-label" data-i18n="save_preset">Salvează Setările Actuale ca Preset</label>
+                            <div style="display: flex; gap: 8px;">
+                                <input type="text" id="newPresetName" class="setting-input" data-i18n="preset_name" placeholder="Nume preset...">
+                                <button class="btn btn-sm btn-primary" onclick="savePreset()" data-i18n="save">💾 Salvează</button>
+                            </div>
+                        </div>
+                    </div> <!-- End settingsAdvanced -->
+
+                    <div class="settings-tab-content" id="settingsTranslation" style="display:none;">
+                        <div class="setting-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="enableTranslation" class="setting-checkbox" 
+                                       onchange="toggleTranslation()">
+                                <span data-i18n="enable_translation">Activează traducerea</span>
+                            </label>
+                        </div>
+
+                    <div id="translationSettings" style="display: none;">
+                        <div class="setting-group">
+                            <label class="setting-label" data-i18n="target_lang">Limba Țintă</label>
+                            <select id="targetLanguageSelect" class="setting-select">
+                                <!-- Populated dynamically -->
+                            </select>
+                        </div>
+
+                        <div id="advancedTranslationContainer">
+                            <div class="setting-group">
+                                <label class="setting-label" data-i18n="engine">Engine Traducere</label>
+                                <select id="translationEngine" class="setting-select" onchange="updateModelOptions()">
+                                <option value="google" selected>Google Translate (Batch)</option>
+                                <option value="llm_api">Traducere Plată (Paid Translation)</option>
+                                <option value="vllm">VLLM</option>
+                                    <option value="llm">LLM Local</option>
+                                    <option value="translategemma-27b" title="~27GB VRAM INT8, 55 limbi, dedicat traducerii">TranslateGemma 27B ★ (local, 48GB GPU)</option>
+                                    <option value="translategemma-12b">TranslateGemma 12B (local, 24GB GPU)</option>
+                                    <option value="translategemma-4b">TranslateGemma 4B (local, 8GB GPU)</option>
+                                </select>
+                            </div>
+
+                        <div id="llmApiSettings" style="display: none;">
+                            <div class="setting-group">
+                                <label class="setting-label" data-i18n="llm_api_provider">Provider API</label>
+                                <select id="llmApiProvider" class="setting-select" onchange="updateLlmApiDefaults()">
+                                    <option value="claude">Anthropic (Claude)</option>
+                                    <option value="openai">OpenAI (ChatGPT)</option>
+                                    <option value="gemini">Google Gemini</option>
+                                    <option value="custom">Alt LLM (Custom Endpoint)</option>
+                                </select>
+                            </div>
+                            <div class="setting-group">
+                                <label class="setting-label" data-i18n="llm_api_key">API Key</label>
+                                <input type="password" id="llmApiKey" class="setting-input" placeholder="sk-...">
+                                <span id="geminiKeyStatus" style="display:none; font-size:0.85rem; margin-top:4px;"></span>
+                            </div>
+                            <div class="setting-group">
+                                <label class="setting-label" data-i18n="llm_api_model">Model</label>
+                                <input type="text" id="llmApiModel" class="setting-input" placeholder="ex: gpt-4o">
+                                <select id="geminiModelSelect" class="setting-select" style="display:none;" onchange="document.getElementById('llmApiModel').value=this.value">
+                                    <option value="">Selectează un model...</option>
+                                </select>
+                            </div>
+                            <div id="llmApiUrlGroup" class="setting-group" style="display: none;">
+                                <label class="setting-label" data-i18n="llm_api_custom_url">Custom Endpoint URL</label>
+                                <input type="text" id="llmApiUrl" class="setting-input" placeholder="https://api.openai.com/v1">
+                            </div>
+                        </div>
+
+                        <div class="setting-group" id="llmModelGroup" style="display: none;">
+                            <label class="setting-label" data-i18n="refinement_model">Model LLM</label>
+                            <select id="llmModelSelect" class="setting-select">
+                                <option value="google/gemma-4-26B-A4B-it" selected>Gemma 4 - 26B-A4B</option>
+                                <option value="allura-forge/Llama-3.3-8B-Instruct">Llama 3.3 - 8B (Instruct)</option>
+                                <option value="google/gemma-3-12b-it">Gemma 3 - 12B</option>
+                                <option value="google/gemma-4-E4B-it">Gemma 4 - E4B</option>
+                                <option value="OpenLLM-Ro/RoMistral-7b-Instruct">RoMistral-7b (Română)</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label class="setting-label" data-i18n="translation_context">Context Conținut (Optional)</label>
+                            <textarea id="translationContext" class="setting-textarea"
+                                      data-i18n="context_placeholder" placeholder="ex: Film italian, comedie dramatică, personajele: Guido, Dora..."
+                                      rows="2"></textarea>
+                        </div>
+
+                        <div class="setting-group" id="promptGroup" style="display: none;">
+                            <label class="setting-label" data-i18n="custom_prompt">Prompt Personalizat</label>
+                            <textarea id="customPrompt" class="setting-textarea" 
+                                      data-i18n="prompt_placeholder" placeholder="Tradu textul din {source} în {target}..."
+                                      rows="3"></textarea>
+                        </div>
+
+                        <div class="setting-group">
+                            <div class="setting-row">
+                                <div class="setting-half">
+                                    <label data-i18n="translate_group_size">Mărime Grup Traducere</label>
+                                    <input type="number" id="translateGroup" class="setting-input"
+                                           value="10" min="1" max="50" step="1">
+                                </div>
+                                <div class="setting-half">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="useRomistral" class="setting-checkbox" onchange="toggleRefinerOptions()">
+                                        <span data-i18n="refinement">Corectură Traducere (LLM)</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="setting-group" id="refinerModelGroup" style="display: none; margin-top: 8px;">
+                            <label class="setting-label" data-i18n="refinement_model">Model Corectură</label>
+                            <select id="refinerModelSelect" class="setting-select">
+                                <option value="allura-forge/Llama-3.3-8B-Instruct">Llama 3.3 - 8B (Instruct)</option>
+                                <option value="google/gemma-3-12b-it" selected>Gemma 3 - 12B</option>
+                                <option value="OpenLLM-Ro/RoMistral-7b-Instruct">RoMistral-7b (Română)</option>
+                            </select>
+                        </div>
+
+                            <div class="setting-group">
+                                <button class="btn btn-secondary" onclick="addTranslationLanguage()" data-i18n="add_lang">
+                                    ➕ Adaugă altă limbă
+                                </button>
+                            </div>
+                            <div id="additionalLanguages"></div>
+                        </div> <!-- End advancedTranslationContainer -->
+
+                        <div class="setting-group" style="margin-top: 16px;">
+                            <button class="btn btn-primary" id="retranslateBtn" onclick="retranslate()" data-i18n="retranslate_btn">🔄 Refă traducerea</button>
+                            <div class="progress-bar-container" id="retranslateProgress" style="display:none; margin-top: 8px;">
+                                <div class="progress-bar" id="retranslateBar"></div>
+                            </div>
+                            <div class="status-message" id="retranslateMessage" style="display:none; margin-top: 4px; font-size:0.85rem; color:var(--text-secondary);"></div>
+                        </div>
+                    </div>
+                    </div> <!-- End settingsTranslation -->
+                </div> <!-- End settingsSection -->
+            </div>
+
+            <!-- Right Panel - Results & Player -->
+            <div class="right-panel">
+                <!-- Processing Status -->
+                <div class="glass-container processing-section" id="processingSection" style="display: none;">
+                    <h2 class="section-title" data-i18n="processing-title">
+                        <span class="icon">⚡</span>
+                        Procesare
+                    </h2>
+                    <div class="processing-status">
+                        <div class="status-message" id="processingMessage"></div>
+                        <div class="progress-bar-container large">
+                            <div class="progress-bar" id="processingBar"></div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-top:4px; font-size:0.85rem; color:var(--text-secondary);">
+                            <span class="status-percentage" id="processingPercentage">0%</span>
+                            <span id="processingTimer">⏱ 00:00</span>
+                        </div>
+                        <button class="btn btn-cancel" onclick="cancelProcessing()" id="cancelProcessingBtn" data-i18n="cancel_processing">
+                            ❌ Anulează procesarea
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div class="glass-container results-section" id="resultsSection" style="display: none;">
+                    <div class="results-toolbar">
+                        <h2 class="section-title" data-i18n="results-title">
+                            <span class="icon">📝</span>
+                            Rezultate
+                        </h2>
+                        <div class="toolbar-actions">
+                            <button class="btn btn-sm" onclick="addSegment()" data-i18n="add_segment">➕ Adaugă segment</button>
+                            <button class="btn btn-sm" onclick="translateExisting()" id="translateExistingBtn" style="display:none" data-i18n="translate_btn">🌐 Tradu</button>
+                            <button class="btn btn-sm" onclick="copyFullText()" data-i18n="copy_text">📋 Copiază text</button>
+                            <button class="btn btn-sm" onclick="saveProject()" data-i18n="save_project">📂 Salvează Proiect</button>
+                            <button class="btn btn-sm" onclick="loadProjectClick()" data-i18n="load_project">📂 Încarcă Proiect</button>
+                            <button class="btn btn-sm" onclick="exportSRT()" data-i18n="export_srt">💾 Export SRT</button>
+                            <button class="btn btn-sm" onclick="showDOCXDialog()" data-i18n="export_docx">📄 Export DOCX</button>
+                            <input type="file" id="projectInput" accept=".json" style="display: none;" onchange="importProject(this)">
+                        </div>
+                    </div>
+
+                    <!-- Segments Tabs -->
+                    <div class="tabs">
+                        <button class="tab active" id="originalTab" onclick="switchTab('original')" data-i18n="original_tab">Original</button>
+                        <button class="tab" id="rawTab" onclick="switchTab('raw')" data-i18n="raw_tab">Raw</button>
+                        <button class="tab" id="translationTab" style="display: none;" 
+                                onclick="switchTab('translation')" data-i18n="translation_tab">Traducere</button>
+                    </div>
+
+                    <!-- Segments List -->
+                    <div class="segments-container" id="segmentsContainer">
+                        <div class="segments-list" id="segmentsList">
+                            <!-- Segments will be rendered here -->
+                        </div>
+                    </div>
+
+                    <!-- Full Text View -->
+                    <div class="full-text-view" id="fullTextView" style="display: none;">
+                        <textarea id="fullTextEditor" class="full-text-editor" rows="10"></textarea>
+                    </div>
+
+                    <!-- Raw Text View -->
+                    <div class="full-text-view" id="rawTextView" style="display: none;">
+                        <textarea id="rawTextEditor" class="full-text-editor" rows="10" readonly></textarea>
+                    </div>
+                </div>
+
+                <!-- Translation Results -->
+                <div class="glass-container translation-results" id="translationResults" style="display: none;">
+                    <h2 class="section-title" data-i18n="translations-title">
+                        <span class="icon">🌐</span>
+                        Traduceri
+                    </h2>
+                    <div id="translationsContainer"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="action-buttons" id="actionButtons" style="display: none;">
+        <button class="fab fab-sm" id="transcribeBtn" onclick="startProcessing('transcribe')" title="Doar transcriere">
+            <span class="fab-icon">🎤</span>
+            <span class="fab-text" data-i18n="transcribe_btn">Transcriere</span>
+        </button>
+        <button class="fab fab-sm fab-secondary" id="translateBtn" onclick="startProcessing('translate')" title="Doar traducere" disabled>
+            <span class="fab-icon">🌐</span>
+            <span class="fab-text" data-i18n="translate_only_btn">Traducere</span>
+        </button>
+        <button class="fab fab-sm fab-accent" id="transcribeTranslateBtn" onclick="startProcessing('both')" title="Transcriere și traducere">
+            <span class="fab-icon">▶️</span>
+            <span class="fab-text" data-i18n="startBtn">Transcriere și Traducere</span>
+        </button>
+    </div>
+
+    <!-- OCR Post-Processing Dialog -->
+    <div class="modal" id="ocrModal" style="display: none;">
+        <div class="modal-content glass-container">
+            <h2 data-i18n="ocr_post_title">🔍 Extragere Subtitrări Hardcodate (OCR)</h2>
+            <div class="modal-body">
+                <p style="margin-bottom: 16px;" data-i18n="ocr_post_desc">
+                    Video-ul conține posibile subtitrări încorporate (hardcoded). 
+                    Dorești să selectezi zone din timeline pentru a le extrage cu OCR?
+                </p>
+                <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="ocrPostSelectionMode" class="setting-checkbox" checked>
+                        <span data-i18n="ocr_post_enable_selection">Activează Mod Selecție pe timeline</span>
+                    </label>
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label" data-i18n="ocr_frame_skip">Sări frame-uri</label>
+                    <input type="range" id="ocrPostFrameSkip" min="0" max="50" value="20" step="1" oninput="ocrPostFrameSkipVal.textContent = this.value">
+                    <span id="ocrPostFrameSkipVal" style="font-size: 0.8rem; color: var(--text-muted);">20</span>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="acceptOcrPost()" data-i18n="ocr_post_yes">Da, extrage subtitrările</button>
+                <button class="btn btn-secondary" onclick="closeOcrModal()" data-i18n="ocr_post_no">Nu, mulțumesc</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DOCX Export Dialog -->
+    <div class="modal" id="docxModal" style="display: none;">
+        <div class="modal-content glass-container">
+            <h2 data-i18n="docx_title">Export DOCX - Traducători Profesioniști</h2>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label data-i18n="docx_title_field">Titlu</label>
+                    <input type="text" id="docxTitle" class="setting-input" data-i18n="docx_title_placeholder" placeholder="Titlu film/episod...">
+                </div>
+                <div class="setting-group">
+                    <label data-i18n="docx_series">Serie / Episod</label>
+                    <input type="text" id="docxSeries" class="setting-input" data-i18n="docx_series_placeholder" placeholder="S01E01...">
+                </div>
+                <div class="setting-group">
+                    <label data-i18n="docx_translator">Nume Traducător</label>
+                    <input type="text" id="docxTranslator" class="setting-input" data-i18n="docx_translator_placeholder" placeholder="Nume traducător...">
+                </div>
+                <div class="setting-group">
+                    <label data-i18n="docx_editor">Nume Redactor</label>
+                    <input type="text" id="docxEditor" class="setting-input" data-i18n="docx_editor_placeholder" placeholder="Nume redactor...">
+                </div>
+                <div class="setting-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="docxLegacyDiacritics">
+                        <span data-i18n="docx_legacy_diacritics">Conversie diacritice legacy (ș→ş, ț→ţ)</span>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="exportDOCX()" data-i18n="export_docx_btn">Exportă DOCX</button>
+                <button class="btn btn-secondary" onclick="closeDOCXDialog()" data-i18n="cancel">Anulează</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/static/js/app.js"></script>
+    <script>
+        async function logout() {
+            await fetch('/api/logout', { method: 'POST' });
+            window.location.href = '/login';
+        }
+    </script>
+</body>
+</html>

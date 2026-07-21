@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+*.log.*
+data
+models
+.venv/
+Opus-MT
+test-results/
+.DS_Store
+*.deb
+MANUAL.md
+.antigravitycli/
+=2.0
+=4.51.0

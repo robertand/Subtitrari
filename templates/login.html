@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autentificare - Subtitrari</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .login-card {
+            width: 380px;
+            text-align: center;
+        }
+        .login-card h1 {
+            font-size: 2rem;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .login-card p {
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+        }
+        .login-card input {
+            width: 100%;
+            padding: 12px 16px;
+            margin-bottom: 12px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-sm);
+            color: white;
+            font-size: 1rem;
+            box-sizing: border-box;
+        }
+        .login-card input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .login-card .error {
+            color: var(--danger);
+            margin-bottom: 12px;
+            display: none;
+        }
+        .login-card .btn {
+            width: 100%;
+            padding: 12px;
+            font-size: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="glass-container login-card">
+        <h1>Subtitrari</h1>
+        <p>Autentifică-te pentru a continua</p>
+        <div class="error" id="loginError"></div>
+        <input type="text" id="username" placeholder="Utilizator" autocomplete="username" autofocus>
+        <input type="password" id="password" placeholder="Parolă" autocomplete="current-password">
+        <button class="btn btn-primary" onclick="doLogin()">Autentificare</button>
+    </div>
+
+    <script>
+        document.getElementById('username').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('password').focus(); });
+        document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+        async function doLogin() {
+            const u = document.getElementById('username').value.trim();
+            const p = document.getElementById('password').value;
+            const errEl = document.getElementById('loginError');
+            if (!u || !p) { errEl.textContent = 'Completează utilizator și parolă'; errEl.style.display = 'block'; return; }
+            const r = await fetch('/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username:u, password:p}) });
+            if (r.ok) { window.location.href = '/'; }
+            else { const d = await r.json(); errEl.textContent = d.error || 'Autentificare eșuată'; errEl.style.display = 'block'; }
+        }
+    </script>
+</body>
+</html>

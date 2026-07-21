@@ -1,0 +1,2045 @@
+from flask import Flask, request, jsonify, render_template, send_file, session, make_response, redirect, url_for
+from functools import wraps
+import auth
+import user_settings
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+import threading
+import queue
+import time
+import uuid
+import json
+import os
+import sys
+import shlex
+import subprocess
+import secrets
+import logging
+import librosa
+import numpy as np
+import torch
+from pathlib import Path
+from datetime import datetime
+import shutil
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+# Ensure CUDA libraries are found (needed by PyAnnote, bitsandbytes, etc.)
+_conda_lib = str(Path(sys.executable).parent.parent / "lib")
+if os.path.isdir(_conda_lib):
+    os.environ.setdefault("LD_LIBRARY_PATH", "")
+    if _conda_lib not in os.environ["LD_LIBRARY_PATH"]:
+        os.environ["LD_LIBRARY_PATH"] = f"{_conda_lib}:{os.environ['LD_LIBRARY_PATH']}"
+
+# Load HF token from cache
+_hf_token_path = os.path.expanduser("~/.cache/huggingface/token")
+if os.path.exists(_hf_token_path) and "HF_TOKEN" not in os.environ:
+    with open(_hf_token_path) as _f:
+        os.environ["HF_TOKEN"] = _f.read().strip()
+if "HUGGINGFACE_TOKEN" not in os.environ and "HF_TOKEN" in os.environ:
+    os.environ["HUGGINGFACE_TOKEN"] = os.environ["HF_TOKEN"]
+
+from config import Config
+from transcriber import WhisperTranscriber, GenderDetector
+from nemo_transcriber import get_nemo_transcriber, NEMO_SUPPORTED_LANGUAGES, check_and_install_nemo, run_sortformer_diarization, run_pyannote_diarization, assign_speakers_to_segments, split_segments_by_speaker
+from ocr_extractor import get_ocr_extractor, merge_ocr_and_asr_segments, check_and_install_paddleocr
+from sdh_detector import get_sdh_detector, merge_all_subtitle_sources
+from translator import Translator
+from translategemma_translator import get_translategemma_translator, TRANSLATEGEMMA_SUPPORTED_LANGS
+from segmenter import SubtitleSegmenter
+from file_handler import FileHandler
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
+app = Flask(__name__)
+app.config.from_object(Config)
+app.secret_key = Config.SECRET_KEY
+CORS(app)
+
+# Initialize components
+Config.init_directories()
+transcriber = WhisperTranscriber()
+gender_detector = GenderDetector(device="cpu") # Force gender detection on CPU to save VRAM
+translator = Translator()
+segmenter = SubtitleSegmenter()
+file_handler = FileHandler(Config)
+
+# Task storage
+processing_tasks = {}
+task_lock = threading.Lock()
+
+class ProcessingTask:
+    def __init__(self, task_id, file_path, options, user_id=None):
+        self.task_id = task_id
+        self.file_path = file_path
+        self.options = options
+        self.user_id = user_id
+        self.status = 'queued'
+        self.progress = 0
+        self.message = ''
+        self.result = None
+        self.error = None
+        self.created_at = time.time()
+        self.last_heartbeat = time.time()
+        self.cancel_flag = threading.Event()
+    
+    def to_dict(self):
+        return {
+            'task_id': self.task_id,
+            'status': self.status,
+            'progress': self.progress,
+            'message': self.message,
+            'result': self.result,
+            'error': self.error,
+            'created_at': self.created_at,
+            'elapsed_time': time.time() - self.created_at,
+            'user_id': self.user_id
+        }
+
+# ============ Routes ============
+
+# ============ Auth Helpers ============
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'username' not in session:
+            if request.path.startswith('/api/'):
+                return jsonify({'error': 'Authentication required', 'redirect': '/login'}), 401
+            return redirect(url_for('login_page'))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'username' not in session:
+            if request.path.startswith('/api/'):
+                return jsonify({'error': 'Authentication required', 'redirect': '/login'}), 401
+            return redirect(url_for('login_page'))
+        if not auth.is_admin(session['username']):
+            return jsonify({'error': 'Admin only'}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ============ Auth Routes ============
+
+@app.route('/login', methods=['GET'])
+def login_page():
+    if 'username' in session:
+        return redirect(url_for('index'))
+    return render_template('login.html')
+
+
+@app.route('/api/login', methods=['POST'])
+def api_login():
+    data = request.json or {}
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+
+    if auth.authenticate(username, password):
+        session['username'] = username
+        session['user_id'] = f"{username}_{secrets.token_hex(8)}"
+        session['role'] = 'admin' if auth.is_admin(username) else 'user'
+        session.permanent = True
+        return jsonify({'success': True, 'username': username, 'role': session['role']})
+    return jsonify({'error': 'Invalid credentials'}), 401
+
+
+@app.route('/api/logout', methods=['POST'])
+def api_logout():
+    session.clear()
+    return jsonify({'success': True})
+
+
+@app.route('/api/user/settings', methods=['GET'])
+@login_required
+def get_user_settings():
+    username = session.get('username', 'default')
+    return jsonify(user_settings.get_settings(username))
+
+
+@app.route('/api/user/settings', methods=['POST'])
+@login_required
+def save_user_settings():
+    username = session.get('username', 'default')
+    data = request.json or {}
+    user_settings.save_settings(username, data)
+    return jsonify({'success': True})
+
+
+@app.route('/admin', methods=['GET'])
+@admin_required
+def admin_page():
+    return render_template('admin.html', username=session.get('username'))
+
+
+@app.route('/api/admin/users', methods=['GET'])
+@admin_required
+def admin_list_users():
+    return jsonify({'users': auth.list_users(session['username'])})
+
+
+@app.route('/api/admin/users', methods=['POST'])
+@admin_required
+def admin_add_user():
+    data = request.json or {}
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    role = data.get('role', 'user')
+    if auth.add_user(username, password, role):
+        return jsonify({'success': True})
+    return jsonify({'error': 'User already exists or invalid data'}), 400
+
+
+@app.route('/api/admin/users/<username>', methods=['DELETE'])
+@admin_required
+def admin_delete_user(username):
+    if auth.delete_user(username, session['username']):
+        return jsonify({'success': True})
+    return jsonify({'error': 'Cannot delete or user not found'}), 400
+
+
+@app.route('/api/admin/password', methods=['POST'])
+@login_required
+def api_change_password():
+    data = request.json or {}
+    target = data.get('username', session['username'])
+    new_pass = data.get('new_password', '')
+    if auth.change_password(target, new_pass, session['username']):
+        return jsonify({'success': True})
+    return jsonify({'error': 'Cannot change password'}), 400
+
+
+@app.route('/api/gemini-status')
+@login_required
+def gemini_status():
+    key = user_settings.get_global_setting('gemini_api_key', '')
+    return jsonify({'configured': bool(key)})
+
+
+@app.route('/api/admin/gemini-key', methods=['GET', 'POST'])
+@admin_required
+def admin_gemini_key():
+    if request.method == 'GET':
+        key = user_settings.get_global_setting('gemini_api_key', '')
+        return jsonify({
+            'configured': bool(key),
+            'key_preview': key[:8] + '...' if key else ''
+        })
+    data = request.json or {}
+    api_key = (data.get('api_key') or '').strip()
+    if not api_key:
+        return jsonify({'error': 'API key cannot be empty'}), 400
+    user_settings.set_global_setting('gemini_api_key', api_key)
+    return jsonify({'success': True, 'message': 'Gemini API key saved'})
+
+
+@app.route('/api/models/gemini')
+def gemini_models():
+    return jsonify({
+        'models': [
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+            'gemini-2.5-pro',
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-lite',
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+        ]
+    })
+
+
+# ============ Main Route ============
+
+@app.route('/')
+@login_required
+def index():
+    """Main page"""
+    return render_template('index.html', username=session.get('username'))
+
+@app.route('/api/upload/init', methods=['POST'])
+@login_required
+def init_upload():
+    """Initialize chunked upload session"""
+    try:
+        data = request.json
+        filename = data.get('filename')
+        total_size = data.get('total_size')
+        total_chunks = data.get('total_chunks')
+        is_library = data.get('library', False)
+        
+        if not all([filename, total_size, total_chunks]):
+            return jsonify({'error': 'Missing parameters'}), 400
+        
+        # Validate file extension
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if ext not in Config.ALLOWED_EXTENSIONS:
+            return jsonify({'error': f'File type not allowed: {ext}'}), 400
+        
+        # For library uploads, only allow video files
+        if is_library and ext not in {'mp4', 'avi', 'mov', 'mkv', 'webm', 'mxf'}:
+            return jsonify({'error': 'Only video files allowed in library'}), 400
+        
+        session_id = file_handler.create_upload_session(filename, total_size, total_chunks)
+        
+        # Store library flag in the session
+        file_handler.upload_sessions[session_id]['is_library'] = is_library
+        
+        return jsonify({
+            'session_id': session_id,
+            'chunk_size': Config.CHUNK_SIZE
+        })
+        
+    except Exception as e:
+        logger.error(f"Upload init error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/upload/chunk', methods=['POST'])
+def upload_chunk():
+    """Upload a chunk"""
+    try:
+        session_id = request.form.get('session_id')
+        chunk_number_str = request.form.get('chunk_number')
+        chunk_file = request.files.get('chunk')
+        
+        if not all([session_id, chunk_number_str is not None, chunk_file]):
+            return jsonify({'error': 'Missing parameters'}), 400
+        
+        chunk_number = int(chunk_number_str)
+        result = file_handler.save_chunk(session_id, chunk_file, chunk_number)
+        return jsonify(result)
+        
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Chunk upload error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/upload/complete', methods=['POST'])
+def complete_upload():
+    """Complete upload and assemble file"""
+    try:
+        data = request.json
+        session_id = data.get('session_id')
+        total_chunks = data.get('total_chunks')
+        
+        if not session_id:
+            return jsonify({'error': 'Missing session_id'}), 400
+        
+        file_path = file_handler.assemble_file(session_id, total_chunks=total_chunks)
+        
+        # Check if this was a library upload
+        is_library = file_handler.upload_sessions.get(session_id, {}).get('is_library', False)
+        # Also check in the original session that got deleted during assembly
+        # The flag is lost after assemble, so we check the request
+        if data.get('library', False):
+            is_library = True
+        
+        # Generate preview if it's a video file
+        preview_url = None
+        if Path(file_path).suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm'}:
+            preview_path = Config.PROCESS_DIR / session_id / 'preview.jpg'
+            file_handler.generate_preview(file_path, str(preview_path))
+            if preview_path.exists():
+                preview_url = f'/api/preview/{session_id}'
+        
+        # If library upload, add to library
+        library_entry = None
+        if is_library:
+            try:
+                entry_id = str(uuid.uuid4())[:8]
+                lib_dir = LIBRARY_DIR / entry_id
+                lib_dir.mkdir(parents=True, exist_ok=True)
+                
+                src_path = Path(file_path)
+                lib_file_path = lib_dir / src_path.name
+                shutil.copy2(str(src_path), str(lib_file_path))
+                
+                # Generate thumbnail
+                thumb_path = lib_dir / 'thumbnail.jpg'
+                try:
+                    import subprocess
+                    subprocess.run([
+                        'ffmpeg', '-i', str(lib_file_path),
+                        '-ss', '00:00:05',
+                        '-vframes', '1',
+                        '-vf', 'scale=320:-1',
+                        '-y', str(thumb_path)
+                    ], capture_output=True, timeout=30)
+                except:
+                    pass
+                
+                ext = Path(file_path).suffix.lower()
+                is_video = ext in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}
+                
+                library_entry = {
+                    'id': entry_id,
+                    'filename': src_path.name,
+                    'path': str(lib_file_path),
+                    'size': lib_file_path.stat().st_size,
+                    'is_video': is_video,
+                    'added': datetime.now().isoformat(),
+                    'has_thumbnail': thumb_path.exists()
+                }
+                
+                lib = load_library()
+                lib.append(library_entry)
+                save_library(lib)
+            except Exception as lib_err:
+                logger.error(f"Library entry creation error: {lib_err}")
+        
+        return jsonify({
+            'file_path': file_path,
+            'task_id': session_id,
+            'preview_url': preview_url,
+            'library_entry': library_entry
+        })
+        
+    except Exception as e:
+        logger.error(f"Upload complete error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# ============ Library Routes ============
+
+LIBRARY_FILE = Config.LIBRARY_FILE
+LIBRARY_DIR = Config.LIBRARY_DIR
+
+def load_library():
+    if LIBRARY_FILE.exists():
+        try:
+            with open(LIBRARY_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_library(lib):
+    with open(LIBRARY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(lib, f, ensure_ascii=False, indent=2)
+
+@app.route('/api/library', methods=['GET'])
+def get_library():
+    return jsonify(load_library())
+
+@app.route('/api/library/add', methods=['POST'])
+def add_to_library():
+    try:
+        file = request.files.get('file')
+        if not file:
+            return jsonify({'error': 'No file provided'}), 400
+
+        filename = secure_filename(file.filename)
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if ext not in Config.ALLOWED_EXTENSIONS:
+            return jsonify({'error': f'File type not allowed: {ext}'}), 400
+
+        entry_id = str(uuid.uuid4())[:8]
+        dest_dir = LIBRARY_DIR / entry_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = dest_dir / filename
+        file.save(str(file_path))
+
+        # Generate thumbnail
+        thumb_path = dest_dir / 'thumbnail.jpg'
+        try:
+            import subprocess
+            subprocess.run([
+                'ffmpeg', '-i', str(file_path),
+                '-ss', '00:00:05',
+                '-vframes', '1',
+                '-vf', 'scale=320:-1',
+                '-y', str(thumb_path)
+            ], capture_output=True, timeout=30)
+        except:
+            pass
+
+        file_size = file_path.stat().st_size
+        is_video = ext in {'mp4', 'avi', 'mov', 'mkv', 'webm', 'mxf'}
+
+        entry = {
+            'id': entry_id,
+            'filename': filename,
+            'path': str(file_path),
+            'size': file_size,
+            'is_video': is_video,
+            'added': datetime.now().isoformat(),
+            'has_thumbnail': thumb_path.exists()
+        }
+
+        lib = load_library()
+        lib.append(entry)
+        save_library(lib)
+
+        return jsonify(entry)
+
+    except Exception as e:
+        logger.error(f"Library add error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/library/<entry_id>/load', methods=['POST'])
+def load_library_movie(entry_id):
+    try:
+        lib = load_library()
+        entry = next((e for e in lib if e['id'] == entry_id), None)
+        if not entry:
+            return jsonify({'error': 'Library entry not found'}), 404
+
+        source_path = Path(entry['path'])
+        if not source_path.exists():
+            return jsonify({'error': 'File not found on disk'}), 404
+
+        # Create a processing session from this file
+        session_id = str(uuid.uuid4())
+        task_id = session_id
+        process_dir = Config.PROCESS_DIR / session_id
+        process_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy file to process dir
+        dest_path = process_dir / source_path.name
+        shutil.copy2(str(source_path), str(dest_path))
+
+        # Generate preview
+        preview_path = process_dir / 'preview.jpg'
+        try:
+            import subprocess
+            subprocess.run([
+                'ffmpeg', '-i', str(dest_path),
+                '-ss', '00:00:05',
+                '-vframes', '1',
+                '-vf', 'scale=320:-1',
+                '-y', str(preview_path)
+            ], capture_output=True, timeout=30)
+        except:
+            pass
+
+        return jsonify({
+            'task_id': task_id,
+            'file_path': str(dest_path),
+            'filename': entry['filename'],
+            'preview_url': f'/api/preview/{session_id}' if preview_path.exists() else None
+        })
+
+    except Exception as e:
+        logger.error(f"Library load error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/library/<entry_id>', methods=['DELETE'])
+def remove_from_library(entry_id):
+    try:
+        lib = load_library()
+        entry = next((e for e in lib if e['id'] == entry_id), None)
+        if not entry:
+            return jsonify({'error': 'Not found'}), 404
+
+        lib = [e for e in lib if e['id'] != entry_id]
+        save_library(lib)
+
+        # Remove files
+        entry_dir = LIBRARY_DIR / entry_id
+        if entry_dir.exists():
+            shutil.rmtree(entry_dir)
+
+        return jsonify({'status': 'deleted'})
+
+    except Exception as e:
+        logger.error(f"Library delete error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/library/thumbnail/<entry_id>')
+def library_thumbnail(entry_id):
+    thumb_path = LIBRARY_DIR / entry_id / 'thumbnail.jpg'
+    if thumb_path.exists():
+        return send_file(str(thumb_path), mimetype='image/jpeg')
+    return jsonify({'error': 'No thumbnail'}), 404
+
+@app.route('/model_status')
+def model_status():
+    """Get current model loading status"""
+    return jsonify({
+        'device': transcriber.device,
+        'current_model': transcriber.current_model is not None,
+        'loaded_models': list(transcriber.models.keys()),
+        'translator_models': list(translator.models.keys()) if translator else []
+    })
+
+@app.route('/api/preview/<task_id>')
+@login_required
+def get_preview(task_id):
+    """Get preview image"""
+    preview_path = Config.PROCESS_DIR / task_id / 'preview.jpg'
+    if preview_path.exists():
+        return send_file(preview_path, mimetype='image/jpeg')
+    return jsonify({'error': 'Preview not found'}), 404
+
+@app.route('/api/video/<task_id>')
+@login_required
+def serve_video(task_id):
+    """Serve video file for player"""
+    video_path = Config.PROCESS_DIR / task_id
+    
+    # Find the video file
+    video_file = None
+    for ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm']:
+        potential_file = video_path / f"original{ext}"
+        if potential_file.exists():
+            video_file = potential_file
+            break
+    
+    # Also check if the uploaded file is directly in the process dir
+    if not video_file:
+        for file in video_path.iterdir():
+            if file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.webm']:
+                video_file = file
+                break
+    
+    if video_file and video_file.exists():
+        return send_file(
+            video_file,
+            mimetype='video/mp4',
+            conditional=True,
+            as_attachment=False
+        )
+    
+    return jsonify({'error': 'Video not found'}), 404
+
+@app.route('/api/audio/<task_id>')
+@login_required
+def serve_audio(task_id):
+    """Serve audio file for player"""
+    audio_path = Config.PROCESS_DIR / task_id / 'audio.wav'
+    if audio_path.exists():
+        return send_file(audio_path, mimetype='audio/wav')
+    
+    # Try other audio formats
+    for ext in ['.mp3', '.wav', '.m4a', '.flac', '.ogg']:
+        for file in (Config.PROCESS_DIR / task_id).iterdir():
+            if file.suffix.lower() == ext:
+                return send_file(file, mimetype=f'audio/{ext[1:]}')
+    
+    return jsonify({'error': 'Audio not found'}), 404
+
+@app.route('/api/files/<path:filename>')
+@login_required
+def serve_file(filename):
+    """Serve any file from process directory"""
+    file_path = Config.PROCESS_DIR / filename
+    if file_path.exists():
+        return send_file(file_path)
+    return jsonify({'error': 'File not found'}), 404
+
+@app.route('/api/ocr/verify-gpu', methods=['POST'])
+def verify_ocr_gpu():
+    """Verify and install paddlepaddle-gpu if requested"""
+    try:
+        from ocr_extractor import check_and_install_paddleocr
+        success = check_and_install_paddleocr(use_gpu=True)
+
+        import paddle
+        cuda_available = paddle.device.is_compiled_with_cuda()
+
+        return jsonify({
+            'success': success,
+            'cuda_available': cuda_available,
+            'message': 'GPU (CUDA) is available' if cuda_available else 'Only CPU is available'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/upload/progress/<session_id>')
+def upload_progress(session_id):
+    """Get upload progress"""
+    progress = file_handler.get_session_progress(session_id)
+    if progress:
+        return jsonify(progress)
+    return jsonify({'error': 'Session not found'}), 404
+
+@app.route('/api/process/start', methods=['POST'])
+@login_required
+def start_processing():
+    """Start transcription/translation task"""
+    try:
+        data = request.json
+        task_id = data.get('task_id')
+        file_path = data.get('file_path')
+        options = data.get('options', {})
+        
+        if not task_id or not file_path:
+            return jsonify({'error': 'Missing parameters'}), 400
+        
+        # Create task
+        logger.info(f"[SDH-DEBUG] Options received: use_sdh={options.get('use_sdh')}, type={type(options.get('use_sdh')).__name__}, all_keys={list(options.keys())}")
+        task = ProcessingTask(task_id, file_path, options, user_id=session.get('user_id'))
+        
+        with task_lock:
+            processing_tasks[task_id] = task
+        
+        # Start processing in background thread
+        thread = threading.Thread(
+            target=process_task,
+            args=(task,),
+            daemon=True
+        )
+        thread.start()
+        
+        return jsonify({
+            'task_id': task_id,
+            'status': 'queued'
+        })
+        
+    except Exception as e:
+        logger.error(f"Process start error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def _get_user_task(task_id):
+    """Returneaza task-ul doar daca apartine utilizatorului curent."""
+    user_id = session.get('user_id')
+    with task_lock:
+        task = processing_tasks.get(task_id)
+    if not task:
+        return None
+    if task.user_id and task.user_id != user_id:
+        return None
+    return task
+
+@app.route('/api/process/status/<task_id>')
+@login_required
+def process_status(task_id):
+    """Get processing status"""
+    task = _get_user_task(task_id)
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+    task.last_heartbeat = time.time()
+    return jsonify(task.to_dict())
+
+@app.route('/api/process/zones', methods=['POST'])
+@login_required
+def process_zones():
+    """Reprocess specific timeline zones"""
+    try:
+        data = request.json
+        task_id = data.get('task_id')
+        file_path = data.get('file_path')
+        zones = data.get('zones', [])
+        options = data.get('options', {})
+
+        if not task_id or not file_path or not zones:
+            return jsonify({'error': 'Missing parameters'}), 400
+
+        results = []
+        hf_token = options.get('hf_token')
+
+        # Basic sanitization for file_path
+        abs_base = str(Config.DATA_DIR.resolve())
+        abs_file = str(Path(file_path).resolve())
+        if not abs_file.startswith(abs_base) and not abs_file.startswith("/tmp"):
+             # If it's a relative path from the upload dir, it's fine, otherwise block for security
+             if not any(str(abs_file).startswith(str(Config.BASE_DIR / d)) for d in ['data', 'uploads']):
+                 return jsonify({'error': 'Invalid file path'}), 403
+
+        for idx, zone in enumerate(zones):
+            start = float(zone['start'])
+            end = float(zone['end'])
+
+            logger.info(f"Selective reprocessing zone {idx}: {start}s -> {end}s")
+
+            # 1. Extract audio
+            safe_task_id = secure_filename(str(task_id))
+            temp_name = f"reprocess_{safe_task_id}_{int(start)}_{int(end)}.wav"
+            audio_temp_path = Config.TEMP_DIR / temp_name
+
+            try:
+                # Use shlex.quote for file_path just in case, though extract_audio uses subprocess
+                transcriber.extract_audio_from_video(
+                    file_path, str(audio_temp_path),
+                    start_time=start,
+                    duration=(end - start)
+                )
+
+                # 2. Transcribe
+                if options.get('engine') == 'whisper':
+                    res = transcriber.transcribe_whisperx(
+                        str(audio_temp_path),
+                        model_name=options.get('model', 'large-v3'),
+                        language=options.get('language'),
+                        hf_token=hf_token,
+                        use_diarization=options.get('use_diarization', False)
+                    )
+                elif options.get('engine') == 'nemo':
+                    nemo_t = get_nemo_transcriber()
+                    if not nemo_t.is_available():
+                        check_and_install_nemo()
+
+                    # Language detection happens inside transcribe if not specified
+                    lang_code = options.get('language')
+                    segments = nemo_t.transcribe(
+                        str(audio_temp_path),
+                        model_name=options.get('model', 'parakeet-v3'),
+                        language=lang_code,
+                        window_size=options.get('transcribe_window', 30),
+                        overlap=options.get('transcribe_overlap', 10)
+                    )
+                    # Note: Parakeet v3 doesn't explicitly return the detected language code easily
+                    # without re-parsing, but for now we use the requested language or assume auto
+                    res = {"segments": segments, "language": lang_code or "auto"}
+                else:
+                    # Fallback to standard
+                    res = transcriber.transcribe_audio(
+                        str(audio_temp_path),
+                        model_name=options.get('model', 'small'),
+                        language=options.get('language'),
+                        hf_token=hf_token
+                    )
+
+                new_segments = res.get('segments', [])
+
+                # 3. Adjust timestamps (Apply offset)
+                for seg in new_segments:
+                    seg['start'] += start
+                    seg['end'] += start
+
+                # 4. Segmentation
+                new_segments = segmenter.segment_by_time(
+                    new_segments,
+                    min_duration=options.get('min_duration', 1.0),
+                    max_duration=options.get('max_duration', 5.0),
+                    max_chars=options.get('max_chars', 80)
+                )
+
+                # 5. Clean "None" artifacts
+                for seg in new_segments:
+                    seg['text'] = translator._clean_speaker_none(seg['text'])
+
+                # OCR extraction for zone
+                if options.get('use_ocr'):
+                    try:
+                        ocr_available = check_and_install_paddleocr(use_gpu=torch.cuda.is_available())
+                        if not ocr_available:
+                            raise RuntimeError("OCR unavailable — restart server after numpy downgrade")
+
+                        ocr_extractor = get_ocr_extractor()
+                        ocr_lang = options.get('language') or 'en'
+                        region = None
+                        mode = options.get('ocr_region_mode', 'auto')
+                        if mode == 'manual':
+                            region = (
+                                float(options.get('ocr_top', 0.75)),
+                                float(options.get('ocr_bottom', 0.98))
+                            )
+                        elif mode == 'full':
+                            region = (0.0, 1.0)
+
+                        ocr_segments = ocr_extractor.extract_subtitles(
+                            file_path,
+                            lang=ocr_lang,
+                            use_gpu=torch.cuda.is_available(),
+                            subtitle_region=region,
+                            conf_threshold=int(options.get('ocr_conf', 70)),
+                            frames_to_skip=int(options.get('ocr_frame_skip', 2)),
+                            start_time=start,
+                            end_time=end
+                        )
+
+                        # Adjust OCR segments by start offset of zone
+                        # (The extractor processes the whole video, so we need to filter segments
+                        # that fall within our zone)
+                        ocr_segments = [
+                            s for s in ocr_segments
+                            if s['start'] >= start and s['end'] <= end
+                        ]
+
+                        if ocr_segments and options.get('ocr_merge', True):
+                            new_segments = merge_ocr_and_asr_segments(new_segments, ocr_segments)
+                    except Exception as e:
+                        logger.error(f"Zone OCR failed: {e}")
+
+                # 6. Translate
+                new_translations = {}
+                if options.get('translate'):
+                    target_langs = options.get('target_languages', ['ro'])
+                    source_lang = res.get('language', 'en')
+                    engine = options.get('translation_engine', 'google')
+                    context = options.get('translation_context')
+
+                    texts = [s['text'] for s in new_segments]
+                    meta = [{'gender': s.get('speaker_gender'), 'speaker': s.get('speaker')} for s in new_segments]
+
+                    for target_lang in target_langs:
+                        if engine == 'vllm':
+                            t_texts = translator.translate_with_vllm_grouped(
+                                texts, source_lang, target_lang,
+                                model_name=options.get('llm_model'),
+                                metadata=meta, context=context
+                            )
+                        elif engine == 'llm_api':
+                            api_type_z = options.get('llm_api_provider')
+                            api_key_z = options.get('llm_api_key')
+                            if api_type_z == 'gemini':
+                                api_key_z = user_settings.get_global_setting('gemini_api_key', '')
+                            t_texts = translator.translate_with_api(
+                                texts, source_lang, target_lang,
+                                api_type=api_type_z,
+                                api_key=api_key_z,
+                                model=options.get('llm_api_model'),
+                                context=context, base_url=options.get('llm_api_url')
+                            )
+                        elif engine.startswith('translategemma'):
+                            t_tg = get_translategemma_translator()
+                            if source_lang in TRANSLATEGEMMA_SUPPORTED_LANGS and target_lang in TRANSLATEGEMMA_SUPPORTED_LANGS:
+                                tg_model_key = engine
+                                t_tg.load_model(model_key=tg_model_key, use_int8=True)
+                                t_texts = t_tg.translate_batch(texts, source_lang, target_lang, batch_size=10)
+                            else:
+                                t_texts = texts
+                        else: # google
+                            t_texts = translator.translate_batch(
+                                texts, source_lang, target_lang, context=context
+                            )
+
+                        # Validation
+                        t_texts = translator.validate_and_retry_translations(
+                            texts, t_texts, source_lang, target_lang, engine
+                        )
+                        new_translations[target_lang] = t_texts
+
+                results.append({
+                    'zone_start': start,
+                    'zone_end': end,
+                    'segments': new_segments,
+                    'translations': new_translations
+                })
+
+            finally:
+                if audio_temp_path.exists():
+                    audio_temp_path.unlink()
+
+        return jsonify({'results': results})
+
+    except Exception as e:
+        logger.error(f"Zones process error: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        transcriber.unload_model()
+        translator.unload_models()
+
+@app.route('/api/process/cancel/<task_id>', methods=['POST'])
+@login_required
+def cancel_processing(task_id):
+    """Cancel a processing task"""
+    task = _get_user_task(task_id)
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+    
+    task.cancel_flag.set()
+    task.status = 'cancelled'
+    task.message = 'Task cancelled by user'
+    
+    return jsonify({'status': 'cancelled'})
+
+@app.route('/api/process/result/<task_id>')
+@login_required
+def get_result(task_id):
+    """Get processing result"""
+    task = _get_user_task(task_id)
+    
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+    
+    if task.status != 'completed':
+        return jsonify({'error': 'Task not completed'}), 400
+    
+    return jsonify(task.result)
+
+@app.route('/api/export/srt', methods=['POST'])
+def export_srt():
+    """Export subtitles as SRT"""
+    try:
+        data = request.json
+        segments = data.get('segments', [])
+        use_legacy_diacritics = data.get('legacy_diacritics', False)
+        
+        srt_content = generate_srt(segments, use_legacy_diacritics)
+        
+        response = make_response(srt_content)
+        response.headers['Content-Type'] = 'text/plain; charset=utf-8'
+        response.headers['Content-Disposition'] = 'attachment; filename=subtitles.srt'
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"SRT export error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/export/docx', methods=['POST'])
+def export_docx():
+    """Export as DOCX for professional translators"""
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        import io
+        
+        data = request.json
+        segments = data.get('segments', [])
+        metadata = data.get('metadata', {})
+        use_legacy_diacritics = data.get('legacy_diacritics', False)
+        
+        # Create document
+        doc = Document()
+        
+        # Header
+        header = doc.add_heading('Translation Document', 0)
+        header.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Metadata table
+        table = doc.add_table(rows=4, cols=2, style='Table Grid')
+        
+        metadata_fields = [
+            ('Title', metadata.get('title', '')),
+            ('Series/Episode', metadata.get('series', '')),
+            ('Translator', metadata.get('translator', '')),
+            ('Editor', metadata.get('editor', ''))
+        ]
+        
+        for i, (label, value) in enumerate(metadata_fields):
+            table.rows[i].cells[0].text = label
+            table.rows[i].cells[1].text = value
+        
+        doc.add_paragraph()
+        
+        # Add segments
+        for i, segment in enumerate(segments, 1):
+            text = segment.get('text', '')
+            if use_legacy_diacritics:
+                text = segmenter.convert_diacritics(text, to_legacy=True)
+            
+            # Segment number and timestamp
+            timestamp = f"{format_time(segment.get('start', 0))} → {format_time(segment.get('end', 0))}"
+            p = doc.add_paragraph()
+            run = p.add_run(f"{i}. [{timestamp}]")
+            run.bold = True
+            
+            # Text with line splitting
+            text_lines = segmenter.split_text_for_subtitle(text, 38)
+            p = doc.add_paragraph(text_lines)
+            p.style = doc.styles['Normal']
+            
+            # Empty line between segments
+            if i < len(segments):
+                doc.add_paragraph()
+        
+        # Save to bytes
+        docx_bytes = io.BytesIO()
+        doc.save(docx_bytes)
+        docx_bytes.seek(0)
+        
+        return send_file(
+            docx_bytes,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            as_attachment=True,
+            download_name='translation.docx'
+        )
+        
+    except Exception as e:
+        logger.error(f"DOCX export error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/translate', methods=['POST'])
+@login_required
+def translate_text():
+    """Translate segments without re-transcribing"""
+    try:
+        data = request.json
+        texts = data.get('texts', [])
+        source_lang = data.get('source_lang', 'auto')
+        target_lang = data.get('target_lang', 'en')
+        engine = data.get('engine', 'google')
+        custom_prompt = data.get('custom_prompt')
+        context = data.get('context')
+        llm_model = data.get('llm_model', Config.DEFAULT_LLM_MODEL)
+        api_provider = data.get('api_provider')
+        api_key = data.get('api_key')
+        api_model = data.get('api_model')
+        api_url = data.get('api_url')
+        
+        if not texts:
+            return jsonify({'error': 'No texts provided'}), 400
+        
+        # Auto-detect source language if needed
+        if source_lang == 'auto' and texts:
+            source_lang = translator.detect_language(texts[0])
+        
+        # Build metadata from texts (no speaker/gender info in standalone mode)
+        metadata = [{} for _ in texts]
+        
+        # Free VRAM before loading any translation model
+        logger.info("Unloading transcription models to free VRAM...")
+        transcriber.unload_model()
+        translator.unload_models()
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Translate
+        if engine == 'vllm':
+            translations = translator.translate_with_vllm_grouped(
+                texts, source_lang, target_lang,
+                model_name=llm_model,
+                metadata=metadata,
+                context=context
+            )
+        elif engine == 'llm':
+            translations = translator.translate_with_llm(
+                texts, source_lang, target_lang,
+                model_name=llm_model,
+                custom_prompt=custom_prompt
+            )
+        elif engine == 'llm_api':
+            if api_provider == 'gemini':
+                api_key = user_settings.get_global_setting('gemini_api_key', '')
+                if not api_key:
+                    return jsonify({'error': 'Gemini API key not configured by admin'}), 400
+                if not api_model:
+                    api_model = 'gemini-2.5-flash'
+            translations = translator.translate_with_api(
+                texts, source_lang, target_lang,
+                api_type=api_provider,
+                api_key=api_key,
+                model=api_model or llm_model,
+                context=context,
+                base_url=api_url
+            )
+        elif engine.startswith('translategemma'):
+            t_tg = get_translategemma_translator()
+            if source_lang in TRANSLATEGEMMA_SUPPORTED_LANGS and target_lang in TRANSLATEGEMMA_SUPPORTED_LANGS:
+                t_tg.unload_model()
+                t_tg.load_model(model_key=engine, use_int8=True)
+                translations = t_tg.translate_batch(texts, source_lang, target_lang, batch_size=10)
+                t_tg.unload_model()
+            else:
+                translations = texts
+        else:
+            translations = translator.translate_batch(
+                texts, source_lang, target_lang,
+                context=context
+            )
+        
+        return jsonify({
+            'translations': translations,
+            'source_lang': source_lang,
+            'target_lang': target_lang
+        })
+        
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/languages')
+def get_languages():
+    """Get supported languages"""
+    return jsonify(Config.SUPPORTED_LANGUAGES)
+
+@app.route('/api/models')
+def get_models():
+    """Get available Whisper models"""
+    return jsonify({
+        'models': Config.AVAILABLE_MODELS,
+        'default': Config.DEFAULT_MODEL,
+        'device': transcriber.device
+    })
+
+@app.route('/api/cleanup', methods=['POST'])
+def cleanup():
+    """Manual cleanup trigger"""
+    try:
+        file_handler.cleanup_old_sessions()
+        cleanup_old_tasks()
+        return jsonify({'status': 'cleaned'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============ Background Processing ============
+
+def process_task(task):
+    """Main processing function"""
+    try:
+        task.status = 'processing'
+        
+        # Extract audio if video
+        file_path = Path(task.file_path)
+        audio_path = task.file_path
+        
+        process_start = task.options.get('process_start', 0)
+        process_end = task.options.get('process_end', 0)
+
+        if file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}:
+            task.progress = 5
+            task.message = 'Extracting audio...'
+            
+            audio_path = Config.PROCESS_DIR / task.task_id / 'audio.wav'
+            audio_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            if task.cancel_flag.is_set():
+                return
+            
+            # Use region extraction if requested
+            if process_start > 0 or process_end > 0:
+                task.message = f'Extracting audio region ({process_start}s - {process_end or "end"}s)...'
+                duration = None
+                if process_end > process_start:
+                    duration = process_end - process_start
+                transcriber.extract_audio_from_video(
+                    str(task.file_path), str(audio_path),
+                    start_time=process_start,
+                    duration=duration
+                )
+            else:
+                transcriber.extract_audio_from_video(str(task.file_path), str(audio_path))
+
+        # Voice isolation
+        if task.options.get('isolate_voice'):
+            task.message = 'Isolating voice...'
+            audio, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio = transcriber.isolate_voice(audio, sr)
+            import soundfile as sf
+            sf.write(str(audio_path), audio, sr)
+        
+        # Transcribe
+        task.progress = 10
+        task.message = 'Starting transcription...'
+        
+        if task.cancel_flag.is_set():
+            return
+        
+        engine = task.options.get('engine', Config.DEFAULT_ENGINE)
+        model_name = task.options.get('model', Config.DEFAULT_MODEL)
+        language = task.options.get('language', Config.DEFAULT_LANGUAGE)
+        
+        logger.info(f"Task {task.task_id} - Engine: {engine}, Model: {model_name}, Lang: {language}")
+
+        if language == 'auto':
+            language = None
+        
+        if engine == 'nemo':
+            task.message = f'Initializing NVIDIA NeMo {model_name}...'
+            nemo_t = get_nemo_transcriber()
+            if not nemo_t.is_available():
+                task.message = 'Installing NeMo Toolkit...'
+                check_and_install_nemo()
+
+            # NeMo doesn't use the standard transcriber singleton, but its own
+            segments = nemo_t.transcribe(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                window_size=task.options.get('transcribe_window', 30),
+                overlap=task.options.get('transcribe_overlap', 10),
+                progress_callback=lambda m: update_task_progress(task, task.progress, m)
+            )
+            result = {
+                "segments": segments,
+                "text": " ".join([s.get("text", "") for s in segments]),
+                "raw_text": " ".join([s.get("text", "") for s in segments]),
+                "language": language or "auto",
+                "method": "nemo_parakeet"
+            }
+            # Unload after use
+            nemo_t.unload_model()
+
+            # Speaker diarization for NeMo engine (PyAnnote primary, Sortformer fallback)
+            if task.options.get('use_diarization'):
+                diar_segments = None
+                try:
+                    task.message = 'Running PyAnnote speaker diarization...'
+                    update_task_progress(task, task.progress, task.message)
+                    diar_segments = run_pyannote_diarization(
+                        str(audio_path),
+                        progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                    )
+                    logger.info(f"PyAnnote diarization: {len(diar_segments)} segments")
+                except Exception as pyannote_e:
+                    logger.warning(f"PyAnnote diarization failed, falling back to Sortformer: {pyannote_e}")
+                    try:
+                        task.message = 'Running Sortformer diarization (fallback)...'
+                        update_task_progress(task, task.progress, task.message)
+                        diar_segments = run_sortformer_diarization(
+                            str(audio_path),
+                            progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                        )
+                        logger.info(f"Sortformer diarization: {len(diar_segments)} segments")
+                    except Exception as sortformer_e:
+                        logger.error(f"Sortformer diarization also failed: {sortformer_e}")
+
+                if diar_segments:
+                    before = len(result["segments"])
+                    assign_speakers_to_segments(result["segments"], diar_segments)
+                    result["segments"] = split_segments_by_speaker(result["segments"], diar_segments)
+                    result["_has_diarization"] = True
+                    logger.info(f"Diarization: {len(diar_segments)} diar segments, segmente: {before}→{len(result['segments'])}")
+        elif engine == 'cohere':
+            task.message = 'Initializing Cohere Transcribe...'
+            if transcriber.current_model and transcriber.current_model != transcriber.models.get(Config.COHERE_MODEL):
+                transcriber.unload_model()
+
+            # Cohere non-chunked as it seems transcribe_with_cohere is what's available
+            result = transcriber.transcribe_with_cohere(
+                str(audio_path),
+                language=language or 'en',
+                use_forced_alignment=True,
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
+        elif task.options.get('mixed_turkish') and language == 'tr':
+            # Mixed Turkish Mode (Whisper Large V3 + Turbo TR)
+            all_segments = []
+
+            # Pass 1: OpenAI Whisper Large V3 (60s / 5s)
+            task.message = "Mixed TR Pass 1 (Whisper Large V3, 60s window)..."
+            res1 = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name='large-v3',
+                language='tr',
+                window_size=60,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1 (Large-V3): {m}")
+            )
+            all_segments.extend(res1.get("segments", []))
+
+            if task.cancel_flag.is_set(): return
+
+            # Pass 2: Whisper Turbo Turkish (30s / 5s, isolated)
+            task.message = "Mixed TR Pass 2 (Turbo Turkish, 30s window, isolated)..."
+            audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+            pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_tr_mixed.wav"
+            import soundfile as sf
+            sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+            res2 = transcriber.transcribe_with_windowing(
+                str(pass2_audio_path),
+                model_name='selimc/whisper-large-v3-turbo-turkish',
+                language='tr',
+                window_size=30,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2 (Turbo-TR): {m}")
+            )
+            all_segments.extend(res2.get("segments", []))
+            Path(pass2_audio_path).unlink(missing_ok=True)
+
+            result = {
+                "segments": all_segments,
+                "text": " ".join([s.get("text", "") for s in all_segments]),
+                "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                "language": "tr",
+                "method": "mixed_turkish_double_pass"
+            }
+        elif task.options.get('mixed_korean') and language == 'ko':
+            # Mixed Korean Mode (Whisper Large V3 + Turbo KO)
+            all_segments = []
+
+            # Pass 1: OpenAI Whisper Large V3 (50s / 10s)
+            task.message = "Mixed KO Pass 1 (Whisper Large V3, 50s window)..."
+            res1 = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name='large-v3',
+                language='ko',
+                window_size=50,
+                overlap=10,
+                progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1 (Large-V3): {m}")
+            )
+            all_segments.extend(res1.get("segments", []))
+
+            if task.cancel_flag.is_set(): return
+
+            # Pass 2: Whisper Turbo Korean (25s / 5s, isolated)
+            # Using smaller window for Korean Turbo to prevent long runaway transcriptions
+            task.message = "Mixed KO Pass 2 (Turbo Korean, 25s window, isolated)..."
+            audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+            audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+            pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_ko_mixed.wav"
+            import soundfile as sf
+            sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+            res2 = transcriber.transcribe_with_windowing(
+                str(pass2_audio_path),
+                model_name='Farazzzzzzz/whisper-tiny_to_korean_accent2',
+                language='ko',
+                window_size=25,
+                overlap=5,
+                progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2 (Turbo-KO): {m}")
+            )
+            all_segments.extend(res2.get("segments", []))
+            Path(pass2_audio_path).unlink(missing_ok=True)
+
+            result = {
+                "segments": all_segments,
+                "text": " ".join([s.get("text", "") for s in all_segments]),
+                "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                "language": "ko",
+                "method": "mixed_korean_double_pass"
+            }
+        elif task.options.get('transcribe_window') and task.options.get('transcribe_window') > 0:
+            # Windowed Transcription Path (requested by user for memory and stability)
+            task.message = f"Starting Windowed Transcription ({model_name}, {task.options['transcribe_window']}s window)..."
+            result = transcriber.transcribe_with_windowing(
+                str(audio_path),
+                model_name=model_name,
+                language=language,
+                window_size=task.options.get('transcribe_window', 30),
+                overlap=task.options.get('transcribe_overlap', 10),
+                progress_callback=lambda p, m: update_task_progress(task, p, m)
+            )
+        elif task.options.get('multi_pass'):
+            # Multi-Pass Whisper transcription (Legacy/High-Accuracy)
+            all_segments = []
+
+            if model_name == 'selimc/whisper-large-v3-turbo-turkish':
+                # Turkish Specific Multi-Pass (25s/5s and 35s/5s)
+                task.message = "Turkish Pass 1 (25s window)..."
+                res1 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=25,
+                    overlap=5,
+                    progress_callback=lambda p, m: update_task_progress(task, p * 0.5, f"Pass 1: {m}")
+                )
+                all_segments.extend(res1.get("segments", []))
+
+                if task.cancel_flag.is_set(): return
+
+                task.message = "Turkish Pass 2 (35s window, isolated)..."
+                # Always isolate for the second pass in Turkish multi-pass
+                audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+                audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+                pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2_tr.wav"
+                import soundfile as sf
+                sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+                res2 = transcriber.transcribe_with_windowing(
+                    str(pass2_audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=35,
+                    overlap=5,
+                    progress_callback=lambda p, m: update_task_progress(task, 50 + p * 0.5, f"Pass 2: {m}")
+                )
+                all_segments.extend(res2.get("segments", []))
+                Path(pass2_audio_path).unlink(missing_ok=True)
+
+                result = {
+                    "segments": all_segments,
+                    "text": " ".join([s.get("text", "") for s in all_segments]),
+                    "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                    "language": res1.get("language", "tr")
+                }
+            else:
+                # Standard Triple-Pass
+                # Pass 1: UI settings
+                task.message = "Whisper Pass 1 (UI Settings)..."
+                res1 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=task.options.get("transcribe_window", Config.DEFAULT_TRANSCRIBE_WINDOW),
+                    overlap=task.options.get("transcribe_overlap", Config.DEFAULT_TRANSCRIBE_OVERLAP),
+                    progress_callback=lambda p, m: update_task_progress(task, p * 0.33, f"Pass 1: {m}")
+                )
+                all_segments.extend(res1.get("segments", []))
+
+                if task.cancel_flag.is_set(): return
+
+                # Pass 2: 45s window, 10s overlap, always voice isolated
+                task.message = "Whisper Pass 2 (45s window, isolated)..."
+                pass2_audio_path = audio_path
+                if not task.options.get("isolate_voice"):
+                    task.message = "Isolating voice for Pass 2..."
+                    audio_2, sr_2 = librosa.load(str(audio_path), sr=16000, mono=True)
+                    audio_2 = transcriber.isolate_voice(audio_2, sr_2)
+                    pass2_audio_path = Config.PROCESS_DIR / task.task_id / "audio_pass2.wav"
+                    import soundfile as sf
+                    sf.write(str(pass2_audio_path), audio_2, sr_2)
+
+                res2 = transcriber.transcribe_with_windowing(
+                    str(pass2_audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=45,
+                    overlap=10,
+                    progress_callback=lambda p, m: update_task_progress(task, 33 + p * 0.33, f"Pass 2: {m}")
+                )
+                all_segments.extend(res2.get("segments", []))
+                if pass2_audio_path != audio_path:
+                    Path(pass2_audio_path).unlink(missing_ok=True)
+
+                if task.cancel_flag.is_set(): return
+
+                # Pass 3: 60s window, 22s overlap, UI isolate_voice
+                task.message = "Whisper Pass 3 (60s window, 22s overlap)..."
+                res3 = transcriber.transcribe_with_windowing(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    window_size=60,
+                    overlap=22,
+                    progress_callback=lambda p, m: update_task_progress(task, 66 + p * 0.34, f"Pass 3: {m}")
+                )
+                all_segments.extend(res3.get("segments", []))
+
+                result = {
+                    "segments": all_segments,
+                    "text": " ".join([s.get("text", "") for s in all_segments]),
+                    "raw_text": " ".join([s.get("text", "") for s in all_segments]),
+                    "language": res1.get("language", "unknown")
+                }
+        else:
+            # Primary Path: WhisperX
+            task.message = f"Starting WhisperX ({model_name})..."
+            try:
+                result = transcriber.transcribe_whisperx(
+                    str(audio_path),
+                    model_name=model_name,
+                    language=language,
+                    batch_size=16,
+                    use_diarization=task.options.get('use_diarization'),
+                    hf_token=task.options.get('hf_token'),
+                    progress_callback=lambda p, m: update_task_progress(task, p, m)
+                )
+
+                # ENSURE FORCED ALIGNMENT for non-WhisperX internal results
+                if result.get("method") != "whisperx" and result.get("segments"):
+                    task.message = "Ensuring forced alignment (post-transcription)..."
+            finally:
+                # Important: Clear VRAM after transcription before potential LLM/Translation work
+                logger.info("Transcription step finished, unloading models...")
+                transcriber.unload_model()
+        
+        # Diarization & Gender Detection
+        speaker_genders = {}
+        if task.options.get('use_diarization') and result.get('segments'):
+            task.message = 'Detecting speaker genders...'
+            try:
+                audio_full, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+
+                # Group segment audio by speaker
+                speaker_audio = {}
+                for seg in result['segments']:
+                    speaker = seg.get('speaker')
+                    if not speaker: continue
+
+                    # Ensure indices are within audio range
+                    start_sample = max(0, int(seg['start'] * sr))
+                    end_sample = min(len(audio_full), int(seg['end'] * sr))
+
+                    if end_sample > start_sample:
+                        chunk = audio_full[start_sample:end_sample]
+                        if speaker not in speaker_audio:
+                            speaker_audio[speaker] = []
+                        speaker_audio[speaker].append(chunk)
+
+                # Classify each speaker
+                for speaker, chunks in speaker_audio.items():
+                    if task.cancel_flag.is_set(): return
+
+                    # Combine a few chunks for better accuracy (up to 10s of speech)
+                    # We pick chunks that are likely to contain clear speech
+                    valid_chunks = [c for c in chunks if len(c) > 0.5 * sr]
+                    combined = np.concatenate(valid_chunks[:5]) if valid_chunks else (chunks[0] if chunks else np.array([]))
+
+                    if len(combined) > 0:
+                        gender = gender_detector.detect_gender(combined, sr)
+                        speaker_genders[speaker] = gender
+                        logger.info(f"Speaker {speaker} detected as {gender}")
+
+                gender_detector.unload()
+
+                # Apply gender to segments
+                for seg in result['segments']:
+                    seg['speaker_gender'] = speaker_genders.get(seg.get('speaker'), 'unknown')
+            except Exception as e:
+                logger.error(f"Gender detection failed: {e}")
+
+        # Segment
+        task.progress = 60
+        task.message = 'Segmenting subtitles...'
+        
+        segments = result.get('segments', [])
+        
+        min_dur = task.options.get('min_duration', Config.MIN_SEGMENT_DURATION)
+        max_dur = task.options.get('max_duration', Config.MAX_SEGMENT_DURATION)
+        max_chars = task.options.get('max_chars', Config.MAX_CHARS_PER_SEGMENT)
+        use_vad = task.options.get('use_vad', True) # Default True
+
+        # If prevent_overlap is on, we force overlap to 0 during segmentation
+        segment_overlap = 0.0 if task.options.get('prevent_overlap') else task.options.get('overlap', 0.5)
+
+        use_vad = use_vad and not bool(result.get("_has_diarization"))
+
+        if use_vad:
+            segments = segmenter.segment_by_pauses(
+                str(audio_path), segments,
+                max_duration=max_dur,
+                max_chars=max_chars,
+                overlap=segment_overlap,
+                margin=1.0 if task.options.get('use_margin') else 0.0
+            )
+        else:
+            segments = segmenter.segment_by_time(
+                segments,
+                min_duration=min_dur,
+                max_duration=max_dur,
+                max_chars=max_chars,
+                overlap=segment_overlap
+            )
+            if result.get("_has_diarization"):
+                segments = segmenter._merge_adjacent_same_speaker(segments, max_dur, max_chars)
+                logger.info(f"Merged same-speaker: {len(segments)} segments")
+        
+        # If we did triple-pass or mixed-language Whisper, use LLM to resolve overlaps and select best versions
+        if engine != "cohere" and (task.options.get('multi_pass') or task.options.get('mixed_turkish') or task.options.get('mixed_korean')):
+            task.message = "Refining multi-pass segments with LLM..."
+            # For multi-pass, we also need to clear VRAM before LLM refinement if it's heavy
+            transcriber.unload_model()
+            segments = segmenter.merge_segments_llm(segments, translator)
+
+        # Deduplication
+        if task.options.get('deduplicate'):
+            task.message = 'Removing repetitions...'
+            segments = segmenter.remove_repetitions(segments)
+
+        # Ensure sequential (no overlap)
+        if task.options.get('prevent_overlap'):
+            task.message = 'Ensuring sequential segments...'
+            segments = segmenter.ensure_sequential(segments)
+        else:
+            # Even if not strictly sequential, we should merge identical overlaps
+            segments = segmenter.merge_identical_overlapping(segments)
+
+        # Hardcoded Subtitles OCR
+        if task.options.get('use_ocr') and file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}:
+            task.message = 'Extracting hardcoded subtitles (OCR)...'
+            try:
+                ocr_available = check_and_install_paddleocr(use_gpu=torch.cuda.is_available())
+                if not ocr_available:
+                    task.message = 'OCR unavailable — restart server after numpy downgrade'
+                    logger.warning("[OCR] OCR skipped — numpy downgrade pending. Restart server.")
+                else:
+                    ocr_extractor = get_ocr_extractor()
+
+                    # Use current language or auto
+                    ocr_lang = language or 'en'
+
+                    # Region selection
+                    region = None
+                    mode = task.options.get('ocr_region_mode', 'auto')
+                    if mode == 'manual':
+                        region = (
+                            float(task.options.get('ocr_top', 0.75)),
+                            float(task.options.get('ocr_bottom', 0.98))
+                        )
+                    elif mode == 'full':
+                        region = (0.0, 1.0)
+
+                    ocr_segments = ocr_extractor.extract_subtitles(
+                        str(task.file_path),
+                        lang=ocr_lang,
+                        use_gpu=torch.cuda.is_available(),
+                        subtitle_region=region,
+                        conf_threshold=int(task.options.get('ocr_conf', 70)),
+                        frames_to_skip=int(task.options.get('ocr_frame_skip', 2)),
+                        start_time=process_start if process_start > 0 else None,
+                        end_time=process_end if process_end > 0 else None,
+                        progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                    )
+
+                    if ocr_segments:
+                        if task.options.get('ocr_merge', True):
+                            task.message = 'Merging OCR with ASR results...'
+                            segments = merge_ocr_and_asr_segments(segments, ocr_segments)
+            except Exception as e:
+                logger.error(f"OCR extraction failed: {e}")
+
+        # SDH — Sound event detection
+        sdh_enabled = task.options.get('use_sdh', False)
+        logger.info(f"[SDH] use_sdh={sdh_enabled}, suffix={file_path.suffix}, is_video={file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}}")
+        if (sdh_enabled and
+            file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'}):
+            task.message = 'Detecting sound events (SDH)...'
+            try:
+                sdh_detector = get_sdh_detector()
+                sdh_detector.load_model(
+                    progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                )
+
+                user_sdh_lang = task.options.get('sdh_language', 'auto')
+                if user_sdh_lang == 'auto' or not user_sdh_lang:
+                    sdh_target_lang = result.get('language') or 'en'
+                else:
+                    sdh_target_lang = user_sdh_lang
+                sdh_confidence = float(task.options.get('sdh_confidence', 45)) / 100.0
+                sdh_use_llm = task.options.get('sdh_use_llm', False)
+                sdh_llm_callback = None
+
+                sdh_segments = sdh_detector.detect_sound_events(
+                    str(task.file_path),
+                    segments,
+                    target_lang=sdh_target_lang,
+                    confidence_threshold=sdh_confidence,
+                    use_llm_descriptions=sdh_use_llm,
+                    llm_callback=sdh_llm_callback,
+                    start_time=process_start if process_start > 0 else None,
+                    end_time=process_end if process_end > 0 else None,
+                    progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                )
+
+                if sdh_segments:
+                    task.message = 'Merging SDH with ASR and OCR results...'
+                    segments = merge_all_subtitle_sources(segments, [], sdh_segments)
+            except Exception as e:
+                logger.error(f"SDH detection failed: {e}")
+
+        # FINAL CLEANUP for speaker artifacts
+        for seg in segments:
+            seg['text'] = translator._clean_speaker_none(seg.get('text', ''))
+
+        # Segment spacing — push apart touching/overlapping segments
+        spacing = int(task.options.get('segment_spacing', 0))
+        if spacing > 0:
+            segments = segmenter.add_segment_spacing(segments, spacing)
+
+        if task.cancel_flag.is_set():
+            return
+
+        # Gap-filling: detectează și retranscrie zonele cu vorbire dar fără subtitrare
+        if engine != "cohere" and not task.cancel_flag.is_set():
+            try:
+                from segmenter import detect_speech_gaps, expand_gap_windows
+                gaps = detect_speech_gaps(str(audio_path), segments)
+                if gaps:
+                    windows = expand_gap_windows(gaps, segments, padding=3.0)
+                    logger.info(f"Gap-fill: {len(gaps)} gaps, {len(windows)} windows")
+                    for wi, win in enumerate(windows):
+                        if task.cancel_flag.is_set():
+                            break
+                        task.message = f'Gap-fill {wi+1}/{len(windows)}...'
+                        win_dur = win["end"] - win["start"]
+                        if win_dur < 0.5 or win_dur > 120:
+                            continue
+                        gap_path = Config.TEMP_DIR / f"gap_fill_{task.task_id}_{wi}.wav"
+                        try:
+                            subprocess.run([
+                                "ffmpeg", "-y", "-i", str(audio_path),
+                                "-ss", str(win["start"]), "-to", str(win["end"]),
+                                "-ac", "1", "-ar", "16000", gap_path,
+                                "-loglevel", "error"
+                            ], check=True, capture_output=True)
+                            if engine == "nemo":
+                                nemo_t = get_nemo_transcriber()
+                                if not nemo_t.is_available():
+                                    check_and_install_nemo()
+                                new_segs = nemo_t.transcribe(
+                                    str(gap_path), model_name=model_name,
+                                    language=language,
+                                    window_size=int(win_dur) + 5, overlap=3
+                                )
+                                nemo_t.unload_model()
+                            else:
+                                hr = transcriber.transcribe_with_windowing(
+                                    str(gap_path), model_name=model_name,
+                                    language=language, window_size=int(win_dur) + 5, overlap=3
+                                )
+                                new_segs = hr.get("segments", [])
+                            for s in new_segs:
+                                s["start"] += win["start"]
+                                s["end"] += win["start"]
+                            segments.extend(new_segs)
+                        except Exception as gap_e:
+                            logger.warning(f"Gap-fill window {wi} failed: {gap_e}")
+                        finally:
+                            if gap_path.exists():
+                                gap_path.unlink()
+
+                    # Re-asignează speakeri și resegmentează după gap-fill
+                    segments.sort(key=lambda s: s["start"])
+                    segments = segmenter.merge_identical_overlapping(segments)
+                    _diar = result.get("_diar_segments")
+                    if _diar:
+                        segments = assign_speakers_to_segments(segments, _diar)
+                        segments = split_segments_by_speaker(segments, _diar)
+                        segments = segmenter._merge_adjacent_same_speaker(segments, max_dur, max_chars)
+                    logger.info(f"Gap-fill: {len(segments)} segments after merge+speaker reassign")
+            except Exception as gf_e:
+                logger.error(f"Gap-fill failed: {gf_e}")
+
+        # Translate if requested
+        translations = {}
+        if task.options.get('translate'):
+            # Eliberează memoria GPU ocupată de Whisper înainte de a începe traducerea cu LLM
+            task.message = 'Cleaning up VRAM for translation/LLM tasks...'
+            transcriber.unload_model()
+            translator.unload_models() # Ensure no old translation models are lingering
+
+            task.progress = 80
+            task.message = 'Translating...'
+            
+            target_langs = task.options.get('target_languages', ['en'])
+            source_lang = result.get('language', 'en')
+            engine = task.options.get('translation_engine', 'google')
+            context = task.options.get('translation_context')
+            
+            texts = [seg.get('text', '') for seg in segments]
+            metadata = [{'gender': seg.get('speaker_gender'), 'speaker': seg.get('speaker')} for seg in segments]
+            
+            llm_model = task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
+            custom_prompt = task.options.get('custom_prompt')
+
+            for target_lang in target_langs:
+                if task.cancel_flag.is_set():
+                    return
+                
+                task.message = f'Translating to {Config.SUPPORTED_LANGUAGES.get(target_lang, target_lang)} ({engine})...'
+                
+                if engine == 'vllm':
+                    translated_texts = translator.translate_with_vllm_grouped(
+                        texts, source_lang, target_lang,
+                        model_name=llm_model,
+                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP),
+                        metadata=metadata,
+                        context=context
+                    )
+                elif engine == 'llm':
+                    translated_texts = translator.translate_with_llm(
+                        texts, source_lang, target_lang,
+                        model_name=llm_model,
+                        custom_prompt=custom_prompt
+                    )
+                elif engine == 'llm_api':
+                    api_type_bg = task.options.get('llm_api_provider')
+                    api_key_bg = task.options.get('llm_api_key')
+                    if api_type_bg == 'gemini':
+                        api_key_bg = user_settings.get_global_setting('gemini_api_key', '')
+                    translated_texts = translator.translate_with_api(
+                        texts, source_lang, target_lang,
+                        api_type=api_type_bg,
+                        api_key=api_key_bg,
+                        model=task.options.get('llm_api_model'),
+                        context=context,
+                        base_url=task.options.get('llm_api_url'),
+                        batch_size=20
+                    )
+                elif engine.startswith('translategemma'):
+                    tg_translator = get_translategemma_translator()
+                    if source_lang not in TRANSLATEGEMMA_SUPPORTED_LANGS:
+                        logger.warning(f"[TranslateGemma] Limba sursa '{source_lang}' nu e suportata, se omite traducerea.")
+                        translated_texts = texts
+                    elif target_lang not in TRANSLATEGEMMA_SUPPORTED_LANGS:
+                        logger.warning(f"[TranslateGemma] Limba tinta '{target_lang}' nu e suportata, se omite traducerea.")
+                        translated_texts = texts
+                    else:
+                        tg_model_key = engine  # "translategemma-27b" etc.
+                        tg_translator.load_model(
+                            model_key=tg_model_key,
+                            use_int8=True,
+                            progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                        )
+                        translated_texts = tg_translator.translate_batch(
+                            texts, source_lang, target_lang,
+                            batch_size=10,
+                            progress_callback=lambda m: update_task_progress(task, task.progress, m)
+                        )
+                else: # google
+                    translated_texts = translator.translate_batch(
+                        texts, source_lang, target_lang,
+                        batch_size=15, # Blocuri de 10-15 segmente
+                        context=context
+                    )
+                
+                # Validation and Retry
+                translated_texts = translator.validate_and_retry_translations(
+                    texts, translated_texts, source_lang, target_lang, engine
+                )
+
+                # Apply LLM correction if requested
+                if task.options.get('use_romistral'):
+                    # Use explicit refiner model if provided, else fallback to llm_model or default
+                    refiner_model = task.options.get('refiner_model') or task.options.get('llm_model', Config.DEFAULT_LLM_MODEL)
+                    task.message = f'Refining translation with {refiner_model}...'
+                    translated_texts = translator.correct_with_vllm(
+                        translated_texts,
+                        target_lang,
+                        model_name=refiner_model,
+                        group_size=task.options.get('translate_group', Config.DEFAULT_TRANSLATE_GROUP),
+                        metadata=metadata,
+                        context=context
+                    )
+
+                translations[target_lang] = translated_texts
+            
+            task.progress = 95
+        
+        # Apply timestamp offset if we processed a region
+        # Only ASR segments have relative timestamps; OCR and SDH are already absolute
+        if process_start > 0:
+            task.message = f'Offsetting timestamps by {process_start}s...'
+            for seg in segments:
+                seg_source = seg.get('source', 'asr')
+                if seg_source == 'asr':
+                    seg['start'] += process_start
+                    seg['end'] += process_start
+
+        # Prepare result
+        ocr_was_used = task.options.get('use_ocr', False)
+        task.result = {
+            'full_text': result.get('text', ''),
+            'raw_text': result.get('raw_text', ''),
+            'segments': segments,
+            'language': result.get('language', 'unknown'),
+            'translations': translations,
+            'task_id': task.task_id,
+            'ocr_not_used': file_path.suffix.lower() in {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.mxf'} and not ocr_was_used
+        }
+        
+        task.status = 'completed'
+        task.progress = 100
+        task.message = 'Processing complete!'
+        
+    except Exception as e:
+        logger.error(f"Processing error: {e}")
+        task.status = 'failed'
+        task.error = str(e)
+        task.message = f'Error: {str(e)}'
+    finally:
+        # Cleanup VRAM aggressively after every process
+        logger.info(f"Task {task.task_id} finished, clearing VRAM...")
+        transcriber.unload_model()
+        translator.unload_models()
+
+        # Cleanup audio if extracted
+        if 'audio_path' in locals() and audio_path != task.file_path:
+            Path(audio_path).unlink(missing_ok=True)
+
+def update_task_progress(task, progress, message):
+    """Update task progress"""
+    task.progress = progress
+    task.message = message
+
+def cleanup_old_tasks():
+    """Remove old completed tasks"""
+    current_time = time.time()
+    with task_lock:
+        tasks_to_remove = []
+        for task_id, task in processing_tasks.items():
+            if current_time - task.created_at > Config.SESSION_LIFETIME:
+                tasks_to_remove.append(task_id)
+                
+                # Cleanup files
+                task_dir = Config.PROCESS_DIR / task_id
+                if task_dir.exists():
+                    shutil.rmtree(task_dir)
+        
+        for task_id in tasks_to_remove:
+            del processing_tasks[task_id]
+
+def generate_srt(segments, use_legacy_diacritics=False):
+    """Generate SRT format from segments"""
+    srt_lines = []
+    
+    for i, segment in enumerate(segments, 1):
+        start_time = segment.get('start', 0)
+        end_time = segment.get('end', 0)
+        text = segment.get('text', '').strip()
+        
+        if not text:
+            continue
+        
+        if use_legacy_diacritics:
+            text = segmenter.convert_diacritics(text, to_legacy=True)
+        
+        # Split text for readability
+        text = segmenter.split_text_for_subtitle(text, 38)
+        
+        srt_lines.append(str(i))
+        srt_lines.append(f"{format_time(start_time)} --> {format_time(end_time)}")
+        srt_lines.append(text)
+        srt_lines.append('')  # Empty line
+    
+    return '\n'.join(srt_lines)
+
+def format_time(seconds):
+    """Format time for SRT: HH:MM:SS,mmm"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    seconds = seconds % 60
+    milliseconds = int((seconds - int(seconds)) * 1000)
+    
+    return f"{hours:02d}:{minutes:02d}:{int(seconds):02d},{milliseconds:03d}"
+
+# ============ Scheduled Cleanup ============
+
+def scheduled_cleanup():
+    """Run cleanup periodically"""
+    while True:
+        time.sleep(Config.CLEANUP_INTERVAL)
+        try:
+            file_handler.cleanup_old_sessions()
+            cleanup_old_tasks()
+            logger.info("Scheduled cleanup completed")
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
+
+# Start cleanup thread
+cleanup_thread = threading.Thread(target=scheduled_cleanup, daemon=True)
+cleanup_thread.start()
+
+# ============ Error Handlers ============
+
+@app.errorhandler(404)
+def not_found_error(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Resource not found'}), 404
+    return render_template('login.html' if 'username' not in session else 'index.html'), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': str(error)}), 500
+    return render_template('login.html' if 'username' not in session else 'index.html'), 500
+
+@app.errorhandler(413)
+def too_large_error(error):
+    return jsonify({'error': 'File too large'}), 413
+
+@app.errorhandler(Exception)
+def handle_uncaught(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': str(error)}), 500
+    raise error
+
+# ============ Main ============
+
+if __name__ == '__main__':
+    logger.info("Starting Whisper Transcriber Application")
+    logger.info(f"Device: {transcriber.device}")
+    logger.info(f"Server: http://{Config.HOST}:{Config.PORT}")
+    
+    app.run(
+        host=Config.HOST,
+        port=Config.PORT,
+        debug=Config.DEBUG,
+        threaded=True,
+        use_reloader=False
+    )
